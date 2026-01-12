@@ -197,10 +197,10 @@ fn skip_ipv6_extension_headers(data: &[u8]) -> Option<usize> {
 
 /// Parse IPv6 ICMPv6 response
 ///
-/// Note: ICMPv6 checksum validation is not performed here because it requires
-/// the IPv6 pseudo-header (source/destination addresses, payload length, next header)
-/// which would require additional parsing. The kernel typically validates ICMPv6
-/// checksums before delivering packets to raw sockets.
+/// Note: ICMPv6 checksum validation is intentionally omitted. Unlike ICMPv4,
+/// ICMPv6 checksums require the IPv6 pseudo-header (source/dest addresses,
+/// payload length, next header) which isn't available after extension header
+/// parsing. The kernel validates ICMPv6 checksums before delivery to raw sockets.
 fn parse_icmp_response_v6(
     data: &[u8],
     responder: IpAddr,
@@ -304,6 +304,10 @@ fn parse_icmp_error_payload_v4(
 }
 
 /// Parse the payload of an IPv6 ICMPv6 error message (Time Exceeded or Dest Unreachable)
+///
+/// Note: Assumes the embedded original IPv6 packet has no extension headers.
+/// This is valid for our use case since we send ICMPv6 Echo Requests directly
+/// (Next Header = 58) without any extension headers.
 fn parse_icmp_error_payload_v6(
     icmp_data: &[u8],
     responder: IpAddr,

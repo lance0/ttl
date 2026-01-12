@@ -243,8 +243,12 @@ impl Hop {
         self.update_primary();
     }
 
-    /// Record a timeout - only updates hop-level stats
-    /// Note: We don't propagate to responders to avoid inflating ECMP loss metrics
+    /// Record a timeout - updates hop-level stats only
+    ///
+    /// Timeouts are tracked in `recent_results` for hop-level loss visualization.
+    /// Per-responder sparklines only show RTT for actual responses, not timeouts,
+    /// to avoid ECMP distortion (we can't know which responder "timed out").
+    /// Hop-level loss percentage (`loss_pct()`) remains accurate.
     pub fn record_timeout(&mut self) {
         // Track in hop-level sparkline (false = timeout/loss)
         self.recent_results.push_back(false);
