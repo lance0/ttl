@@ -5,7 +5,6 @@ use std::fs::File;
 use std::io::BufReader;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 mod cli;
@@ -25,7 +24,7 @@ use lookup::{run_dns_worker, DnsLookup};
 use prefs::Prefs;
 use probe::check_permissions;
 use state::{Session, Target};
-use trace::{spawn_receiver, ProbeEngine};
+use trace::{new_pending_map, spawn_receiver, ProbeEngine};
 use tui::{run_tui, Theme};
 
 #[tokio::main]
@@ -199,13 +198,13 @@ async fn run_interactive_mode(
     target_ip: IpAddr,
     cancel: CancellationToken,
 ) -> Result<()> {
-    // Channel for probe correlation
-    let (probe_tx, probe_rx) = mpsc::channel(1000);
+    // Shared pending map for probe correlation (engine writes, receiver reads)
+    let pending = new_pending_map();
 
     // Spawn receiver thread
     let receiver_handle = spawn_receiver(
         state.clone(),
-        probe_rx,
+        pending.clone(),
         cancel.clone(),
         config.timeout,
         target_ip.is_ipv6(),
@@ -216,7 +215,7 @@ async fn run_interactive_mode(
         config.clone(),
         target_ip,
         state.clone(),
-        probe_tx,
+        pending,
         cancel.clone(),
     );
     let engine_handle = tokio::spawn(async move { engine.run().await });
@@ -266,13 +265,13 @@ async fn run_batch_mode(
     target_ip: IpAddr,
     cancel: CancellationToken,
 ) -> Result<()> {
-    // Channel for probe correlation
-    let (probe_tx, probe_rx) = mpsc::channel(1000);
+    // Shared pending map for probe correlation (engine writes, receiver reads)
+    let pending = new_pending_map();
 
     // Spawn receiver thread
     let receiver_handle = spawn_receiver(
         state.clone(),
-        probe_rx,
+        pending.clone(),
         cancel.clone(),
         config.timeout,
         target_ip.is_ipv6(),
@@ -283,7 +282,7 @@ async fn run_batch_mode(
         config.clone(),
         target_ip,
         state.clone(),
-        probe_tx,
+        pending,
         cancel.clone(),
     );
 
@@ -316,13 +315,13 @@ async fn run_streaming_mode(
     target_ip: IpAddr,
     cancel: CancellationToken,
 ) -> Result<()> {
-    // Channel for probe correlation
-    let (probe_tx, probe_rx) = mpsc::channel(1000);
+    // Shared pending map for probe correlation (engine writes, receiver reads)
+    let pending = new_pending_map();
 
     // Spawn receiver thread
     let receiver_handle = spawn_receiver(
         state.clone(),
-        probe_rx,
+        pending.clone(),
         cancel.clone(),
         config.timeout,
         target_ip.is_ipv6(),
@@ -333,7 +332,7 @@ async fn run_streaming_mode(
         config.clone(),
         target_ip,
         state.clone(),
-        probe_tx,
+        pending,
         cancel.clone(),
     );
     let engine_handle = tokio::spawn(async move { engine.run().await });

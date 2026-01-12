@@ -3,20 +3,12 @@ use parking_lot::RwLock;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::probe::{build_echo_request, create_send_socket, get_identifier, send_icmp, set_ttl};
 use crate::state::{ProbeId, Session};
-
-/// Message sent when a probe is dispatched
-#[derive(Debug, Clone)]
-pub struct ProbeSent {
-    pub id: ProbeId,
-    pub sent_at: Instant,
-    pub target: IpAddr,
-}
+use crate::trace::pending::{PendingMap, PendingProbe};
 
 /// The probe engine sends ICMP probes at configured intervals
 pub struct ProbeEngine {
@@ -24,7 +16,7 @@ pub struct ProbeEngine {
     target: IpAddr,
     identifier: u16,
     state: Arc<RwLock<Session>>,
-    probe_tx: mpsc::Sender<ProbeSent>,
+    pending: PendingMap,
     cancel: CancellationToken,
 }
 
@@ -33,7 +25,7 @@ impl ProbeEngine {
         config: Config,
         target: IpAddr,
         state: Arc<RwLock<Session>>,
-        probe_tx: mpsc::Sender<ProbeSent>,
+        pending: PendingMap,
         cancel: CancellationToken,
     ) -> Self {
         Self {
@@ -41,7 +33,7 @@ impl ProbeEngine {
             target,
             identifier: get_identifier(),
             state,
-            probe_tx,
+            pending,
             cancel,
         }
     }
@@ -108,15 +100,18 @@ impl ProbeEngine {
 
                         let sent_at = Instant::now();
 
-                        // Notify receiver FIRST to ensure probe is registered before response arrives
-                        // This prevents a race where fast responses arrive before the pending map entry
-                        let _ = self.probe_tx.send(ProbeSent {
-                            id: probe_id,
-                            sent_at,
-                            target: self.target,
-                        }).await;
+                        // Register pending BEFORE sending to prevent race with fast responses
+                        {
+                            let mut pending = self.pending.write();
+                            pending.insert(probe_id, PendingProbe {
+                                sent_at,
+                                target: self.target,
+                            });
+                        }
 
                         if let Err(e) = send_icmp(&socket, &packet, self.target) {
+                            // Remove pending entry on send failure to avoid false timeouts
+                            self.pending.write().remove(&probe_id);
                             eprintln!("Failed to send probe TTL {}: {}", ttl, e);
                             continue;
                         }
