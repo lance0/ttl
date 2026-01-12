@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-## Current Status (v0.1.0)
+## Current Status (v0.1.2)
 
 ### Core Features
 - [x] ICMP Echo probing with TTL sweep
@@ -14,6 +14,7 @@
 - [x] Pause/resume probing
 - [x] Stats reset
 - [x] Destination detection (stops at actual hop count)
+- [x] Race-free probe correlation (shared pending map)
 
 ### TUI Features
 - [x] Interactive hop selection with j/k navigation
@@ -22,6 +23,7 @@
 - [x] Help overlay
 - [x] Status bar with keybind hints
 - [x] Theme support (11 built-in themes via --theme flag)
+- [x] Theme persistence (~/.config/ttl/config.toml)
 
 ### Platform Support
 - [x] Linux (raw sockets with CAP_NET_RAW or root)

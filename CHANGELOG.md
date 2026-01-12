@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Startup false drops**: Fixed race condition where fast ICMP responses arrived before probe was registered
+  - Shared pending map with insert-before-send eliminates registration race
+  - Socket drain before timeout cleanup prevents dropping queued responses
+- Improved accuracy for low-latency first hops
+
 ## [0.1.2] - 2025-01-12
 
 ### Added

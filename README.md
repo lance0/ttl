@@ -18,6 +18,12 @@ Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment.
 
 ## Installation
 
+### From crates.io
+
+```bash
+cargo install ttl
+```
+
 ### From source
 
 ```bash
@@ -143,6 +149,7 @@ ttl 1.1.1.1 --no-tui
 ttl 1.1.1.1 --theme dracula
 
 # Press 't' during runtime to cycle themes
+# Your selection is saved to ~/.config/ttl/config.toml
 ```
 
 ## Troubleshooting
