@@ -1,8 +1,11 @@
-pub mod cli;
+// Public API - data types and export functions
 pub mod config;
 pub mod export;
-pub mod lookup;
-pub mod probe;
 pub mod state;
-pub mod trace;
-pub mod tui;
+
+// Internal implementation - not part of public API
+pub(crate) mod cli;
+pub(crate) mod lookup;
+pub(crate) mod probe;
+pub(crate) mod trace;
+pub(crate) mod tui;

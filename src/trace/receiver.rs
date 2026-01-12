@@ -8,6 +8,9 @@ use crate::probe::{create_recv_socket, get_identifier, parse_icmp_response, recv
 use crate::state::{IcmpResponseType, Session};
 use crate::trace::pending::PendingMap;
 
+/// Maximum consecutive errors before stopping the receiver
+const MAX_CONSECUTIVE_ERRORS: u32 = 50;
+
 /// The receiver listens for ICMP responses and correlates them to probes
 pub struct Receiver {
     state: Arc<RwLock<Session>>,
@@ -15,6 +18,7 @@ pub struct Receiver {
     cancel: CancellationToken,
     timeout: Duration,
     ipv6: bool,
+    consecutive_errors: u32,
 }
 
 impl Receiver {
@@ -31,11 +35,12 @@ impl Receiver {
             cancel,
             timeout,
             ipv6,
+            consecutive_errors: 0,
         }
     }
 
     /// Run the receiver on a dedicated thread (blocking I/O)
-    pub fn run_blocking(self) -> Result<()> {
+    pub fn run_blocking(mut self) -> Result<()> {
         let identifier = get_identifier();
         let socket = create_recv_socket(self.ipv6)?;
 
@@ -55,6 +60,9 @@ impl Receiver {
             loop {
                 match recv_icmp(&socket, &mut buffer) {
                     Ok((len, responder)) => {
+                        // Reset consecutive error count on successful receive
+                        self.consecutive_errors = 0;
+
                         if let Some(parsed) =
                             parse_icmp_response(&buffer[..len], responder, identifier)
                         {
@@ -102,8 +110,24 @@ impl Receiver {
                                 || io.kind() == std::io::ErrorKind::TimedOut
                         });
 
-                        if !is_timeout {
-                            eprintln!("Receive error: {}", e);
+                        if is_timeout {
+                            // Normal timeout, reset error count and continue
+                            self.consecutive_errors = 0;
+                        } else {
+                            // Real error, track consecutive failures
+                            self.consecutive_errors += 1;
+                            eprintln!(
+                                "Receive error ({}/{}): {}",
+                                self.consecutive_errors, MAX_CONSECUTIVE_ERRORS, e
+                            );
+
+                            if self.consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                                return Err(anyhow::anyhow!(
+                                    "Receiver stopped: {} consecutive errors (last: {})",
+                                    self.consecutive_errors,
+                                    e
+                                ));
+                            }
                         }
                         break; // Exit inner loop, proceed to timeout cleanup
                     }

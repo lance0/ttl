@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Receiver error tracking**: Stop after 50 consecutive socket errors
+  - Prevents infinite error loops when socket fails persistently
+  - Logs error count progress (e.g., "Receive error (5/50): ...")
+  - Graceful shutdown with descriptive error message
 - **ASN lookup**: Automatic ASN enrichment via Team Cymru DNS (enabled by default)
   - Displays ASN number, name, and BGP prefix in hop detail view
   - Supports both IPv4 and IPv6 addresses
@@ -48,6 +52,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ASN lookup uses Team Cymru DNS (origin.asn.cymru.com, AS name lookup)
 - GeoIP lookup uses MaxMind GeoLite2-City database format
 - UDP probe correlation extracts ProbeId from UDP payload in ICMP errors
+- Receiver error tracking with consecutive failure counting
+
+### Changed
+- **Library API boundary cleanup**: Internal modules now use `pub(crate)` visibility
+  - Public API: `config`, `export`, `state` modules
+  - Internal (crate-only): `cli`, `lookup`, `probe`, `trace`, `tui` modules
+  - Binary still has full access to all modules
 
 ## [0.1.2] - 2025-01-12
 

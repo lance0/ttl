@@ -37,12 +37,12 @@
 
 ### v0.2.0 - Robustness & Enrichment
 - [x] Receiver panic handler for clean shutdown
-- [ ] Receiver error tracking (stop after consecutive failures)
+- [x] Receiver error tracking (stop after consecutive failures)
 - [x] Parallel DNS lookups for faster resolution
 - [x] ASN lookup (Team Cymru DNS)
 - [x] GeoIP lookup (MaxMind GeoLite2)
 - [x] UDP probing mode
-- [ ] Hide internal APIs (library boundary cleanup)
+- [x] Hide internal APIs (library boundary cleanup)
 - [ ] Document jitter semantics (RTT variance vs RFC 3550)
 - [ ] High-rate mode optimizations (max drain count, reduced lock contention)
 
