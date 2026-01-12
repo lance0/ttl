@@ -38,6 +38,7 @@
 - [ ] Parallel DNS lookups for faster resolution
 - [ ] Hide internal APIs (library boundary cleanup)
 - [ ] Document jitter semantics (RTT variance vs RFC 3550)
+- [ ] High-rate mode optimizations (max drain count, reduced lock contention)
 
 ### v0.3.0 - Enrichment
 - [ ] ASN lookup via MaxMind GeoLite2
