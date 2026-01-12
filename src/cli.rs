@@ -22,13 +22,17 @@ pub struct Args {
     #[arg(short = 'm', long = "max-ttl", default_value = "30")]
     pub max_ttl: u8,
 
-    /// Probe protocol
-    #[arg(short = 'p', long = "protocol", default_value = "icmp")]
+    /// Probe protocol (auto, icmp, udp, tcp)
+    #[arg(short = 'p', long = "protocol", default_value = "auto")]
     pub protocol: String,
 
     /// Port for UDP/TCP probes
     #[arg(long = "port")]
     pub port: Option<u16>,
+
+    /// Use fixed port (disable per-TTL port variation)
+    #[arg(long = "fixed-port")]
+    pub fixed_port: bool,
 
     /// Probe timeout in seconds
     #[arg(long = "timeout", default_value = "3")]
@@ -110,12 +114,8 @@ impl Args {
         }
 
         let protocol = self.protocol.to_lowercase();
-        if !["icmp", "udp", "tcp"].contains(&protocol.as_str()) {
-            return Err(format!("Unknown protocol: {}. Use icmp, udp, or tcp", self.protocol));
-        }
-
-        if protocol == "tcp" {
-            return Err("TCP probing not yet implemented. Use ICMP or UDP.".into());
+        if !["auto", "icmp", "udp", "tcp"].contains(&protocol.as_str()) {
+            return Err(format!("Unknown protocol: {}. Use auto, icmp, udp, or tcp", self.protocol));
         }
 
         if self.interval <= 0.0 {

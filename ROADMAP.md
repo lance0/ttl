@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-## Current Status (v0.1.2)
+## Current Status (v0.3.0-dev)
 
 ### Core Features
 - [x] ICMP Echo probing with TTL sweep
@@ -18,6 +18,17 @@
 - [x] Stats reset
 - [x] Destination detection (stops at actual hop count)
 - [x] Race-free probe correlation (shared pending map)
+
+### Probing Modes
+- [x] ICMP Echo (default for privileged users)
+- [x] UDP probing (`-p udp`)
+- [x] TCP SYN probing (`-p tcp`)
+- [x] Protocol auto-detection (`-p auto`, new default)
+- [x] Custom port selection (`--port`, `--fixed-port`)
+
+### Enrichment
+- [x] ASN lookup (Team Cymru DNS)
+- [x] GeoIP lookup (MaxMind GeoLite2)
 
 ### TUI Features
 - [x] Interactive hop selection with j/k navigation
@@ -43,14 +54,14 @@
 - [x] GeoIP lookup (MaxMind GeoLite2)
 - [x] UDP probing mode
 - [x] Hide internal APIs (library boundary cleanup)
-- [ ] Document jitter semantics (RTT variance vs RFC 3550)
-- [ ] High-rate mode optimizations (max drain count, reduced lock contention)
+- [x] Document jitter semantics (RTT variance vs RFC 3550)
+- [x] High-rate mode optimizations (max drain count, reduced lock contention)
 
 ### v0.3.0 - Probing Modes
 - [x] UDP probing mode (completed in v0.2.0)
-- [ ] TCP SYN probing mode
-- [ ] Custom port selection
-- [ ] Protocol auto-detection fallback
+- [x] TCP SYN probing mode
+- [x] Custom port selection (`--fixed-port` flag)
+- [x] Protocol auto-detection fallback (`-p auto` default)
 
 ### v0.4.0 - Enrichment
 - [x] ASN lookup (Team Cymru DNS) (completed in v0.2.0)

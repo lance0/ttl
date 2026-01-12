@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **TCP SYN probing mode**: Send TCP SYN packets instead of ICMP Echo
+  - Enable with `-p tcp` or `--protocol tcp`
+  - Default port 80, customizable with `--port` flag
+  - Probe ID encoded in TCP sequence number for correlation
+  - Proper TCP checksum calculation with pseudo-header
+- **Protocol auto-detection**: Automatically select best available protocol
+  - New default mode (`-p auto`): tries ICMP → UDP → TCP in order
+  - Falls back when socket creation fails (e.g., no raw socket permission)
+  - Seamless degradation for unprivileged users
+- **Fixed port option**: Disable per-TTL port variation for UDP/TCP
+  - New `--fixed-port` flag keeps destination port constant
+  - Useful for probing specific services (e.g., DNS on port 53)
+- **High-rate optimizations**: Improved performance at fast probe intervals
+  - Batch drain limit (100 packets) prevents receiver starvation
+  - Batched state updates reduce lock contention
+  - Single lock acquisition per batch instead of per-packet
 - **Receiver error tracking**: Stop after 50 consecutive socket errors
   - Prevents infinite error loops when socket fails persistently
   - Logs error count progress (e.g., "Receive error (5/50): ...")
@@ -43,7 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Improved accuracy for low-latency first hops
 - **ASN TXT parsing**: Fixed handling of quoted/split TXT records from Team Cymru DNS
 
+### Documentation
+- **Jitter semantics**: Clarified that jitter measures RTT variance, not inter-packet timing
+  - Added detailed code comments explaining RFC 3550-inspired EWMA calculation
+  - New "Statistics Explained" section in README with jitter/metrics documentation
+
 ### Technical
+- TCP probe module (`src/probe/tcp.rs`) with SYN packet building and checksum calculation
+- TCP checksum uses actual source IP via UDP connect routing lookup (not 0.0.0.0)
+- TCP correlation support in ICMP error payload parsing
+- Batched receiver state updates for reduced lock contention
 - Added `futures` crate for parallel async operations
 - Sample history stored in circular buffer (256 entries) for percentile calculations
 - MplsLabel struct with RFC 4950 format parsing

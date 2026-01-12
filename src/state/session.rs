@@ -181,9 +181,26 @@ impl ResponderStats {
         let delta2 = rtt_micros - self.mean_rtt;
         self.m2 += delta * delta2;
 
-        // Latency jitter: RFC 3550-style smoothed variance of RTT
-        // Note: This measures RTT variance, not inter-arrival time variance.
-        // Useful for detecting network instability affecting round-trip latency.
+        // Jitter calculation uses RFC 3550-inspired smoothed variance:
+        //
+        // What we measure: RTT variance (|RTT_n - RTT_n-1|), the absolute difference
+        // between consecutive round-trip times. This is NOT inter-packet arrival
+        // jitter (which would measure timing between received packets).
+        //
+        // Three metrics tracked:
+        // - jitter (smoothed): EWMA with 1/16 factor per RFC 3550
+        //   Formula: jitter += (|RTT_diff| - jitter) / 16
+        //   Smooths out spikes while tracking trends
+        //
+        // - jitter_avg: Running mean of all jitter observations (Welford-style)
+        //   Shows overall average RTT variance across session
+        //
+        // - jitter_max: Largest single RTT change observed
+        //   Captures worst-case latency spike
+        //
+        // Interpretation: High jitter indicates network path instability from
+        // congestion, route changes, bufferbloat, or load balancing. Stable
+        // paths typically show jitter < 5-10% of average RTT.
         if let Some(last) = self.last_rtt {
             let diff = (rtt_micros - last.as_micros() as f64).abs();
             // Smoothed jitter (RFC 3550)

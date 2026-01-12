@@ -1,3 +1,4 @@
+use crate::probe::tcp::extract_probe_id_from_tcp;
 use crate::probe::udp::extract_probe_id_from_udp_payload;
 use crate::state::{IcmpResponseType, MplsLabel, ProbeId};
 use pnet::packet::icmp::{IcmpPacket, IcmpTypes};
@@ -6,6 +7,7 @@ use std::net::IpAddr;
 
 // IP protocol numbers
 const IPPROTO_ICMP: u8 = 1;
+const IPPROTO_TCP: u8 = 6;
 const IPPROTO_UDP: u8 = 17;
 const IPPROTO_ICMPV6: u8 = 58;
 
@@ -405,6 +407,25 @@ fn parse_icmp_error_payload_v4(
                 mpls_labels,
             })
         }
+        IPPROTO_TCP => {
+            // Original packet was TCP SYN probe
+            // TCP header: [0-1] src port, [2-3] dst port, [4-7] seq number, ...
+            // Probe ID is encoded in seq number (high 16 bits)
+
+            if original_payload.len() < 8 {
+                // Need at least 8 bytes for seq number extraction
+                return None;
+            }
+
+            let probe_id = extract_probe_id_from_tcp(original_payload)?;
+
+            Some(ParsedResponse {
+                responder,
+                probe_id,
+                response_type,
+                mpls_labels,
+            })
+        }
         IPPROTO_UDP => {
             // Original packet was UDP probe
             // UDP header: [0-1] src port, [2-3] dst port, [4-5] length, [6-7] checksum
@@ -493,6 +514,25 @@ fn parse_icmp_error_payload_v6(
             Some(ParsedResponse {
                 responder,
                 probe_id: ProbeId::from_sequence(sequence),
+                response_type,
+                mpls_labels,
+            })
+        }
+        IPPROTO_TCP => {
+            // Original packet was TCP SYN probe
+            // TCP header: [0-1] src port, [2-3] dst port, [4-7] seq number, ...
+            // Probe ID is encoded in seq number (high 16 bits)
+
+            if original_payload.len() < 8 {
+                // Need at least 8 bytes for seq number extraction
+                return None;
+            }
+
+            let probe_id = extract_probe_id_from_tcp(original_payload)?;
+
+            Some(ParsedResponse {
+                responder,
+                probe_id,
                 response_type,
                 mpls_labels,
             })

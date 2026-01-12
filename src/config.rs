@@ -5,7 +5,9 @@ use crate::cli::Args;
 /// Probe protocol type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ProbeProtocol {
+    /// Auto-detect: try ICMP, fallback to UDP, then TCP
     #[default]
+    Auto,
     Icmp,
     Udp,
     Tcp,
@@ -28,6 +30,8 @@ pub struct Config {
     pub protocol: ProbeProtocol,
     /// Port for UDP/TCP probes
     pub port: Option<u16>,
+    /// Use fixed port (disable per-TTL variation)
+    pub port_fixed: bool,
     /// Enable reverse DNS lookups
     pub dns_enabled: bool,
     /// Enable ASN enrichment
@@ -45,6 +49,7 @@ impl Default for Config {
             timeout: Duration::from_secs(3),
             protocol: ProbeProtocol::Icmp,
             port: None,
+            port_fixed: false,
             dns_enabled: true,
             asn_enabled: true,
             geo_enabled: true,
@@ -55,12 +60,14 @@ impl Default for Config {
 impl From<&Args> for Config {
     fn from(args: &Args) -> Self {
         let protocol = match args.protocol.to_lowercase().as_str() {
+            "icmp" => ProbeProtocol::Icmp,
             "udp" => ProbeProtocol::Udp,
             "tcp" => ProbeProtocol::Tcp,
-            _ => ProbeProtocol::Icmp,
+            _ => ProbeProtocol::Auto,
         };
 
         let port = args.port.or(match protocol {
+            ProbeProtocol::Auto => None, // Determined at runtime based on detected protocol
             ProbeProtocol::Udp => Some(33434),
             ProbeProtocol::Tcp => Some(80),
             ProbeProtocol::Icmp => None,
@@ -73,6 +80,7 @@ impl From<&Args> for Config {
             timeout: args.timeout_duration(),
             protocol,
             port,
+            port_fixed: args.fixed_port,
             dns_enabled: !args.no_dns,
             asn_enabled: !args.no_asn,
             geo_enabled: !args.no_geo,

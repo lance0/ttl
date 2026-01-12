@@ -12,7 +12,7 @@ Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment.
 - MPLS label detection from ICMP extensions
 - ASN lookup via Team Cymru DNS (enabled by default)
 - GeoIP lookup via MaxMind GeoLite2 database
-- ICMP and UDP probing modes
+- ICMP, UDP, and TCP probing modes with auto-detection
 - Great terminal UX built with ratatui
 - Scriptable mode for CI and automation
 - Reverse DNS resolution (parallel lookups)
@@ -98,11 +98,23 @@ ttl --replay results.json           # opens in TUI
 ttl 1.1.1.1 --no-tui
 ```
 
-### UDP probing
+### Probing modes
 
 ```bash
-ttl 1.1.1.1 -p udp              # Use UDP instead of ICMP
+# Auto-detect best protocol (default): ICMP → UDP → TCP
+ttl 1.1.1.1
+
+# Force specific protocol
+ttl 1.1.1.1 -p icmp             # ICMP Echo (requires raw sockets)
+ttl 1.1.1.1 -p udp              # UDP to high ports
+ttl 1.1.1.1 -p tcp              # TCP SYN probes
+
+# Custom port
 ttl 1.1.1.1 -p udp --port 33500 # Custom base port
+ttl 1.1.1.1 -p tcp --port 443   # Probe HTTPS port
+
+# Fixed port (disable per-TTL variation)
+ttl 1.1.1.1 -p udp --port 53 --fixed-port  # Probe DNS specifically
 ```
 
 ### Options
@@ -111,8 +123,9 @@ ttl 1.1.1.1 -p udp --port 33500 # Custom base port
 -c, --count <N>      Number of probes (0 = infinite, default)
 -i, --interval <S>   Probe interval in seconds (default: 1.0)
 -m, --max-ttl <N>    Maximum TTL (default: 30)
--p, --protocol <P>   Probe protocol: icmp (default) or udp
---port <N>           Base port for UDP probes (default: 33434)
+-p, --protocol <P>   Probe protocol: auto (default), icmp, udp, tcp
+--port <N>           Base port for UDP/TCP probes
+--fixed-port         Use fixed port (disable per-TTL variation)
 --timeout <S>        Probe timeout in seconds (default: 3)
 -4, --ipv4           Force IPv4
 -6, --ipv6           Force IPv6
@@ -208,6 +221,31 @@ This usually means:
 
 Reverse DNS lookups can be slow. Disable with `--no-dns` for faster startup.
 
+## Statistics Explained
+
+### Jitter
+
+Jitter measures **RTT variance** - the absolute difference between consecutive round-trip times (`|RTT_n - RTT_n-1|`). This is different from inter-packet arrival jitter used in VoIP/streaming contexts.
+
+Three jitter metrics are tracked:
+
+| Metric | Description |
+|--------|-------------|
+| **Jitter (smoothed)** | RFC 3550-style EWMA with 1/16 smoothing factor. Tracks trends while filtering noise. |
+| **Avg Jitter** | Running mean of all jitter observations. Shows overall session variance. |
+| **Max Jitter** | Largest single RTT change. Captures worst-case latency spike. |
+
+**Interpretation**: High jitter indicates path instability from congestion, route changes, bufferbloat, or load balancing. Stable paths typically show jitter below 5-10% of average RTT.
+
+### Other Statistics
+
+| Metric | Description |
+|--------|-------------|
+| **Loss %** | Percentage of probes that timed out without response |
+| **Min/Avg/Max** | RTT range across all samples |
+| **StdDev** | Standard deviation of RTT (Welford's algorithm) |
+| **p50/p95/p99** | RTT percentiles from last 256 samples |
+
 ## Tech Stack
 
 - **Language**: Rust
@@ -223,7 +261,7 @@ Reverse DNS lookups can be slow. Disable with `--no-dns` for faster startup.
 | **Protocols** |
 | ICMP | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | UDP | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| TCP | :construction: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| TCP | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | **Statistics** |
 | Loss % | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | Min/Avg/Max RTT | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |

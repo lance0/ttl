@@ -1,15 +1,30 @@
 use anyhow::Result;
 use parking_lot::RwLock;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::probe::{create_recv_socket, get_identifier, parse_icmp_response, recv_icmp};
-use crate::state::{IcmpResponseType, Session};
+use crate::state::{IcmpResponseType, MplsLabel, ProbeId, Session};
 use crate::trace::pending::PendingMap;
 
 /// Maximum consecutive errors before stopping the receiver
 const MAX_CONSECUTIVE_ERRORS: u32 = 50;
+
+/// Maximum packets to drain per iteration before yielding to timeout cleanup
+/// Prevents starvation at high packet rates
+const MAX_DRAIN_BATCH: usize = 100;
+
+/// Collected response data for batched state updates
+struct BatchedResponse {
+    probe_id: ProbeId,
+    responder: IpAddr,
+    rtt: Duration,
+    mpls_labels: Option<Vec<MplsLabel>>,
+    response_type: IcmpResponseType,
+    target: IpAddr,
+}
 
 /// The receiver listens for ICMP responses and correlates them to probes
 pub struct Receiver {
@@ -55,44 +70,40 @@ impl Receiver {
                 break;
             }
 
-            // FIRST: Drain all pending packets from socket before timeout cleanup
+            // FIRST: Drain packets from socket into batch (limited to prevent starvation)
             // This prevents dropping responses that are already queued in the buffer
+            let mut batch: Vec<BatchedResponse> = Vec::with_capacity(MAX_DRAIN_BATCH);
+            let mut batch_count = 0;
+
             loop {
+                // Limit batch size to yield to timeout cleanup
+                if batch_count >= MAX_DRAIN_BATCH {
+                    break;
+                }
+
                 match recv_icmp(&socket, &mut buffer) {
                     Ok((len, responder)) => {
                         // Reset consecutive error count on successful receive
                         self.consecutive_errors = 0;
+                        batch_count += 1;
 
                         if let Some(parsed) =
                             parse_icmp_response(&buffer[..len], responder, identifier)
                         {
-                            // Find matching pending probe in shared map
+                            // Find matching pending probe (single lock for removal)
                             let probe = self.pending.write().remove(&parsed.probe_id);
                             if let Some(probe) = probe {
                                 let rtt = Instant::now().duration_since(probe.sent_at);
 
-                                // Update state
-                                let mut state = self.state.write();
-                                if let Some(hop) = state.hop_mut(parsed.probe_id.ttl) {
-                                    hop.record_response_with_mpls(
-                                        parsed.responder,
-                                        rtt,
-                                        parsed.mpls_labels,
-                                    );
-                                }
-
-                                // Check if we reached the destination
-                                if matches!(parsed.response_type, IcmpResponseType::EchoReply) {
-                                    if parsed.responder == probe.target {
-                                        state.complete = true;
-                                        // Track the lowest TTL that reached the destination
-                                        let ttl = parsed.probe_id.ttl;
-                                        if state.dest_ttl.is_none() || ttl < state.dest_ttl.unwrap()
-                                        {
-                                            state.dest_ttl = Some(ttl);
-                                        }
-                                    }
-                                }
+                                // Collect for batched state update
+                                batch.push(BatchedResponse {
+                                    probe_id: parsed.probe_id,
+                                    responder: parsed.responder,
+                                    rtt,
+                                    mpls_labels: parsed.mpls_labels,
+                                    response_type: parsed.response_type,
+                                    target: probe.target,
+                                });
                             } else {
                                 // Late packet arrival - response came after timeout
                                 #[cfg(debug_assertions)]
@@ -129,7 +140,28 @@ impl Receiver {
                                 ));
                             }
                         }
-                        break; // Exit inner loop, proceed to timeout cleanup
+                        break; // Exit inner loop, proceed to state update
+                    }
+                }
+            }
+
+            // SECOND: Apply all batched state updates with single lock acquisition
+            if !batch.is_empty() {
+                let mut state = self.state.write();
+                for resp in batch {
+                    if let Some(hop) = state.hop_mut(resp.probe_id.ttl) {
+                        hop.record_response_with_mpls(resp.responder, resp.rtt, resp.mpls_labels);
+                    }
+
+                    // Check if we reached the destination
+                    if matches!(resp.response_type, IcmpResponseType::EchoReply)
+                        && resp.responder == resp.target
+                    {
+                        state.complete = true;
+                        let ttl = resp.probe_id.ttl;
+                        if state.dest_ttl.is_none() || ttl < state.dest_ttl.unwrap() {
+                            state.dest_ttl = Some(ttl);
+                        }
                     }
                 }
             }
