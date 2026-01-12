@@ -102,6 +102,7 @@ ttl 1.1.1.1 --no-tui
 --json               JSON output (requires -c)
 --csv                CSV output (requires -c)
 --replay <FILE>      Replay a saved JSON session
+--theme <NAME>       Color theme (see Themes section)
 ```
 
 ## Keybindings
@@ -111,12 +112,38 @@ ttl 1.1.1.1 --no-tui
 | `q` | Quit |
 | `p` | Pause/Resume |
 | `r` | Reset stats |
+| `t` | Cycle theme |
 | `e` | Export to JSON |
 | `?` / `h` | Help |
 | `Up` / `k` | Move selection up |
 | `Down` / `j` | Move selection down |
 | `Enter` | Expand selected hop |
 | `Esc` | Close popup / Deselect |
+
+## Themes
+
+11 built-in themes are available. Set via `--theme` flag or cycle with `t` key in the TUI.
+
+| Theme | Description |
+|-------|-------------|
+| `default` | Classic cyan borders (original ttl look) |
+| `kawaii` | Cute pastel colors |
+| `cyber` | Neon cyan/magenta on dark |
+| `dracula` | Popular dark theme |
+| `monochrome` | Grayscale only |
+| `matrix` | Green on black hacker style |
+| `nord` | Arctic, north-bluish colors |
+| `gruvbox` | Retro groove warm colors |
+| `catppuccin` | Soothing pastel colors |
+| `tokyo_night` | Tokyo city lights inspired |
+| `solarized` | Precision colors for readability |
+
+```bash
+# Start with a specific theme
+ttl 1.1.1.1 --theme dracula
+
+# Press 't' during runtime to cycle themes
+```
 
 ## Troubleshooting
 

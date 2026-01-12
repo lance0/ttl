@@ -1,9 +1,10 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::widgets::{Block, Borders, Cell, Row, Table, Widget};
 
 use crate::state::Session;
+use crate::tui::theme::Theme;
 use crate::tui::widgets::loss_sparkline_string;
 
 /// Truncate a string to max_len characters, adding ellipsis if truncated
@@ -23,14 +24,16 @@ pub struct MainView<'a> {
     session: &'a Session,
     selected: Option<usize>,
     paused: bool,
+    theme: &'a Theme,
 }
 
 impl<'a> MainView<'a> {
-    pub fn new(session: &'a Session, selected: Option<usize>, paused: bool) -> Self {
+    pub fn new(session: &'a Session, selected: Option<usize>, paused: bool, theme: &'a Theme) -> Self {
         Self {
             session,
             selected,
             paused,
+            theme,
         }
     }
 }
@@ -59,7 +62,7 @@ impl Widget for MainView<'_> {
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
+            .border_style(Style::default().fg(self.theme.border));
 
         let inner = block.inner(area);
         block.render(area, buf);
@@ -115,11 +118,11 @@ impl Widget for MainView<'_> {
                     (failures as f64 / recent.len() as f64) * 100.0
                 };
                 let sparkline_color = if recent_loss > 50.0 {
-                    Color::Red
+                    self.theme.error
                 } else if recent_loss > 10.0 {
-                    Color::Yellow
+                    self.theme.warning
                 } else {
-                    Color::Green
+                    self.theme.success
                 };
 
                 let (avg, min, max, stddev, jitter) =
@@ -140,16 +143,16 @@ impl Widget for MainView<'_> {
                     };
 
                 let loss_style = if hop.loss_pct() > 50.0 {
-                    Style::default().fg(Color::Red)
+                    Style::default().fg(self.theme.error)
                 } else if hop.loss_pct() > 10.0 {
-                    Style::default().fg(Color::Yellow)
+                    Style::default().fg(self.theme.warning)
                 } else {
-                    Style::default().fg(Color::Green)
+                    Style::default().fg(self.theme.success)
                 };
 
                 let row_style = if is_selected {
                     Style::default()
-                        .bg(Color::DarkGray)
+                        .bg(self.theme.highlight_bg)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
@@ -186,7 +189,7 @@ impl Widget for MainView<'_> {
 
         let table = Table::new(rows, widths)
             .header(header)
-            .highlight_style(Style::default().bg(Color::DarkGray));
+            .highlight_style(Style::default().bg(self.theme.highlight_bg));
 
         table.render(inner, buf);
     }

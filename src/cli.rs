@@ -73,6 +73,10 @@ pub struct Args {
     /// Replay a saved session
     #[arg(long = "replay")]
     pub replay: Option<String>,
+
+    /// Color theme (default, kawaii, cyber, dracula, monochrome, matrix, nord, gruvbox, catppuccin, tokyo_night, solarized)
+    #[arg(long = "theme", default_value = "default")]
+    pub theme: String,
 }
 
 impl Args {

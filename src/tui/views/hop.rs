@@ -1,20 +1,22 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
 use crate::state::Hop;
+use crate::tui::theme::Theme;
 use crate::tui::widgets::sparkline_string;
 
 /// Expanded hop detail view (modal overlay)
 pub struct HopDetailView<'a> {
     hop: &'a Hop,
+    theme: &'a Theme,
 }
 
 impl<'a> HopDetailView<'a> {
-    pub fn new(hop: &'a Hop) -> Self {
-        Self { hop }
+    pub fn new(hop: &'a Hop, theme: &'a Theme) -> Self {
+        Self { hop, theme }
     }
 }
 
@@ -37,7 +39,7 @@ impl Widget for HopDetailView<'_> {
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan));
+            .border_style(Style::default().fg(self.theme.border));
 
         let inner = block.inner(popup_area);
         block.render(popup_area, buf);
@@ -48,26 +50,26 @@ impl Widget for HopDetailView<'_> {
             // Hostname
             if let Some(ref hostname) = stats.hostname {
                 lines.push(Line::from(vec![
-                    Span::styled("  Hostname:  ", Style::default().fg(Color::Gray)),
+                    Span::styled("  Hostname:  ", Style::default().fg(self.theme.text_dim)),
                     Span::raw(hostname.clone()),
                 ]));
             }
 
             // IP address
             lines.push(Line::from(vec![
-                Span::styled("  IP:        ", Style::default().fg(Color::Gray)),
+                Span::styled("  IP:        ", Style::default().fg(self.theme.text_dim)),
                 Span::raw(stats.ip.to_string()),
             ]));
 
             // ASN (if available)
             if let Some(ref asn) = stats.asn {
                 lines.push(Line::from(vec![
-                    Span::styled("  ASN:       ", Style::default().fg(Color::Gray)),
+                    Span::styled("  ASN:       ", Style::default().fg(self.theme.text_dim)),
                     Span::raw(format!("AS{} ({})", asn.number, asn.name)),
                 ]));
                 if let Some(ref prefix) = asn.prefix {
                     lines.push(Line::from(vec![
-                        Span::styled("  Prefix:    ", Style::default().fg(Color::Gray)),
+                        Span::styled("  Prefix:    ", Style::default().fg(self.theme.text_dim)),
                         Span::raw(prefix.clone()),
                     ]));
                 }
@@ -86,7 +88,7 @@ impl Widget for HopDetailView<'_> {
                 .join(", ");
 
                 lines.push(Line::from(vec![
-                    Span::styled("  Location:  ", Style::default().fg(Color::Gray)),
+                    Span::styled("  Location:  ", Style::default().fg(self.theme.text_dim)),
                     Span::raw(location),
                 ]));
             }
@@ -98,8 +100,8 @@ impl Widget for HopDetailView<'_> {
             let sparkline = sparkline_string(&recent, (inner.width - 4) as usize);
             if !sparkline.is_empty() {
                 lines.push(Line::from(vec![
-                    Span::styled("  Latency:   ", Style::default().fg(Color::Gray)),
-                    Span::styled(sparkline, Style::default().fg(Color::Green)),
+                    Span::styled("  Latency:   ", Style::default().fg(self.theme.text_dim)),
+                    Span::styled(sparkline, Style::default().fg(self.theme.success)),
                 ]));
             }
 
@@ -107,17 +109,17 @@ impl Widget for HopDetailView<'_> {
 
             // Stats
             lines.push(Line::from(vec![
-                Span::styled("  Sent: ", Style::default().fg(Color::Gray)),
+                Span::styled("  Sent: ", Style::default().fg(self.theme.text_dim)),
                 Span::raw(format!("{:<8}", stats.sent)),
-                Span::styled("Received: ", Style::default().fg(Color::Gray)),
+                Span::styled("Received: ", Style::default().fg(self.theme.text_dim)),
                 Span::raw(format!("{:<8}", stats.received)),
-                Span::styled("Loss: ", Style::default().fg(Color::Gray)),
+                Span::styled("Loss: ", Style::default().fg(self.theme.text_dim)),
                 Span::styled(
                     format!("{:.1}%", stats.loss_pct()),
                     if stats.loss_pct() > 10.0 {
-                        Style::default().fg(Color::Red)
+                        Style::default().fg(self.theme.error)
                     } else {
-                        Style::default().fg(Color::Green)
+                        Style::default().fg(self.theme.success)
                     },
                 ),
             ]));
@@ -127,18 +129,18 @@ impl Widget for HopDetailView<'_> {
             // RTT stats
             if stats.received > 0 {
                 lines.push(Line::from(vec![
-                    Span::styled("  Min: ", Style::default().fg(Color::Gray)),
+                    Span::styled("  Min: ", Style::default().fg(self.theme.text_dim)),
                     Span::raw(format!("{:.2}ms    ", stats.min_rtt.as_secs_f64() * 1000.0)),
-                    Span::styled("Avg: ", Style::default().fg(Color::Gray)),
+                    Span::styled("Avg: ", Style::default().fg(self.theme.text_dim)),
                     Span::raw(format!("{:.2}ms    ", stats.avg_rtt().as_secs_f64() * 1000.0)),
-                    Span::styled("Max: ", Style::default().fg(Color::Gray)),
+                    Span::styled("Max: ", Style::default().fg(self.theme.text_dim)),
                     Span::raw(format!("{:.2}ms", stats.max_rtt.as_secs_f64() * 1000.0)),
                 ]));
 
                 lines.push(Line::from(vec![
-                    Span::styled("  StdDev: ", Style::default().fg(Color::Gray)),
+                    Span::styled("  StdDev: ", Style::default().fg(self.theme.text_dim)),
                     Span::raw(format!("{:.2}ms    ", stats.stddev().as_secs_f64() * 1000.0)),
-                    Span::styled("Jitter: ", Style::default().fg(Color::Gray)),
+                    Span::styled("Jitter: ", Style::default().fg(self.theme.text_dim)),
                     Span::raw(format!("{:.2}ms", stats.jitter().as_secs_f64() * 1000.0)),
                 ]));
             }
@@ -148,7 +150,7 @@ impl Widget for HopDetailView<'_> {
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![Span::styled(
                     "  Other responders at this TTL:",
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(self.theme.warning),
                 )]));
 
                 for (ip, other_stats) in &self.hop.responders {
@@ -163,7 +165,7 @@ impl Widget for HopDetailView<'_> {
                             Span::raw(format!("{}{}", ip, hostname)),
                             Span::styled(
                                 format!(" - {} responses, avg {:.1}ms", other_stats.received, other_stats.avg_rtt().as_secs_f64() * 1000.0),
-                                Style::default().fg(Color::Gray),
+                                Style::default().fg(self.theme.text_dim),
                             ),
                         ]));
                     }
@@ -175,7 +177,7 @@ impl Widget for HopDetailView<'_> {
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled("  [Esc] back", Style::default().fg(Color::DarkGray)),
+            Span::styled("  [Esc] back", Style::default().fg(self.theme.text_dim)),
         ]));
 
         let paragraph = Paragraph::new(lines);

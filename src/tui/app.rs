@@ -7,7 +7,7 @@ use crossterm::ExecutableCommand;
 use parking_lot::RwLock;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 use std::io::stdout;
@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::export::export_json_file;
 use crate::state::Session;
+use crate::tui::theme::Theme;
 use crate::tui::views::{HelpView, HopDetailView, MainView};
 
 /// UI state
@@ -31,6 +32,8 @@ pub struct UiState {
     pub show_hop_detail: bool,
     /// Status message to display
     pub status_message: Option<(String, std::time::Instant)>,
+    /// Current theme index
+    pub theme_index: usize,
 }
 
 impl Default for UiState {
@@ -41,6 +44,7 @@ impl Default for UiState {
             show_help: false,
             show_hop_detail: false,
             status_message: None,
+            theme_index: 0,
         }
     }
 }
@@ -63,6 +67,7 @@ impl UiState {
 pub async fn run_tui(
     state: Arc<RwLock<Session>>,
     cancel: CancellationToken,
+    initial_theme: Theme,
 ) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
@@ -70,7 +75,17 @@ pub async fn run_tui(
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
-    let mut ui_state = UiState::default();
+    // Find initial theme index
+    let theme_names = Theme::list();
+    let initial_index = theme_names
+        .iter()
+        .position(|&name| Theme::by_name(name).name() == initial_theme.name())
+        .unwrap_or(0);
+
+    let mut ui_state = UiState {
+        theme_index: initial_index,
+        ..Default::default()
+    };
     let tick_rate = Duration::from_millis(100);
 
     let result = run_app(&mut terminal, state.clone(), &mut ui_state, cancel.clone(), tick_rate).await;
@@ -89,6 +104,8 @@ async fn run_app<B: ratatui::backend::Backend>(
     cancel: CancellationToken,
     tick_rate: Duration,
 ) -> Result<()> {
+    let theme_names = Theme::list();
+
     loop {
         // Check cancellation
         if cancel.is_cancelled() {
@@ -98,10 +115,13 @@ async fn run_app<B: ratatui::backend::Backend>(
         // Clear old status messages
         ui_state.clear_old_status();
 
+        // Get current theme
+        let theme = Theme::by_name(theme_names[ui_state.theme_index]);
+
         // Draw
         terminal.draw(|f| {
             let session = state.read();
-            draw_ui(f, &session, ui_state);
+            draw_ui(f, &session, ui_state, &theme);
         })?;
 
         // Handle input with timeout
@@ -153,6 +173,12 @@ async fn run_app<B: ratatui::backend::Backend>(
                         }
                         ui_state.set_status("Stats reset");
                     }
+                    KeyCode::Char('t') => {
+                        // Cycle through themes
+                        ui_state.theme_index = (ui_state.theme_index + 1) % theme_names.len();
+                        let new_theme = theme_names[ui_state.theme_index];
+                        ui_state.set_status(format!("Theme: {}", new_theme));
+                    }
                     KeyCode::Char('e') => {
                         let session = state.read();
                         match export_json_file(&session) {
@@ -203,7 +229,7 @@ async fn run_app<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-fn draw_ui(f: &mut ratatui::Frame, session: &Session, ui_state: &UiState) {
+fn draw_ui(f: &mut ratatui::Frame, session: &Session, ui_state: &UiState, theme: &Theme) {
     let area = f.area();
 
     // Layout: main view + status bar
@@ -213,30 +239,30 @@ fn draw_ui(f: &mut ratatui::Frame, session: &Session, ui_state: &UiState) {
         .split(area);
 
     // Main view
-    let main_view = MainView::new(session, ui_state.selected, ui_state.paused);
+    let main_view = MainView::new(session, ui_state.selected, ui_state.paused, theme);
     f.render_widget(main_view, chunks[0]);
 
     // Status bar
     let status_text = if let Some((ref msg, _)) = ui_state.status_message {
         msg.clone()
     } else {
-        "q quit | p pause | r reset | e export | ? help | \u{2191}\u{2193} select | \u{23ce} expand".to_string()
+        "q quit | p pause | r reset | t theme | e export | ? help | \u{2191}\u{2193} select".to_string()
     };
 
     let status_bar = Paragraph::new(status_text)
-        .style(Style::default().fg(Color::DarkGray));
+        .style(Style::default().fg(theme.text_dim));
     f.render_widget(status_bar, chunks[1]);
 
     // Overlays
     if ui_state.show_help {
-        f.render_widget(HelpView, area);
+        f.render_widget(HelpView::new(theme), area);
     }
 
     if ui_state.show_hop_detail {
         if let Some(selected) = ui_state.selected {
             let hops: Vec<_> = session.hops.iter().filter(|h| h.sent > 0).collect();
             if let Some(hop) = hops.get(selected) {
-                f.render_widget(HopDetailView::new(hop), area);
+                f.render_widget(HopDetailView::new(hop, theme), area);
             }
         }
     }

@@ -24,7 +24,7 @@ use lookup::{run_dns_worker, DnsLookup};
 use probe::check_permissions;
 use state::{Session, Target};
 use trace::{spawn_receiver, ProbeEngine};
-use tui::run_tui;
+use tui::{run_tui, Theme};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -115,6 +115,7 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
         // Show in TUI (read-only)
         let state = Arc::new(RwLock::new(session));
         let cancel = CancellationToken::new();
+        let theme = Theme::by_name(&args.theme);
 
         // Setup Ctrl+C handler
         let cancel_clone = cancel.clone();
@@ -123,7 +124,7 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
             cancel_clone.cancel();
         });
 
-        run_tui(state, cancel).await?;
+        run_tui(state, cancel, theme).await?;
     }
 
     Ok(())
@@ -175,7 +176,7 @@ fn resolve_target(target: &str, force_ipv4: bool, force_ipv6: bool) -> Result<Ip
 }
 
 async fn run_interactive_mode(
-    _args: Args,
+    args: Args,
     state: Arc<RwLock<Session>>,
     config: Config,
     target_ip: IpAddr,
@@ -211,8 +212,11 @@ async fn run_interactive_mode(
         None
     };
 
+    // Get theme
+    let theme = Theme::by_name(&args.theme);
+
     // Run TUI
-    run_tui(state.clone(), cancel.clone()).await?;
+    run_tui(state.clone(), cancel.clone(), theme).await?;
 
     // Cleanup
     cancel.cancel();

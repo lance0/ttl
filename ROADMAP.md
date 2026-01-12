@@ -21,6 +21,7 @@
 - [x] Loss-aware sparkline visualization
 - [x] Help overlay
 - [x] Status bar with keybind hints
+- [x] Theme support (11 built-in themes via --theme flag)
 
 ### Platform Support
 - [x] Linux (raw sockets with CAP_NET_RAW or root)
