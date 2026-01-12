@@ -7,10 +7,12 @@ Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment.
 ## Features
 
 - Fast, low-overhead continuous path monitoring
-- Useful hop-level stats (loss, min/avg/max, jitter, stddev)
+- Useful hop-level stats (loss, min/avg/max, jitter, stddev, percentiles)
+- RTT percentiles (p50, p95, p99) from sample history
+- MPLS label detection from ICMP extensions
 - Great terminal UX built with ratatui
 - Scriptable mode for CI and automation
-- Reverse DNS resolution
+- Reverse DNS resolution (parallel lookups)
 - ECMP detection (multiple responders per TTL)
 - Multiple export formats (JSON, CSV)
 - Session replay from saved JSON files
@@ -216,7 +218,7 @@ Reverse DNS lookups can be slow. Disable with `--no-dns` for faster startup.
 | Reverse DNS | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | ASN lookup | :construction: | :white_check_mark: | :x: | :white_check_mark: |
 | GeoIP | :construction: | :white_check_mark: | :x: | :white_check_mark: |
-| MPLS labels | :construction: | :white_check_mark: | :white_check_mark: | :x: |
+| MPLS labels | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: |
 | **ECMP** |
 | Multi-path detection | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | Paris traceroute | :construction: | :white_check_mark: | :x: | :x: |
