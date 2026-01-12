@@ -12,6 +12,7 @@ mod cli;
 mod config;
 mod export;
 mod lookup;
+mod prefs;
 mod probe;
 mod state;
 mod trace;
@@ -21,6 +22,7 @@ use cli::Args;
 use config::Config;
 use export::{export_csv, export_json, generate_report};
 use lookup::{run_dns_worker, DnsLookup};
+use prefs::Prefs;
 use probe::check_permissions;
 use state::{Session, Target};
 use trace::{spawn_receiver, ProbeEngine};
@@ -115,7 +117,17 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
         // Show in TUI (read-only)
         let state = Arc::new(RwLock::new(session));
         let cancel = CancellationToken::new();
-        let theme = Theme::by_name(&args.theme);
+
+        // Load saved preferences
+        let prefs = Prefs::load();
+
+        // Determine theme: CLI override > saved preference > default
+        let theme_name = if args.theme != "default" {
+            &args.theme
+        } else {
+            prefs.theme.as_deref().unwrap_or("default")
+        };
+        let theme = Theme::by_name(theme_name);
 
         // Setup Ctrl+C handler
         let cancel_clone = cancel.clone();
@@ -124,7 +136,12 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
             cancel_clone.cancel();
         });
 
-        run_tui(state, cancel, theme).await?;
+        let final_theme = run_tui(state, cancel, theme).await?;
+
+        // Save theme preference (best effort, don't fail on save error)
+        let mut prefs = Prefs::load();
+        prefs.theme = Some(final_theme);
+        let _ = prefs.save();
     }
 
     Ok(())
@@ -212,11 +229,24 @@ async fn run_interactive_mode(
         None
     };
 
-    // Get theme
-    let theme = Theme::by_name(&args.theme);
+    // Load saved preferences
+    let prefs = Prefs::load();
+
+    // Determine theme: CLI override > saved preference > default
+    let theme_name = if args.theme != "default" {
+        &args.theme
+    } else {
+        prefs.theme.as_deref().unwrap_or("default")
+    };
+    let theme = Theme::by_name(theme_name);
 
     // Run TUI
-    run_tui(state.clone(), cancel.clone(), theme).await?;
+    let final_theme = run_tui(state.clone(), cancel.clone(), theme).await?;
+
+    // Save theme preference (best effort, don't fail on save error)
+    let mut prefs = Prefs::load();
+    prefs.theme = Some(final_theme);
+    let _ = prefs.save();
 
     // Cleanup
     cancel.cancel();

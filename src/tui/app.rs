@@ -63,12 +63,12 @@ impl UiState {
     }
 }
 
-/// Run the TUI application
+/// Run the TUI application. Returns the final theme name for persistence.
 pub async fn run_tui(
     state: Arc<RwLock<Session>>,
     cancel: CancellationToken,
     initial_theme: Theme,
-) -> Result<()> {
+) -> Result<String> {
     // Setup terminal
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -88,13 +88,14 @@ pub async fn run_tui(
     };
     let tick_rate = Duration::from_millis(100);
 
-    let result = run_app(&mut terminal, state.clone(), &mut ui_state, cancel.clone(), tick_rate).await;
+    run_app(&mut terminal, state.clone(), &mut ui_state, cancel.clone(), tick_rate).await?;
 
     // Restore terminal
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
 
-    result
+    // Return final theme name for persistence
+    Ok(theme_names[ui_state.theme_index].to_string())
 }
 
 async fn run_app<B: ratatui::backend::Backend>(
