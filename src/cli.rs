@@ -54,6 +54,10 @@ pub struct Args {
     #[arg(long = "no-geo")]
     pub no_geo: bool,
 
+    /// Path to MaxMind GeoLite2 database file
+    #[arg(long = "geoip-db")]
+    pub geoip_db: Option<String>,
+
     /// Disable TUI (streaming output mode)
     #[arg(long = "no-tui")]
     pub no_tui: bool,
@@ -110,8 +114,8 @@ impl Args {
             return Err(format!("Unknown protocol: {}. Use icmp, udp, or tcp", self.protocol));
         }
 
-        if protocol != "icmp" {
-            return Err(format!("Protocol '{}' not yet implemented. Only ICMP is supported in MVP.", protocol));
+        if protocol == "tcp" {
+            return Err("TCP probing not yet implemented. Use ICMP or UDP.".into());
         }
 
         if self.interval <= 0.0 {
@@ -129,7 +133,7 @@ impl Args {
         // Upper bound to prevent resource exhaustion (255 TTLs = 255 probes/sec)
         const MAX_SAFE_TTL: u8 = 64;
         if self.max_ttl > MAX_SAFE_TTL {
-            return Err(format!("Max TTL cannot exceed {}", MAX_SAFE_TTL).into());
+            return Err(format!("Max TTL cannot exceed {}", MAX_SAFE_TTL));
         }
 
         Ok(())

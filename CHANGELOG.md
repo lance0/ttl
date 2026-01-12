@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **ASN lookup**: Automatic ASN enrichment via Team Cymru DNS (enabled by default)
+  - Displays ASN number, name, and BGP prefix in hop detail view
+  - Supports both IPv4 and IPv6 addresses
+  - Caching for 1 hour to reduce DNS queries
+  - Disable with `--no-asn` flag
+- **GeoIP lookup**: Optional geolocation via MaxMind GeoLite2 database
+  - Displays city, region, country, and coordinates in hop detail view
+  - Auto-discovers database in common paths (~/.local/share/ttl/, /usr/share/GeoIP/)
+  - Specify custom path with `--geoip-db` flag
+  - Disable with `--no-geo` flag
+- **UDP probing mode**: Send UDP probes instead of ICMP Echo
+  - Enable with `-p udp` or `--protocol udp`
+  - Uses classic traceroute port range (33434+)
+  - Port can be customized with `--port` flag
+  - Probe ID encoded in UDP payload for correlation
+- **Receiver panic handler**: Captures panic details instead of generic error message
+  - Uses `catch_unwind` for clean error reporting
+  - Improves debugging when receiver thread fails
 - **Enhanced jitter statistics**: avg_jitter, max_jitter, and last_rtt now tracked and displayed
 - **RTT percentiles**: p50, p95, p99 calculated from sample history (last 256 samples)
 - **MPLS label parsing**: RFC 4884/4950 ICMP extensions parsed for MPLS label stacks
@@ -19,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Shared pending map with insert-before-send eliminates registration race
   - Socket drain before timeout cleanup prevents dropping queued responses
 - Improved accuracy for low-latency first hops
+- **ASN TXT parsing**: Fixed handling of quoted/split TXT records from Team Cymru DNS
 
 ### Technical
 - Added `futures` crate for parallel async operations
@@ -26,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MplsLabel struct with RFC 4950 format parsing
 - MPLS extension parsing uses RFC 4884 length field (not fixed 128-byte offset)
 - Clarified jitter UI labels to distinguish smoothed vs raw sample stats
+- ASN lookup uses Team Cymru DNS (origin.asn.cymru.com, AS name lookup)
+- GeoIP lookup uses MaxMind GeoLite2-City database format
+- UDP probe correlation extracts ProbeId from UDP payload in ICMP errors
 
 ## [0.1.2] - 2025-01-12
 

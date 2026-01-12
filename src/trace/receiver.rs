@@ -145,6 +145,22 @@ pub fn spawn_receiver(
 ) -> std::thread::JoinHandle<Result<()>> {
     std::thread::spawn(move || {
         let receiver = Receiver::new(state, pending, cancel, timeout, ipv6);
-        receiver.run_blocking()
+
+        // Catch panics and convert to error with details
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            receiver.run_blocking()
+        })) {
+            Ok(result) => result,
+            Err(panic_payload) => {
+                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                Err(anyhow::anyhow!("Receiver panicked: {}", msg))
+            }
+        }
     })
 }

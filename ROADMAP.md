@@ -35,23 +35,26 @@
 
 ## Planned Features
 
-### v0.2.0 - Robustness
-- [ ] Receiver panic handler for clean shutdown
+### v0.2.0 - Robustness & Enrichment
+- [x] Receiver panic handler for clean shutdown
 - [ ] Receiver error tracking (stop after consecutive failures)
 - [x] Parallel DNS lookups for faster resolution
+- [x] ASN lookup (Team Cymru DNS)
+- [x] GeoIP lookup (MaxMind GeoLite2)
+- [x] UDP probing mode
 - [ ] Hide internal APIs (library boundary cleanup)
 - [ ] Document jitter semantics (RTT variance vs RFC 3550)
 - [ ] High-rate mode optimizations (max drain count, reduced lock contention)
 
 ### v0.3.0 - Probing Modes
-- [ ] UDP probing mode
+- [x] UDP probing mode (completed in v0.2.0)
 - [ ] TCP SYN probing mode
 - [ ] Custom port selection
 - [ ] Protocol auto-detection fallback
 
 ### v0.4.0 - Enrichment
-- [ ] ASN lookup (Team Cymru / MaxMind GeoLite2)
-- [ ] Geolocation display
+- [x] ASN lookup (Team Cymru DNS) (completed in v0.2.0)
+- [x] Geolocation display (MaxMind) (completed in v0.2.0)
 - [x] MPLS label detection (ICMP extensions)
 - [ ] Network provider/ISP display
 

@@ -10,6 +10,9 @@ Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment.
 - Useful hop-level stats (loss, min/avg/max, jitter, stddev, percentiles)
 - RTT percentiles (p50, p95, p99) from sample history
 - MPLS label detection from ICMP extensions
+- ASN lookup via Team Cymru DNS (enabled by default)
+- GeoIP lookup via MaxMind GeoLite2 database
+- ICMP and UDP probing modes
 - Great terminal UX built with ratatui
 - Scriptable mode for CI and automation
 - Reverse DNS resolution (parallel lookups)
@@ -95,16 +98,28 @@ ttl --replay results.json           # opens in TUI
 ttl 1.1.1.1 --no-tui
 ```
 
+### UDP probing
+
+```bash
+ttl 1.1.1.1 -p udp              # Use UDP instead of ICMP
+ttl 1.1.1.1 -p udp --port 33500 # Custom base port
+```
+
 ### Options
 
 ```
 -c, --count <N>      Number of probes (0 = infinite, default)
 -i, --interval <S>   Probe interval in seconds (default: 1.0)
 -m, --max-ttl <N>    Maximum TTL (default: 30)
+-p, --protocol <P>   Probe protocol: icmp (default) or udp
+--port <N>           Base port for UDP probes (default: 33434)
 --timeout <S>        Probe timeout in seconds (default: 3)
 -4, --ipv4           Force IPv4
 -6, --ipv6           Force IPv6
 --no-dns             Skip reverse DNS lookups
+--no-asn             Skip ASN enrichment
+--no-geo             Skip geolocation
+--geoip-db <PATH>    Path to MaxMind GeoLite2 database
 --no-tui             Streaming output mode
 --report             Batch report mode (requires -c)
 --json               JSON output (requires -c)
@@ -207,7 +222,7 @@ Reverse DNS lookups can be slow. Disable with `--no-dns` for faster startup.
 |---------|:---:|:---:|:---:|:---:|
 | **Protocols** |
 | ICMP | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| UDP | :construction: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| UDP | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | TCP | :construction: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | **Statistics** |
 | Loss % | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
@@ -216,8 +231,8 @@ Reverse DNS lookups can be slow. Disable with `--no-dns` for faster startup.
 | Std deviation | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: |
 | **Enrichment** |
 | Reverse DNS | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| ASN lookup | :construction: | :white_check_mark: | :x: | :white_check_mark: |
-| GeoIP | :construction: | :white_check_mark: | :x: | :white_check_mark: |
+| ASN lookup | :white_check_mark: | :white_check_mark: | :x: | :white_check_mark: |
+| GeoIP | :white_check_mark: | :white_check_mark: | :x: | :white_check_mark: |
 | MPLS labels | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: |
 | **ECMP** |
 | Multi-path detection | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |

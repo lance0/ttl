@@ -3,17 +3,12 @@ use serde::{Deserialize, Serialize};
 use crate::cli::Args;
 
 /// Probe protocol type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ProbeProtocol {
+    #[default]
     Icmp,
     Udp,
     Tcp,
-}
-
-impl Default for ProbeProtocol {
-    fn default() -> Self {
-        Self::Icmp
-    }
 }
 
 /// Runtime configuration derived from CLI args
@@ -51,8 +46,8 @@ impl Default for Config {
             protocol: ProbeProtocol::Icmp,
             port: None,
             dns_enabled: true,
-            asn_enabled: false, // Not yet implemented
-            geo_enabled: false, // Not yet implemented
+            asn_enabled: true,
+            geo_enabled: true,
         }
     }
 }
@@ -65,7 +60,7 @@ impl From<&Args> for Config {
             _ => ProbeProtocol::Icmp,
         };
 
-        let port = args.port.or_else(|| match protocol {
+        let port = args.port.or(match protocol {
             ProbeProtocol::Udp => Some(33434),
             ProbeProtocol::Tcp => Some(80),
             ProbeProtocol::Icmp => None,

@@ -1,7 +1,13 @@
+use crate::probe::udp::extract_probe_id_from_udp_payload;
 use crate::state::{IcmpResponseType, MplsLabel, ProbeId};
 use pnet::packet::icmp::{IcmpPacket, IcmpTypes};
 use pnet::packet::ipv4::Ipv4Packet;
 use std::net::IpAddr;
+
+// IP protocol numbers
+const IPPROTO_ICMP: u8 = 1;
+const IPPROTO_UDP: u8 = 17;
+const IPPROTO_ICMPV6: u8 = 58;
 
 // ICMPv6 type codes
 const ICMPV6_ECHO_REPLY: u8 = 129;
@@ -344,12 +350,12 @@ fn parse_icmp_error_payload_v4(
     // [4]    Unused
     // [5]    Length (original datagram length in 32-bit words, 0 = legacy)
     // [6-7]  Unused
-    // [8..]  Original IP header + first 8 bytes of original ICMP
+    // [8..]  Original IP header + first 8 bytes of original payload
     // [8 + length*4..] ICMP extensions (if length > 0)
     // [136..] ICMP extensions (if length == 0, legacy mode)
 
     if icmp_data.len() < 8 + 20 + 8 {
-        // Need at least ICMP header + IP header + ICMP header
+        // Need at least ICMP header + IP header + 8 bytes of original payload
         return None;
     }
 
@@ -359,48 +365,75 @@ fn parse_icmp_error_payload_v4(
     let original_ip_data = &icmp_data[8..];
     let original_ip = Ipv4Packet::new(original_ip_data)?;
     let orig_ihl = (original_ip.get_header_length() as usize) * 4;
+    let orig_protocol = original_ip.get_next_level_protocol().0;
 
     if original_ip_data.len() < orig_ihl + 8 {
         return None;
     }
 
-    let original_icmp_data = &original_ip_data[orig_ihl..];
-
-    // Extract identifier and sequence from original ICMP header
-    // [0]    Type (should be 8 for Echo Request)
-    // [1]    Code (should be 0)
-    // [2-3]  Checksum
-    // [4-5]  Identifier
-    // [6-7]  Sequence
-
-    if original_icmp_data[0] != 8 {
-        // Not our Echo Request
-        return None;
-    }
-
-    let identifier = u16::from_be_bytes([original_icmp_data[4], original_icmp_data[5]]);
-    let sequence = u16::from_be_bytes([original_icmp_data[6], original_icmp_data[7]]);
-
-    if identifier != our_identifier {
-        return None;
-    }
+    let original_payload = &original_ip_data[orig_ihl..];
 
     // Try to parse ICMP extensions using RFC 4884 length field
     let mpls_labels = parse_icmp_extensions_with_length(&icmp_data[8..], icmp_length);
 
-    Some(ParsedResponse {
-        responder,
-        probe_id: ProbeId::from_sequence(sequence),
-        response_type,
-        mpls_labels,
-    })
+    // Handle based on original protocol
+    match orig_protocol {
+        IPPROTO_ICMP => {
+            // Original packet was ICMP Echo Request
+            // [0]    Type (should be 8 for Echo Request)
+            // [1]    Code (should be 0)
+            // [2-3]  Checksum
+            // [4-5]  Identifier
+            // [6-7]  Sequence
+
+            if original_payload[0] != 8 {
+                // Not an Echo Request
+                return None;
+            }
+
+            let identifier = u16::from_be_bytes([original_payload[4], original_payload[5]]);
+            let sequence = u16::from_be_bytes([original_payload[6], original_payload[7]]);
+
+            if identifier != our_identifier {
+                return None;
+            }
+
+            Some(ParsedResponse {
+                responder,
+                probe_id: ProbeId::from_sequence(sequence),
+                response_type,
+                mpls_labels,
+            })
+        }
+        IPPROTO_UDP => {
+            // Original packet was UDP probe
+            // UDP header: [0-1] src port, [2-3] dst port, [4-5] length, [6-7] checksum
+            // Our payload starts at offset 8
+
+            if original_payload.len() < 8 + 6 {
+                // Need UDP header + at least 6 bytes of payload
+                return None;
+            }
+
+            let udp_payload = &original_payload[8..];
+            let probe_id = extract_probe_id_from_udp_payload(udp_payload)?;
+
+            Some(ParsedResponse {
+                responder,
+                probe_id,
+                response_type,
+                mpls_labels,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Parse the payload of an IPv6 ICMPv6 error message (Time Exceeded or Dest Unreachable)
 ///
 /// Note: Assumes the embedded original IPv6 packet has no extension headers.
-/// This is valid for our use case since we send ICMPv6 Echo Requests directly
-/// (Next Header = 58) without any extension headers.
+/// This is valid for our use case since we send ICMPv6 Echo Requests and UDP directly
+/// (Next Header = 58 or 17) without any extension headers.
 fn parse_icmp_error_payload_v6(
     icmp_data: &[u8],
     responder: IpAddr,
@@ -414,7 +447,7 @@ fn parse_icmp_error_payload_v6(
     // [4]    Unused
     // [5]    Length (original datagram length in 32-bit words, 0 = legacy)
     // [6-7]  Unused
-    // [8..]  Original IPv6 header (40 bytes) + first 8 bytes of original ICMPv6
+    // [8..]  Original IPv6 header (40 bytes) + first 8 bytes of original payload
     // [8 + length*4..] ICMP extensions (if length > 0)
     // [136..] ICMP extensions (if length == 0, legacy mode)
 
@@ -428,36 +461,64 @@ fn parse_icmp_error_payload_v6(
     let icmp_length = icmp_data[5];
 
     let original_ipv6_data = &icmp_data[8..];
-    let original_icmp_data = &original_ipv6_data[IPV6_HEADER_LEN..];
-
-    // Extract identifier and sequence from original ICMPv6 header
-    // [0]    Type (should be 128 for Echo Request)
-    // [1]    Code (should be 0)
-    // [2-3]  Checksum
-    // [4-5]  Identifier
-    // [6-7]  Sequence
-
-    if original_icmp_data[0] != ICMPV6_ECHO_REQUEST {
-        // Not our Echo Request
-        return None;
-    }
-
-    let identifier = u16::from_be_bytes([original_icmp_data[4], original_icmp_data[5]]);
-    let sequence = u16::from_be_bytes([original_icmp_data[6], original_icmp_data[7]]);
-
-    if identifier != our_identifier {
-        return None;
-    }
+    // Next header field is at byte 6 of IPv6 header
+    let next_header = original_ipv6_data[6];
+    let original_payload = &original_ipv6_data[IPV6_HEADER_LEN..];
 
     // Try to parse ICMP extensions using RFC 4884 length field
     let mpls_labels = parse_icmp_extensions_with_length(&icmp_data[8..], icmp_length);
 
-    Some(ParsedResponse {
-        responder,
-        probe_id: ProbeId::from_sequence(sequence),
-        response_type,
-        mpls_labels,
-    })
+    // Handle based on original protocol
+    match next_header {
+        IPPROTO_ICMPV6 => {
+            // Original packet was ICMPv6 Echo Request
+            // [0]    Type (should be 128 for Echo Request)
+            // [1]    Code (should be 0)
+            // [2-3]  Checksum
+            // [4-5]  Identifier
+            // [6-7]  Sequence
+
+            if original_payload[0] != ICMPV6_ECHO_REQUEST {
+                // Not our Echo Request
+                return None;
+            }
+
+            let identifier = u16::from_be_bytes([original_payload[4], original_payload[5]]);
+            let sequence = u16::from_be_bytes([original_payload[6], original_payload[7]]);
+
+            if identifier != our_identifier {
+                return None;
+            }
+
+            Some(ParsedResponse {
+                responder,
+                probe_id: ProbeId::from_sequence(sequence),
+                response_type,
+                mpls_labels,
+            })
+        }
+        IPPROTO_UDP => {
+            // Original packet was UDP probe
+            // UDP header: [0-1] src port, [2-3] dst port, [4-5] length, [6-7] checksum
+            // Our payload starts at offset 8
+
+            if original_payload.len() < 8 + 6 {
+                // Need UDP header + at least 6 bytes of payload
+                return None;
+            }
+
+            let udp_payload = &original_payload[8..];
+            let probe_id = extract_probe_id_from_udp_payload(udp_payload)?;
+
+            Some(ParsedResponse {
+                responder,
+                probe_id,
+                response_type,
+                mpls_labels,
+            })
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

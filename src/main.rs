@@ -20,7 +20,7 @@ mod tui;
 use cli::Args;
 use config::Config;
 use export::{export_csv, export_json, generate_report};
-use lookup::{run_dns_worker, DnsLookup};
+use lookup::{run_asn_worker, run_dns_worker, run_geo_worker, AsnLookup, DnsLookup, GeoLookup};
 use prefs::Prefs;
 use probe::check_permissions;
 use state::{Session, Target};
@@ -228,6 +228,40 @@ async fn run_interactive_mode(
         None
     };
 
+    // Spawn ASN worker (if enabled)
+    let asn_handle = if config.asn_enabled {
+        let asn = Arc::new(AsnLookup::new().await?);
+        Some(tokio::spawn(run_asn_worker(asn, state.clone(), cancel.clone())))
+    } else {
+        None
+    };
+
+    // Spawn GeoIP worker (if enabled and database available)
+    let geo_handle = if config.geo_enabled {
+        let geo_lookup = if let Some(ref path) = args.geoip_db {
+            // Use explicit path from CLI
+            match GeoLookup::new(path) {
+                Ok(lookup) => Some(lookup),
+                Err(e) => {
+                    eprintln!("Warning: Failed to load GeoIP database '{}': {}", path, e);
+                    None
+                }
+            }
+        } else {
+            // Try default paths
+            GeoLookup::try_default()
+        };
+
+        if let Some(geo) = geo_lookup {
+            Some(tokio::spawn(run_geo_worker(Arc::new(geo), state.clone(), cancel.clone())))
+        } else {
+            // No database found, continue without geo
+            None
+        }
+    } else {
+        None
+    };
+
     // Load saved preferences
     let prefs = Prefs::load();
 
@@ -250,8 +284,21 @@ async fn run_interactive_mode(
     // Cleanup
     cancel.cancel();
     engine_handle.await??;
-    receiver_handle.join().map_err(|_| anyhow::anyhow!("Receiver thread panicked"))??;
+    receiver_handle.join().map_err(|e| {
+        // This branch shouldn't be reached since we use catch_unwind in the receiver,
+        // but handle it just in case something panics outside the protected region
+        let msg = e.downcast_ref::<&str>().map(|s| s.to_string())
+            .or_else(|| e.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".to_string());
+        anyhow::anyhow!("Receiver thread failed: {}", msg)
+    })??;
     if let Some(handle) = dns_handle {
+        handle.await?;
+    }
+    if let Some(handle) = asn_handle {
+        handle.await?;
+    }
+    if let Some(handle) = geo_handle {
         handle.await?;
     }
 
@@ -293,7 +340,14 @@ async fn run_batch_mode(
     tokio::time::sleep(config.timeout).await;
     cancel.cancel();
 
-    receiver_handle.join().map_err(|_| anyhow::anyhow!("Receiver thread panicked"))??;
+    receiver_handle.join().map_err(|e| {
+        // This branch shouldn't be reached since we use catch_unwind in the receiver,
+        // but handle it just in case something panics outside the protected region
+        let msg = e.downcast_ref::<&str>().map(|s| s.to_string())
+            .or_else(|| e.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".to_string());
+        anyhow::anyhow!("Receiver thread failed: {}", msg)
+    })??;
 
     // Output results
     let session = state.read();
@@ -373,7 +427,14 @@ async fn run_streaming_mode(
     }
 
     engine_handle.await??;
-    receiver_handle.join().map_err(|_| anyhow::anyhow!("Receiver thread panicked"))??;
+    receiver_handle.join().map_err(|e| {
+        // This branch shouldn't be reached since we use catch_unwind in the receiver,
+        // but handle it just in case something panics outside the protected region
+        let msg = e.downcast_ref::<&str>().map(|s| s.to_string())
+            .or_else(|| e.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".to_string());
+        anyhow::anyhow!("Receiver thread failed: {}", msg)
+    })??;
 
     Ok(())
 }
