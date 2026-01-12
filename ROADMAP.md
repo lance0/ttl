@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-## Current Status (v0.3.0-dev)
+## Current Status (v0.4.0-dev)
 
 ### Core Features
 - [x] ICMP Echo probing with TTL sweep
@@ -67,7 +67,7 @@
 - [x] ASN lookup (Team Cymru DNS) (completed in v0.2.0)
 - [x] Geolocation display (MaxMind) (completed in v0.2.0)
 - [x] MPLS label detection (ICMP extensions)
-- [ ] Network provider/ISP display
+- [x] Network provider/ISP display (ASN column in main table)
 
 ### v0.5.0 - Advanced ECMP
 - [ ] Paris traceroute (flow-aware)

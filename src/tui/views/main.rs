@@ -71,6 +71,7 @@ impl Widget for MainView<'_> {
         let header = Row::new(vec![
             Cell::from("#").style(Style::default().bold()),
             Cell::from("Host").style(Style::default().bold()),
+            Cell::from("ASN").style(Style::default().bold()),
             Cell::from("Loss%").style(Style::default().bold()),
             Cell::from("Sent").style(Style::default().bold()),
             Cell::from("Avg").style(Style::default().bold()),
@@ -93,17 +94,22 @@ impl Widget for MainView<'_> {
             .map(|(idx, hop)| {
                 let is_selected = self.selected == Some(idx);
 
-                let host = if let Some(stats) = hop.primary_stats() {
+                let (host, asn_display) = if let Some(stats) = hop.primary_stats() {
                     let display = if let Some(ref hostname) = stats.hostname {
                         hostname.clone()
                     } else {
                         stats.ip.to_string()
                     };
-                    truncate_with_ellipsis(&display, 28)
+                    let asn = if let Some(ref asn_info) = stats.asn {
+                        truncate_with_ellipsis(&asn_info.name, 12)
+                    } else {
+                        String::new()
+                    };
+                    (truncate_with_ellipsis(&display, 28), asn)
                 } else if hop.received == 0 {
-                    "* * *".to_string()
+                    ("* * *".to_string(), String::new())
                 } else {
-                    "???".to_string()
+                    ("???".to_string(), String::new())
                 };
 
                 // Generate sparkline from hop-level results (shows both responses and timeouts)
@@ -161,6 +167,7 @@ impl Widget for MainView<'_> {
                 Row::new(vec![
                     Cell::from(hop.ttl.to_string()),
                     Cell::from(host),
+                    Cell::from(asn_display).style(Style::default().fg(self.theme.text_dim)),
                     Cell::from(format!("{:.1}%", hop.loss_pct())).style(loss_style),
                     Cell::from(hop.sent.to_string()),
                     Cell::from(avg),
@@ -176,15 +183,16 @@ impl Widget for MainView<'_> {
 
         let widths = [
             Constraint::Length(3),  // #
-            Constraint::Min(20),    // Host
+            Constraint::Min(16),    // Host
+            Constraint::Length(13), // ASN
             Constraint::Length(7),  // Loss%
-            Constraint::Length(6),  // Sent
-            Constraint::Length(8),  // Avg
-            Constraint::Length(8),  // Min
-            Constraint::Length(8),  // Max
-            Constraint::Length(8),  // StdDev
-            Constraint::Length(8),  // Jitter
-            Constraint::Length(12), // Sparkline
+            Constraint::Length(5),  // Sent
+            Constraint::Length(7),  // Avg
+            Constraint::Length(7),  // Min
+            Constraint::Length(7),  // Max
+            Constraint::Length(7),  // StdDev
+            Constraint::Length(7),  // Jitter
+            Constraint::Length(11), // Sparkline
         ];
 
         let table = Table::new(rows, widths)

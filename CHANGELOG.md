@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **ASN column in main table**: Network provider/ISP now visible at a glance
+  - Shows AS name (e.g., "GOOGLE", "COMCAST") for each hop
+  - Complements existing ASN details in hop detail view
 - **TCP SYN probing mode**: Send TCP SYN packets instead of ICMP Echo
   - Enable with `-p tcp` or `--protocol tcp`
   - Default port 80, customizable with `--port` flag
