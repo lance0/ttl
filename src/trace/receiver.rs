@@ -23,6 +23,7 @@ pub struct Receiver {
     probe_rx: mpsc::Receiver<ProbeSent>,
     cancel: CancellationToken,
     timeout: Duration,
+    ipv6: bool,
 }
 
 impl Receiver {
@@ -31,19 +32,21 @@ impl Receiver {
         probe_rx: mpsc::Receiver<ProbeSent>,
         cancel: CancellationToken,
         timeout: Duration,
+        ipv6: bool,
     ) -> Self {
         Self {
             state,
             probe_rx,
             cancel,
             timeout,
+            ipv6,
         }
     }
 
     /// Run the receiver on a dedicated thread (blocking I/O)
     pub fn run_blocking(mut self) -> Result<()> {
         let identifier = get_identifier();
-        let socket = create_recv_socket(false)?;
+        let socket = create_recv_socket(self.ipv6)?;
 
         // Set non-blocking with short timeout for polling
         socket.set_read_timeout(Some(Duration::from_millis(100)))?;
@@ -105,6 +108,16 @@ impl Receiver {
                                     state.complete = true;
                                 }
                             }
+                        } else {
+                            // Late packet arrival - response came after timeout
+                            // This is common with high-latency or congested paths
+                            #[cfg(debug_assertions)]
+                            eprintln!(
+                                "Late response: TTL {} seq {} from {} (already timed out)",
+                                parsed.probe_id.ttl,
+                                parsed.probe_id.seq,
+                                parsed.responder
+                            );
                         }
                     }
                 }
@@ -132,9 +145,10 @@ pub fn spawn_receiver(
     probe_rx: mpsc::Receiver<ProbeSent>,
     cancel: CancellationToken,
     timeout: Duration,
+    ipv6: bool,
 ) -> std::thread::JoinHandle<Result<()>> {
     std::thread::spawn(move || {
-        let receiver = Receiver::new(state, probe_rx, cancel, timeout);
+        let receiver = Receiver::new(state, probe_rx, cancel, timeout, ipv6);
         receiver.run_blocking()
     })
 }

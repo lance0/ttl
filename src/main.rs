@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use parking_lot::RwLock;
+use std::fs::File;
+use std::io::BufReader;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -17,7 +19,7 @@ mod tui;
 
 use cli::Args;
 use config::Config;
-use export::{export_json, generate_report};
+use export::{export_csv, export_json, generate_report};
 use lookup::{run_dns_worker, DnsLookup};
 use probe::check_permissions;
 use state::{Session, Target};
@@ -32,6 +34,11 @@ async fn main() -> Result<()> {
     if let Err(e) = args.validate() {
         eprintln!("Error: {}", e);
         std::process::exit(1);
+    }
+
+    // Handle replay mode (doesn't need permissions or target resolution)
+    if let Some(ref replay_path) = args.replay {
+        return run_replay_mode(&args, replay_path).await;
     }
 
     // Check permissions early
@@ -70,6 +77,46 @@ async fn main() -> Result<()> {
     } else {
         run_interactive_mode(args, state, config, resolved_ip, cancel).await
     }
+}
+
+/// Load a session from a JSON file
+fn load_session(path: &str) -> Result<Session> {
+    let file = File::open(path)
+        .with_context(|| format!("Failed to open replay file: {}", path))?;
+    let reader = BufReader::new(file);
+    let session: Session = serde_json::from_reader(reader)
+        .with_context(|| format!("Failed to parse replay file: {}", path))?;
+    Ok(session)
+}
+
+/// Run replay mode - load a saved session and display/export it
+async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
+    let session = load_session(replay_path)?;
+
+    // Output based on flags
+    if args.json {
+        export_json(&session, std::io::stdout())?;
+    } else if args.csv {
+        export_csv(&session, std::io::stdout())?;
+    } else if args.report || args.no_tui {
+        // Default to report for replay without TUI
+        generate_report(&session, std::io::stdout())?;
+    } else {
+        // Show in TUI (read-only)
+        let state = Arc::new(RwLock::new(session));
+        let cancel = CancellationToken::new();
+
+        // Setup Ctrl+C handler
+        let cancel_clone = cancel.clone();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            cancel_clone.cancel();
+        });
+
+        run_tui(state, cancel).await?;
+    }
+
+    Ok(())
 }
 
 fn resolve_target(target: &str, force_ipv4: bool, force_ipv6: bool) -> Result<IpAddr> {
@@ -133,6 +180,7 @@ async fn run_interactive_mode(
         probe_rx,
         cancel.clone(),
         config.timeout,
+        target_ip.is_ipv6(),
     );
 
     // Spawn probe engine
@@ -183,6 +231,7 @@ async fn run_batch_mode(
         probe_rx,
         cancel.clone(),
         config.timeout,
+        target_ip.is_ipv6(),
     );
 
     // Spawn probe engine
@@ -211,8 +260,7 @@ async fn run_batch_mode(
     } else if args.report {
         generate_report(&*session, std::io::stdout())?;
     } else if args.csv {
-        // TODO: CSV export
-        eprintln!("CSV export not yet implemented");
+        export_csv(&*session, std::io::stdout())?;
     }
 
     Ok(())
@@ -233,6 +281,7 @@ async fn run_streaming_mode(
         probe_rx,
         cancel.clone(),
         config.timeout,
+        target_ip.is_ipv6(),
     );
 
     // Spawn probe engine

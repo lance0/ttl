@@ -12,7 +12,9 @@ Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment.
 - Scriptable mode for CI and automation
 - Reverse DNS resolution
 - ECMP detection (multiple responders per TTL)
-- JSON export for data analysis
+- Multiple export formats (JSON, CSV)
+- Session replay from saved JSON files
+- IPv4 and IPv6 support
 
 ## Installation
 
@@ -58,6 +60,19 @@ ttl 1.1.1.1 -c 100 --report
 ttl 1.1.1.1 -c 100 --json > results.json
 ```
 
+### CSV export
+
+```bash
+ttl 1.1.1.1 -c 100 --csv > results.csv
+```
+
+### Replay a saved session
+
+```bash
+ttl --replay results.json --report
+ttl --replay results.json           # opens in TUI
+```
+
 ### Streaming output
 
 ```bash
@@ -77,6 +92,8 @@ ttl 1.1.1.1 --no-tui
 --no-tui             Streaming output mode
 --report             Batch report mode (requires -c)
 --json               JSON output (requires -c)
+--csv                CSV output (requires -c)
+--replay <FILE>      Replay a saved JSON session
 ```
 
 ## Keybindings

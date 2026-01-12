@@ -121,8 +121,6 @@ pub fn recv_icmp(socket: &Socket, buffer: &mut [u8]) -> Result<(usize, IpAddr)> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_probe_id_encoding() {
         use crate::state::ProbeId;
