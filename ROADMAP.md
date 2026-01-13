@@ -85,18 +85,58 @@
 - [ ] Split-screen mode
 
 ### v0.7.0 - TUI Polish
-- [ ] Customizable columns
+- [ ] Customizable columns (choose which stats to display)
 - [ ] Custom keybindings
-- [ ] World map visualization (optional)
-- [ ] Hop privacy mode (hide sensitive IPs)
+- [ ] World map visualization (ASCII/Unicode geographic path display)
+- [ ] Hop privacy mode (mask sensitive IPs for screenshots/sharing)
+
+### v0.8.0 - Probe Control & MTU
+- [ ] Source interface selection (`--interface eth0`)
+- [ ] Source IP selection (`--source-ip 10.0.0.1`)
+- [ ] Packet size control (`--size 1400`)
+- [ ] Path MTU discovery mode (binary search for max unfragmented size)
+- [ ] DSCP/ToS marking (`--dscp 46`) for QoS policy testing
+- [ ] Flows per second control (`--rate`)
+- [ ] First-hop gateway detection (show which interface/gateway is used)
+
+### v0.9.0 - Advanced Diagnostics
+- [ ] Rate limit detection (identify ICMP rate limiting, explain misleading loss%)
+- [ ] Asymmetric routing detection (compare forward path TTLs in responses)
+- [ ] Route flap/change detection (alert on path changes, log history)
+- [ ] Packet loss pattern analysis (bursty vs random loss classification)
+- [ ] DNS resolution timing (separate DNS latency from network latency)
+- [ ] IPv4 + IPv6 simultaneous (happy eyeballs dual-stack testing)
+- [ ] TTL manipulation detection (identify middlebox TTL changes)
+
+### v1.0.0 - BGP & Routing Integration
+- [ ] Looking glass integration (query public route servers)
+- [ ] BGP community display (show communities on path if available)
+- [ ] IX detection (identify Internet Exchange points in path)
+- [ ] RPKI/ROA validation (prefix origin validation for each hop)
+- [ ] AS path display (full BGP AS path where available)
+
+### v1.1.0 - Operational Features
+- [ ] Baseline comparison (save baseline, alert on deviations)
+- [ ] Threshold alerts (configurable latency/loss/jitter alerts)
+- [ ] Prometheus/OpenMetrics export (for monitoring dashboards)
+- [ ] Continuous logging mode (log path changes over hours/days)
+- [ ] Network topology learning (build graph from multiple traces over time)
+- [ ] Historical data storage (SQLite/file-based path history)
+
+### v1.2.0 - Advanced Protocol Testing
+- [ ] TCP behavior testing (MSS clamping, window scaling, SACK)
+- [ ] ECN testing (Explicit Congestion Notification support)
+- [ ] Fragmentation testing (test behavior at different packet sizes)
+- [ ] Multi-path validation (verify all ECMP paths are functional)
 
 ### Future Ideas
-- [ ] Historical data storage
-- [ ] Alert thresholds (latency/loss)
-- [ ] Web UI mode
-- [ ] Prometheus metrics export
-- [ ] Path MTU discovery
-- [ ] Multi-language TUI
+- [ ] Bidirectional probing (with remote agent, measure both directions)
+- [ ] One-way delay estimation (detect latency asymmetry)
+- [ ] Bandwidth/capacity estimation (pathchar-style probing)
+- [ ] SNMP integration (query router interface stats)
+- [ ] Web UI mode (browser-based interface)
+- [ ] Multi-language TUI (i18n support)
+- [ ] Packet capture integration (optional pcap output)
 
 ## Non-Goals
 - Full packet capture/analysis (use tcpdump/wireshark)
