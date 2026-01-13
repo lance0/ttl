@@ -200,7 +200,7 @@ DSCP values are set in the IP header TOS field. You can use tcpdump to verify: `
 --flows <N>          Number of flows for ECMP detection (1-16, default: 1)
 --src-port <N>       Base source port for multi-flow (default: 50000)
 --timeout <S>        Probe timeout in seconds (default: 3)
---size <N>           Packet size in bytes (64-1500, for MTU testing)
+--size <N>           Packet size in bytes (36-1500 for IPv4, 56+ for IPv6)
 --dscp <N>           DSCP value for QoS testing (0-63)
 --rate <N>           Max probes per second (0 = unlimited)
 --source-ip <IP>     Force specific source IP address

@@ -10,11 +10,24 @@ use crate::state::ProbeId;
 #[allow(dead_code)]
 pub const IPPROTO_UDP: u8 = 17;
 
-/// Build a UDP probe payload
+/// Minimum UDP payload size (header fields)
+pub const MIN_UDP_PAYLOAD: usize = 8;
+/// Default UDP payload size
+pub const DEFAULT_UDP_PAYLOAD: usize = 32;
+
+/// Build a UDP probe payload with default size (convenience wrapper)
 /// The payload contains the probe_id for correlation
+#[allow(dead_code)]
 pub fn build_udp_payload(probe_id: ProbeId) -> Vec<u8> {
+    build_udp_payload_sized(probe_id, DEFAULT_UDP_PAYLOAD)
+}
+
+/// Build a UDP probe payload with specific size
+/// Minimum size is 8 bytes (for probe header), larger payloads are filled with pattern
+pub fn build_udp_payload_sized(probe_id: ProbeId, size: usize) -> Vec<u8> {
+    let size = size.max(MIN_UDP_PAYLOAD);
     let sequence = probe_id.to_sequence();
-    let mut payload = vec![0u8; 32]; // Minimum payload size
+    let mut payload = vec![0u8; size];
 
     // Encode probe_id in first 2 bytes as sequence number
     payload[0] = (sequence >> 8) as u8;
@@ -25,6 +38,11 @@ pub fn build_udp_payload(probe_id: ProbeId) -> Vec<u8> {
     payload[3] = 0x54; // 'T'
     payload[4] = 0x4C; // 'L'
     payload[5] = 0x00; // Version
+
+    // Fill remaining bytes with pattern (useful for MTU testing)
+    for (i, byte) in payload[6..].iter_mut().enumerate() {
+        *byte = (i & 0xFF) as u8;
+    }
 
     payload
 }

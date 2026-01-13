@@ -110,8 +110,9 @@ pub struct Args {
     #[arg(long = "dscp", value_parser = clap::value_parser!(u8).range(0..=63))]
     pub dscp: Option<u8>,
 
-    /// Probe packet size in bytes (28-1500, includes IP+ICMP headers)
-    #[arg(long = "size", value_parser = clap::value_parser!(u16).range(28..=1500))]
+    /// Probe packet size in bytes (36-1500 for IPv4, 56-1500 for IPv6)
+    /// Includes IP + protocol headers. Smaller values are clamped to minimum.
+    #[arg(long = "size", value_parser = clap::value_parser!(u16).range(36..=1500))]
     pub size: Option<u16>,
 
     /// Maximum probes per second (0 = unlimited)

@@ -7,9 +7,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{Config, ProbeProtocol};
 use crate::probe::{
-    DEFAULT_PAYLOAD_SIZE, ICMP_HEADER_SIZE, InterfaceInfo, bind_to_source_ip, build_echo_request,
-    build_tcp_syn, build_udp_payload, create_send_socket_with_interface,
-    create_tcp_socket_with_interface, create_udp_dgram_socket,
+    DEFAULT_PAYLOAD_SIZE, DEFAULT_UDP_PAYLOAD, ICMP_HEADER_SIZE, InterfaceInfo, TCP_HEADER_SIZE,
+    bind_to_source_ip, build_echo_request, build_tcp_syn_sized, build_udp_payload_sized,
+    create_send_socket_with_interface, create_tcp_socket_with_interface, create_udp_dgram_socket,
     create_udp_dgram_socket_bound_full, create_udp_dgram_socket_bound_with_interface,
     get_identifier, get_local_addr_with_interface, send_icmp, send_tcp_probe, send_udp_probe,
     set_dscp, set_ttl,
@@ -174,8 +174,10 @@ impl ProbeEngine {
                         let probe_id = ProbeId::new(ttl, seq);
 
                         // Calculate payload size from config (packet_size includes IP+ICMP headers)
+                        // IPv4 header = 20 bytes, IPv6 header = 40 bytes
+                        let ip_header_size = if self.target.is_ipv6() { 40 } else { 20 };
                         let payload_size = self.config.packet_size
-                            .map(|s| (s as usize).saturating_sub(20 + ICMP_HEADER_SIZE))
+                            .map(|s| (s as usize).saturating_sub(ip_header_size + ICMP_HEADER_SIZE))
                             .unwrap_or(DEFAULT_PAYLOAD_SIZE);
                         let packet = build_echo_request(self.identifier, probe_id.to_sequence(), payload_size);
 
@@ -254,6 +256,14 @@ impl ProbeEngine {
                 self.interface.as_ref(),
                 self.config.source_ip,
             )?;
+
+            // Set DSCP if configured (set once per socket)
+            if let Some(dscp) = self.config.dscp
+                && let Err(e) = set_dscp(&socket, dscp, ipv6)
+            {
+                eprintln!("Failed to set DSCP {} on flow {}: {}", dscp, flow_id, e);
+            }
+
             sockets.push(socket);
         }
 
@@ -310,7 +320,15 @@ impl ProbeEngine {
                             }
 
                             let probe_id = ProbeId::new(ttl, seq);
-                            let payload = build_udp_payload(probe_id);
+
+                            // Calculate UDP payload size from config
+                            // packet_size includes IP header (20 for IPv4, 40 for IPv6) + UDP header (8)
+                            let ip_header_size = if ipv6 { 40 } else { 20 };
+                            const UDP_HEADER_SIZE: usize = 8;
+                            let payload_size = self.config.packet_size
+                                .map(|s| (s as usize).saturating_sub(ip_header_size + UDP_HEADER_SIZE))
+                                .unwrap_or(DEFAULT_UDP_PAYLOAD);
+                            let payload = build_udp_payload_sized(probe_id, payload_size);
 
                             // Set TTL before sending
                             if let Err(e) = set_ttl(socket, ttl) {
@@ -377,6 +395,13 @@ impl ProbeEngine {
         // Bind to specific source IP if configured
         if let Some(source_ip) = self.config.source_ip {
             bind_to_source_ip(&socket, source_ip)?;
+        }
+
+        // Set DSCP if configured
+        if let Some(dscp) = self.config.dscp
+            && let Err(e) = set_dscp(&socket, dscp, ipv6)
+        {
+            eprintln!("Failed to set DSCP {}: {}", dscp, e);
         }
 
         let num_flows = self.config.flows;
@@ -447,8 +472,15 @@ impl ProbeEngine {
                                 base_port + (ttl as u16)
                             };
 
+                            // Calculate TCP payload size from config
+                            // packet_size includes IP header (20 for IPv4, 40 for IPv6) + TCP header (20)
+                            let ip_header_size = if ipv6 { 40 } else { 20 };
+                            let payload_size = self.config.packet_size
+                                .map(|s| (s as usize).saturating_sub(ip_header_size + TCP_HEADER_SIZE))
+                                .unwrap_or(0);
+
                             // Build TCP SYN packet with flow-specific source port
-                            let packet = build_tcp_syn(probe_id, src_port, dst_port, src_ip, self.target);
+                            let packet = build_tcp_syn_sized(probe_id, src_port, dst_port, src_ip, self.target, payload_size);
 
                             // Set TTL before sending
                             if let Err(e) = set_ttl(&socket, ttl) {

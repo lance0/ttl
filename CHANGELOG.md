@@ -8,14 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.10.0] - 2026-01-13
 
 ### Added
-- **Packet size control** (`--size`): Set probe packet size (64-1500 bytes) for MTU testing
-  - Total packet size includes IP header (20 bytes) + ICMP header (8 bytes) + payload
+- **Packet size control** (`--size`): Set probe packet size for MTU testing
+  - Range: 36-1500 bytes for IPv4, 56-1500 bytes for IPv6
+  - Total packet size includes IP header (20/40 bytes) + protocol header + payload
   - Packets sent with DF (Don't Fragment) flag for proper MTU discovery
   - Works with all probe protocols (ICMP, UDP, TCP)
 - **DSCP/ToS marking** (`--dscp`): Set IP header DSCP field (0-63) for QoS policy testing
   - DSCP 46 = Expedited Forwarding (EF) for VoIP traffic
   - DSCP 34 = AF41 for video traffic
   - Useful for testing QoS policies and seeing where traffic gets remarked
+  - Works with all probe protocols (ICMP, UDP, TCP)
   - Supports both IPv4 (TOS) and IPv6 (Traffic Class)
 - **GitHub Actions CI**: Automated build, test, clippy, and format checks on PRs
   - Runs on ubuntu-latest for all pushes to master and PRs

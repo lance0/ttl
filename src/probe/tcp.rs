@@ -20,8 +20,15 @@ const TCP_SRC_PORT: u16 = 50000;
 /// TCP flags
 const TCP_FLAG_SYN: u8 = 0x02;
 
-/// Build a TCP SYN packet for probing
+/// Minimum TCP header size
+pub const TCP_HEADER_SIZE: usize = 20;
+/// Default TCP packet size (header only)
+#[allow(dead_code)]
+pub const DEFAULT_TCP_PAYLOAD: usize = 0;
+
+/// Build a TCP SYN packet for probing (convenience wrapper with default size)
 /// Returns the raw TCP header (no IP header - kernel adds that)
+#[allow(dead_code)]
 pub fn build_tcp_syn(
     probe_id: ProbeId,
     src_port: u16,
@@ -29,7 +36,20 @@ pub fn build_tcp_syn(
     src_ip: IpAddr,
     dst_ip: IpAddr,
 ) -> Vec<u8> {
-    let mut packet = vec![0u8; 20]; // Minimum TCP header size
+    build_tcp_syn_sized(probe_id, src_port, dst_port, src_ip, dst_ip, DEFAULT_TCP_PAYLOAD)
+}
+
+/// Build a TCP SYN packet with optional payload for MTU testing
+/// Returns the raw TCP segment (header + optional data, no IP header - kernel adds that)
+pub fn build_tcp_syn_sized(
+    probe_id: ProbeId,
+    src_port: u16,
+    dst_port: u16,
+    src_ip: IpAddr,
+    dst_ip: IpAddr,
+    payload_size: usize,
+) -> Vec<u8> {
+    let mut packet = vec![0u8; TCP_HEADER_SIZE + payload_size];
 
     // Source port (2 bytes)
     packet[0..2].copy_from_slice(&src_port.to_be_bytes());
@@ -61,7 +81,12 @@ pub fn build_tcp_syn(
     // Urgent pointer (2 bytes) - 0
     packet[18..20].copy_from_slice(&0u16.to_be_bytes());
 
-    // Calculate TCP checksum
+    // Fill payload with pattern (for MTU testing)
+    for (i, byte) in packet[TCP_HEADER_SIZE..].iter_mut().enumerate() {
+        *byte = (i & 0xFF) as u8;
+    }
+
+    // Calculate TCP checksum (includes payload in calculation)
     let checksum = tcp_checksum(&packet, src_ip, dst_ip);
     packet[16..18].copy_from_slice(&checksum.to_be_bytes());
 
