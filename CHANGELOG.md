@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **PeeringDB pagination**: Added `limit=0` to API requests to fetch all IX records
   - Without this, only the first page of results was cached, missing many IX detections
+- **PeeringDB User-Agent**: Added proper User-Agent header to avoid 403 Forbidden responses
+- **PeeringDB API key support**: Set `PEERINGDB_API_KEY` env var for higher rate limits
+  - Anonymous API access is rate-limited (1/hour for large queries)
+  - API key authentication provides 40 requests/minute
 - **IX lookup race condition**: Use `OnceCell::get_or_try_init` for thread-safe lazy loading
   - Previously, concurrent lookups could trigger multiple parallel API fetches
   - `get_or_try_init` only fills cell on success, allowing retries after backoff on failure

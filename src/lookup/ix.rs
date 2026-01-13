@@ -181,10 +181,8 @@ impl IxLookup {
                             .unwrap_or_default()
                             .as_secs();
                         self.last_failure.store(now, Ordering::Relaxed);
-                        eprintln!(
-                            "Failed to load IX data: {} (retry in {}s)",
-                            e, LOAD_FAILURE_BACKOFF_SECS
-                        );
+                        // Don't print to stderr - it corrupts TUI
+                        // Silently fail; IX detection is optional enrichment
                         e
                     })
                 })
@@ -229,17 +227,15 @@ impl IxLookup {
         // Fetch from API
         match self.fetch_from_api().await {
             Ok(cache) => {
-                // Save to disk
-                if let Err(e) = self.save_cache(&cache) {
-                    eprintln!("Warning: failed to save IX cache: {}", e);
-                }
+                // Save to disk (ignore errors - cache is optional)
+                let _ = self.save_cache(&cache);
                 self.populate_from_cache(&cache)?;
                 Ok(())
             }
             Err(e) => {
                 // If API fails, try to use expired cache as fallback
                 if let Ok(cache) = self.load_cache() {
-                    eprintln!("Warning: using expired IX cache (API error: {})", e);
+                    // Silently use expired cache - better than nothing
                     self.populate_from_cache(&cache)?;
                     return Ok(());
                 }
@@ -292,9 +288,25 @@ impl IxLookup {
 
     /// Fetch IX data from PeeringDB API
     async fn fetch_from_api(&self) -> Result<IxCache> {
-        let client = reqwest::Client::builder()
+        // PeeringDB requires User-Agent to prevent scraping blocks
+        let mut builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
-            .build()?;
+            .user_agent(format!(
+                "ttl/{} (https://github.com/lance0/ttl)",
+                env!("CARGO_PKG_VERSION")
+            ));
+
+        // Add API key header if available (higher rate limits)
+        // See: https://docs.peeringdb.com/howto/api_keys/
+        if let Ok(key) = std::env::var("PEERINGDB_API_KEY") {
+            let mut headers = reqwest::header::HeaderMap::new();
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(&format!("Api-Key {}", key)) {
+                headers.insert(reqwest::header::AUTHORIZATION, value);
+                builder = builder.default_headers(headers);
+            }
+        }
+
+        let client = builder.build()?;
 
         // Fetch all three endpoints in parallel
         let (ix_result, ixlan_result, ixpfx_result) = tokio::join!(

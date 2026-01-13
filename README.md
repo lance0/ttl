@@ -239,6 +239,12 @@ ttl 1.1.1.1 --theme dracula
 # Your selection is saved to ~/.config/ttl/config.toml
 ```
 
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `PEERINGDB_API_KEY` | PeeringDB API key for higher rate limits on IX detection. Get one at [peeringdb.com](https://www.peeringdb.com/). Without a key, anonymous API access is rate-limited. |
+
 ## Troubleshooting
 
 ### Permission errors
