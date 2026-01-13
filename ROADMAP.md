@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-## Current Status (v0.5.0)
+## Current Status (v0.5.1)
 
 ### Core Features
 - [x] ICMP Echo probing with TTL sweep
@@ -11,6 +11,7 @@
 - [x] RTT percentiles (p50, p95, p99) from sample history
 - [x] ECMP detection (multiple responders per TTL)
 - [x] Paris/Dublin traceroute (multi-flow ECMP path enumeration)
+- [x] NAT detection (source port rewrite detection)
 - [x] Reverse DNS resolution (parallel lookups)
 - [x] MPLS label detection (RFC 4884/4950 ICMP extensions)
 - [x] JSON, CSV, and report export formats
@@ -76,8 +77,8 @@
 - [x] Dublin traceroute - systematic flow enumeration via `--flows` flag
 - [x] Flow-level display (per-path stats) - "Paths" column and hop detail view
 
-### v0.6.0 - Multi-target & Detection
-- [ ] NAT detection
+### v0.6.0 - Multi-target
+- [x] NAT detection (completed in v0.5.1)
 - [ ] Multiple simultaneous targets
 - [ ] Target groups/presets
 - [ ] Comparative views

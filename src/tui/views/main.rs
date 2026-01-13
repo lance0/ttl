@@ -51,12 +51,13 @@ impl Widget for MainView<'_> {
         };
 
         let status = if self.paused { " [PAUSED]" } else { "" };
+        let nat_warn = if self.session.has_nat() { " [NAT]" } else { "" };
         let probe_count = self.session.total_sent;
         let interval_ms = self.session.config.interval.as_millis();
 
         let title = format!(
-            "ttl \u{2500}\u{2500} {} \u{2500}\u{2500} {} probes \u{2500}\u{2500} {}ms interval{}",
-            target_str, probe_count, interval_ms, status
+            "ttl \u{2500}\u{2500} {} \u{2500}\u{2500} {} probes \u{2500}\u{2500} {}ms interval{}{}",
+            target_str, probe_count, interval_ms, status, nat_warn
         );
 
         let block = Block::default()
@@ -84,6 +85,7 @@ impl Widget for MainView<'_> {
             Cell::from("Jitter").style(Style::default().bold()),
         ];
         if multi_flow {
+            header_cells.push(Cell::from("NAT").style(Style::default().bold()));
             header_cells.push(Cell::from("Paths").style(Style::default().bold()));
         }
         header_cells.push(Cell::from("").style(Style::default().bold())); // Sparkline
@@ -184,8 +186,18 @@ impl Widget for MainView<'_> {
                     Cell::from(jitter),
                 ];
 
-                // Add "Paths" column if multi-flow mode
+                // Add "NAT" and "Paths" columns if multi-flow mode
                 if multi_flow {
+                    // NAT indicator
+                    let nat_display = if hop.has_nat() { "!" } else { "" };
+                    let nat_style = if hop.has_nat() {
+                        Style::default().fg(self.theme.warning)
+                    } else {
+                        Style::default()
+                    };
+                    cells.push(Cell::from(nat_display).style(nat_style));
+
+                    // Paths (ECMP detection)
                     let path_count = hop.path_count();
                     let paths_style = if hop.has_ecmp() {
                         // ECMP detected - highlight with warning color
@@ -216,6 +228,7 @@ impl Widget for MainView<'_> {
             Constraint::Length(7),  // Jitter
         ];
         if multi_flow {
+            widths.push(Constraint::Length(4)); // NAT
             widths.push(Constraint::Length(6)); // Paths
         }
         widths.push(Constraint::Length(11)); // Sparkline

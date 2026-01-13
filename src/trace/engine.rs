@@ -148,6 +148,7 @@ impl ProbeEngine {
                                 sent_at,
                                 target: self.target,
                                 flow_id,
+                                original_src_port: None, // ICMP has no source port
                             });
                         }
 
@@ -233,6 +234,7 @@ impl ProbeEngine {
                     // Send probes for each flow and each TTL (Paris/Dublin traceroute)
                     for flow_id in 0..num_flows {
                         let socket = &sockets[flow_id as usize];
+                        let src_port = self.config.src_port_base + (flow_id as u16);
 
                         for ttl in 1..=max_probe_ttl {
                             let should_probe = {
@@ -269,6 +271,7 @@ impl ProbeEngine {
                                     sent_at,
                                     target: self.target,
                                     flow_id,
+                                    original_src_port: Some(src_port), // For NAT detection
                                 });
                             }
 
@@ -388,6 +391,7 @@ impl ProbeEngine {
                                     sent_at,
                                     target: self.target,
                                     flow_id,
+                                    original_src_port: Some(src_port), // For NAT detection
                                 });
                             }
 

@@ -26,6 +26,10 @@ struct BatchedResponse {
     target: IpAddr,
     /// Flow ID for Paris/Dublin traceroute ECMP detection
     flow_id: u8,
+    /// Original source port from pending probe (for NAT detection)
+    original_src_port: Option<u16>,
+    /// Returned source port from ICMP error payload (for NAT detection)
+    returned_src_port: Option<u16>,
 }
 
 /// The receiver listens for ICMP responses and correlates them to probes
@@ -132,6 +136,8 @@ impl Receiver {
                                     response_type: parsed.response_type,
                                     target: probe.target,
                                     flow_id: probe.flow_id,
+                                    original_src_port: probe.original_src_port,
+                                    returned_src_port: parsed.src_port,
                                 });
                             } else {
                                 // Late packet arrival - response came after timeout
@@ -183,6 +189,8 @@ impl Receiver {
                         hop.record_response_with_mpls(resp.responder, resp.rtt, resp.mpls_labels);
                         // Record per-flow stats for Paris/Dublin traceroute ECMP detection
                         hop.record_flow_response(resp.flow_id, resp.responder, resp.rtt);
+                        // Record NAT detection result (compare sent vs returned source port)
+                        hop.record_nat_check(resp.original_src_port, resp.returned_src_port);
                     }
 
                     // Check if we reached the destination

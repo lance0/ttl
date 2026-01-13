@@ -19,6 +19,8 @@ pub struct PendingProbe {
     pub target: IpAddr,
     /// Flow ID for Paris/Dublin traceroute ECMP detection (0 for single-flow mode)
     pub flow_id: u8,
+    /// Original source port for NAT detection (UDP/TCP only, None for ICMP)
+    pub original_src_port: Option<u16>,
 }
 
 /// Key for pending probe lookup: (ProbeId, flow_id)

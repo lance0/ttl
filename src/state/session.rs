@@ -366,6 +366,59 @@ impl FlowPathStats {
     }
 }
 
+/// NAT detection information for a hop
+///
+/// Tracks source port matches and rewrites to detect NAT devices.
+/// When NAT rewrites source ports, multi-flow ECMP detection may be affected.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NatInfo {
+    /// Number of probes where source port matched (no NAT)
+    pub port_matched: u64,
+    /// Number of probes where source port was rewritten (NAT detected)
+    pub port_rewritten: u64,
+    /// Sample of rewritten ports: (original, returned) - limited to MAX_SAMPLES
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rewrite_samples: Vec<(u16, u16)>,
+}
+
+impl NatInfo {
+    /// Maximum number of rewrite samples to store
+    const MAX_SAMPLES: usize = 10;
+
+    /// Record a port match (no NAT)
+    pub fn record_match(&mut self) {
+        self.port_matched += 1;
+    }
+
+    /// Record a port rewrite (NAT detected)
+    pub fn record_rewrite(&mut self, original: u16, returned: u16) {
+        self.port_rewritten += 1;
+        if self.rewrite_samples.len() < Self::MAX_SAMPLES {
+            self.rewrite_samples.push((original, returned));
+        }
+    }
+
+    /// True if NAT is detected (any port rewrite observed)
+    pub fn has_nat(&self) -> bool {
+        self.port_rewritten > 0
+    }
+
+    /// NAT detection confidence (percentage of probes with rewritten ports)
+    pub fn nat_percentage(&self) -> f64 {
+        let total = self.port_matched + self.port_rewritten;
+        if total == 0 {
+            0.0
+        } else {
+            (self.port_rewritten as f64 / total as f64) * 100.0
+        }
+    }
+
+    /// Total number of NAT checks performed
+    pub fn total_checks(&self) -> u64 {
+        self.port_matched + self.port_rewritten
+    }
+}
+
 /// A single hop (TTL level) in the path
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hop {
@@ -385,6 +438,9 @@ pub struct Hop {
     /// Maps flow_id (0-255) to per-flow stats
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub flow_paths: HashMap<u8, FlowPathStats>,
+    /// NAT detection information for this hop
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nat_info: Option<NatInfo>,
 }
 
 impl Hop {
@@ -398,6 +454,7 @@ impl Hop {
             primary: None,
             recent_results: VecDeque::with_capacity(60),
             flow_paths: HashMap::new(),
+            nat_info: None,
         }
     }
 
@@ -552,6 +609,32 @@ impl Hop {
             .collect();
         unique_responders.len().max(if self.primary.is_some() { 1 } else { 0 })
     }
+
+    /// Record a NAT detection result for this hop
+    ///
+    /// Compares the original source port (from the sent probe) with the
+    /// returned source port (from the ICMP error payload). A mismatch
+    /// indicates NAT is rewriting ports.
+    pub fn record_nat_check(&mut self, original: Option<u16>, returned: Option<u16>) {
+        match (original, returned) {
+            (Some(orig), Some(ret)) => {
+                let nat_info = self.nat_info.get_or_insert_with(NatInfo::default);
+                if orig == ret {
+                    nat_info.record_match();
+                } else {
+                    nat_info.record_rewrite(orig, ret);
+                }
+            }
+            _ => {
+                // ICMP probe or missing port info - no NAT check possible
+            }
+        }
+    }
+
+    /// Check if NAT is detected at this hop
+    pub fn has_nat(&self) -> bool {
+        self.nat_info.as_ref().is_some_and(|n| n.has_nat())
+    }
 }
 
 /// Target being traced
@@ -651,7 +734,18 @@ impl Session {
             hop.primary = None;
             hop.recent_results.clear();
             hop.flow_paths.clear();
+            hop.nat_info = None;
         }
+    }
+
+    /// Check if NAT is detected at any hop
+    pub fn has_nat(&self) -> bool {
+        self.hops.iter().any(|h| h.has_nat())
+    }
+
+    /// Get the first hop where NAT is detected (likely the local NAT device)
+    pub fn first_nat_hop(&self) -> Option<u8> {
+        self.hops.iter().find(|h| h.has_nat()).map(|h| h.ttl)
     }
 }
 

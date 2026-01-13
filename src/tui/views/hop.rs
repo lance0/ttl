@@ -190,6 +190,57 @@ impl Widget for HopDetailView<'_> {
                 ]));
             }
 
+            // NAT detection info (if present)
+            if let Some(ref nat_info) = self.hop.nat_info {
+                lines.push(Line::from(""));
+                if nat_info.has_nat() {
+                    lines.push(Line::from(vec![Span::styled(
+                        "  NAT Detected!",
+                        Style::default().fg(self.theme.warning),
+                    )]));
+                    lines.push(Line::from(vec![
+                        Span::styled("  Port matches: ", Style::default().fg(self.theme.text_dim)),
+                        Span::raw(format!("{}", nat_info.port_matched)),
+                        Span::styled("  Rewrites: ", Style::default().fg(self.theme.text_dim)),
+                        Span::styled(
+                            format!("{} ({:.0}%)", nat_info.port_rewritten, nat_info.nat_percentage()),
+                            Style::default().fg(self.theme.warning),
+                        ),
+                    ]));
+
+                    // Show rewrite samples (original → returned)
+                    if !nat_info.rewrite_samples.is_empty() {
+                        let samples: Vec<String> = nat_info.rewrite_samples
+                            .iter()
+                            .take(3)
+                            .map(|(orig, ret)| format!("{}->{}", orig, ret))
+                            .collect();
+                        lines.push(Line::from(vec![
+                            Span::styled("  Samples: ", Style::default().fg(self.theme.text_dim)),
+                            Span::raw(samples.join(", ")),
+                        ]));
+                    }
+
+                    // Warning about ECMP accuracy
+                    if self.hop.flow_paths.len() > 1 {
+                        lines.push(Line::from(vec![Span::styled(
+                            "  Warning: ECMP results may be inaccurate due to NAT",
+                            Style::default().fg(self.theme.error),
+                        )]));
+                    }
+                } else if nat_info.total_checks() > 0 {
+                    // Port checks passed - no NAT detected
+                    lines.push(Line::from(vec![
+                        Span::styled("  NAT: ", Style::default().fg(self.theme.text_dim)),
+                        Span::styled("No", Style::default().fg(self.theme.success)),
+                        Span::styled(
+                            format!(" ({} checks)", nat_info.total_checks()),
+                            Style::default().fg(self.theme.text_dim),
+                        ),
+                    ]));
+                }
+            }
+
             // Per-flow paths (Paris/Dublin traceroute ECMP detection)
             if !self.hop.flow_paths.is_empty() && self.hop.has_ecmp() {
                 lines.push(Line::from(""));

@@ -14,6 +14,7 @@ Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment.
 - GeoIP lookup via MaxMind GeoLite2 database
 - ICMP, UDP, and TCP probing modes with auto-detection
 - **Paris/Dublin traceroute**: Multi-flow probing for ECMP path enumeration
+- **NAT detection**: Identify when NAT devices rewrite source ports
 - Great terminal UX built with ratatui
 - Scriptable mode for CI and automation
 - Reverse DNS resolution (parallel lookups)

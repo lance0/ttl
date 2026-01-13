@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-01-12
+
+### Added
+- **NAT detection**: Detect when NAT devices rewrite source ports
+  - Compare sent source port vs returned port in ICMP error payloads
+  - NAT indicator column ("!") in TUI when multi-flow mode enabled
+  - `[NAT]` warning in title bar when NAT detected anywhere
+  - Per-hop NAT details in hop detail view (match/rewrite counts, samples)
+  - Warning when NAT may affect ECMP accuracy
+  - `NatInfo` struct tracks port matches and rewrites per hop
+
+### Technical
+- `PendingProbe` now stores `original_src_port` for NAT detection
+- `Hop::record_nat_check()` compares original vs returned source ports
+- `Session::has_nat()` checks if NAT detected at any hop
+- NAT info included in JSON export via serde
+
 ## [0.5.0] - 2026-01-12
 
 ### Added
