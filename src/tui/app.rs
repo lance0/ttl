@@ -4,6 +4,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
+use scopeguard::defer;
 use parking_lot::RwLock;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -78,6 +79,13 @@ pub async fn run_tui(
     // Setup terminal
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
+
+    // Ensure terminal is restored on any exit (success, error, or panic)
+    defer! {
+        let _ = disable_raw_mode();
+        let _ = stdout().execute(LeaveAlternateScreen);
+    }
+
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;
 
@@ -95,10 +103,6 @@ pub async fn run_tui(
     let tick_rate = Duration::from_millis(100);
 
     run_app(&mut terminal, sessions, targets, &mut ui_state, cancel.clone(), tick_rate).await?;
-
-    // Restore terminal
-    disable_raw_mode()?;
-    stdout().execute(LeaveAlternateScreen)?;
 
     // Return final theme name for persistence
     Ok(theme_names[ui_state.theme_index].to_string())

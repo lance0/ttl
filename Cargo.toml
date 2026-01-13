@@ -1,6 +1,6 @@
 [package]
 name = "ttl"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 description = "Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment"
 license = "MIT OR Apache-2.0"
@@ -45,6 +45,9 @@ thiserror = "1"
 
 # Better locks
 parking_lot = "0.12"
+
+# Cleanup guards
+scopeguard = "1"
 
 # Config directories
 dirs = "5.0"

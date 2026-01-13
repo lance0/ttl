@@ -6,6 +6,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 mod cli;
@@ -97,7 +98,7 @@ async fn main() -> Result<()> {
     if args.is_batch_mode() {
         run_batch_mode(args, sessions, targets, config, cancel).await
     } else if args.no_tui {
-        run_streaming_mode(sessions, targets, config, cancel).await
+        run_streaming_mode(args, sessions, targets, config, cancel).await
     } else {
         run_interactive_mode(args, sessions, targets, config, cancel).await
     }
@@ -394,23 +395,71 @@ async fn run_batch_mode(
         }
     }
 
+    // Spawn DNS worker (if enabled)
+    let dns_handle = if config.dns_enabled {
+        let dns = Arc::new(DnsLookup::new().await?);
+        Some(tokio::spawn(run_dns_worker(dns, sessions.clone(), cancel.clone())))
+    } else {
+        None
+    };
+
+    // Spawn ASN worker (if enabled)
+    let asn_handle = if config.asn_enabled {
+        let asn = Arc::new(AsnLookup::new().await?);
+        Some(tokio::spawn(run_asn_worker(asn, sessions.clone(), cancel.clone())))
+    } else {
+        None
+    };
+
+    // Spawn GeoIP worker (if enabled and database available)
+    let geo_handle = if config.geo_enabled {
+        let geo_lookup = if let Some(ref path) = args.geoip_db {
+            match GeoLookup::new(path) {
+                Ok(lookup) => Some(lookup),
+                Err(e) => {
+                    eprintln!("Warning: Failed to load GeoIP database '{}': {}", path, e);
+                    None
+                }
+            }
+        } else {
+            GeoLookup::try_default()
+        };
+
+        if let Some(geo) = geo_lookup {
+            Some(tokio::spawn(run_geo_worker(Arc::new(geo), sessions.clone(), cancel.clone())))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Wait for all engines to complete
     for handle in engine_handles {
         handle.await??;
     }
 
-    // Wait a bit for final responses
-    tokio::time::sleep(config.timeout).await;
+    // Wait for final responses and enrichment to settle
+    tokio::time::sleep(config.timeout + Duration::from_millis(500)).await;
     cancel.cancel();
 
     receiver_handle.join().map_err(|e| {
-        // This branch shouldn't be reached since we use catch_unwind in the receiver,
-        // but handle it just in case something panics outside the protected region
         let msg = e.downcast_ref::<&str>().map(|s| s.to_string())
             .or_else(|| e.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "unknown panic".to_string());
         anyhow::anyhow!("Receiver thread failed: {}", msg)
     })??;
+
+    // Wait for enrichment workers to finish
+    if let Some(handle) = dns_handle {
+        handle.await?;
+    }
+    if let Some(handle) = asn_handle {
+        handle.await?;
+    }
+    if let Some(handle) = geo_handle {
+        handle.await?;
+    }
 
     // Output results for all targets
     let sessions_read = sessions.read();
@@ -434,6 +483,7 @@ async fn run_batch_mode(
 }
 
 async fn run_streaming_mode(
+    args: Args,
     sessions: SessionMap,
     targets: Vec<IpAddr>,
     config: Config,
@@ -475,6 +525,45 @@ async fn run_streaming_mode(
         }
     }
 
+    // Spawn DNS worker (if enabled)
+    let dns_handle = if config.dns_enabled {
+        let dns = Arc::new(DnsLookup::new().await?);
+        Some(tokio::spawn(run_dns_worker(dns, sessions.clone(), cancel.clone())))
+    } else {
+        None
+    };
+
+    // Spawn ASN worker (if enabled)
+    let asn_handle = if config.asn_enabled {
+        let asn = Arc::new(AsnLookup::new().await?);
+        Some(tokio::spawn(run_asn_worker(asn, sessions.clone(), cancel.clone())))
+    } else {
+        None
+    };
+
+    // Spawn GeoIP worker (if enabled and database available)
+    let geo_handle = if config.geo_enabled {
+        let geo_lookup = if let Some(ref path) = args.geoip_db {
+            match GeoLookup::new(path) {
+                Ok(lookup) => Some(lookup),
+                Err(e) => {
+                    eprintln!("Warning: Failed to load GeoIP database '{}': {}", path, e);
+                    None
+                }
+            }
+        } else {
+            GeoLookup::try_default()
+        };
+
+        if let Some(geo) = geo_lookup {
+            Some(tokio::spawn(run_geo_worker(Arc::new(geo), sessions.clone(), cancel.clone())))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Print results as they come in
     let mut last_total_received: HashMap<IpAddr, u64> = HashMap::new();
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
@@ -496,14 +585,16 @@ async fn run_streaming_mode(
                             if targets.len() > 1 {
                                 println!("[{}]", target_ip);
                             }
-                            // Print new results
+                            // Print new results (with hostname if resolved)
                             for hop in &session.hops {
                                 if hop.received > 0 {
                                     if let Some(stats) = hop.primary_stats() {
+                                        let host = stats.hostname.as_deref().unwrap_or("");
                                         println!(
-                                            "TTL {:2}  {:15}  {:>6.2}ms  {:>5.1}% loss",
+                                            "TTL {:2}  {:15}  {:20}  {:>6.2}ms  {:>5.1}% loss",
                                             hop.ttl,
                                             stats.ip,
+                                            host,
                                             stats.avg_rtt().as_secs_f64() * 1000.0,
                                             hop.loss_pct()
                                         );
@@ -523,13 +614,22 @@ async fn run_streaming_mode(
         handle.await??;
     }
     receiver_handle.join().map_err(|e| {
-        // This branch shouldn't be reached since we use catch_unwind in the receiver,
-        // but handle it just in case something panics outside the protected region
         let msg = e.downcast_ref::<&str>().map(|s| s.to_string())
             .or_else(|| e.downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "unknown panic".to_string());
         anyhow::anyhow!("Receiver thread failed: {}", msg)
     })??;
+
+    // Wait for enrichment workers to finish
+    if let Some(handle) = dns_handle {
+        handle.await?;
+    }
+    if let Some(handle) = asn_handle {
+        handle.await?;
+    }
+    if let Some(handle) = geo_handle {
+        handle.await?;
+    }
 
     Ok(())
 }

@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-## Current Status (v0.5.1)
+## Current Status (v0.6.1)
 
 ### Core Features
 - [x] ICMP Echo probing with TTL sweep
@@ -14,12 +14,13 @@
 - [x] NAT detection (source port rewrite detection)
 - [x] Reverse DNS resolution (parallel lookups)
 - [x] MPLS label detection (RFC 4884/4950 ICMP extensions)
-- [x] JSON, CSV, and report export formats
+- [x] JSON, CSV, and report export formats (with full enrichment)
 - [x] Session replay from saved JSON
 - [x] Pause/resume probing
 - [x] Stats reset
 - [x] Destination detection (stops at actual hop count)
 - [x] Race-free probe correlation (shared pending map)
+- [x] Terminal state cleanup on error/panic
 
 ### Probing Modes
 - [x] ICMP Echo (default for privileged users)

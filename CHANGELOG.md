@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-01-13
+
+### Fixed
+- **Enrichment in batch/streaming modes**: DNS, ASN, and GeoIP lookups now work in `--json`, `--report`, `--csv`, and `--no-tui` modes
+  - Previously enrichment workers only spawned in interactive TUI mode
+  - Batch mode waits for enrichment to settle before export
+  - Streaming mode shows hostnames progressively as DNS resolves
+- **Terminal state restoration**: TUI now properly restores terminal on early errors or panics
+  - Added `scopeguard::defer!` guard to ensure cleanup runs on all exit paths
+  - Prevents terminal being left in raw/alternate screen mode on crash
+
+### Technical
+- Added `scopeguard = "1"` dependency for cleanup guards
+- `run_batch_mode()` and `run_streaming_mode()` now spawn enrichment workers
+- Streaming output includes hostname column when resolved
+
 ## [0.6.0] - 2026-01-12
 
 ### Added
