@@ -264,6 +264,31 @@ impl Widget for HopDetailView<'_> {
                 }
             }
 
+            // Rate limit detection info (if present)
+            if let Some(ref rl) = self.hop.rate_limit {
+                if rl.suspected {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![Span::styled(
+                        "  Rate Limiting Suspected",
+                        Style::default().fg(self.theme.warning),
+                    )]));
+                    if let Some(ref reason) = rl.reason {
+                        lines.push(Line::from(vec![
+                            Span::styled("  Reason: ", Style::default().fg(self.theme.text_dim)),
+                            Span::raw(reason.clone()),
+                        ]));
+                    }
+                    lines.push(Line::from(vec![
+                        Span::styled("  Confidence: ", Style::default().fg(self.theme.text_dim)),
+                        Span::raw(format!("{:.0}%", rl.confidence * 100.0)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled("  Tip: ", Style::default().fg(self.theme.text_dim)),
+                        Span::raw("Try slower probing with -i 1.0 or -i 2.0"),
+                    ]));
+                }
+            }
+
             // Per-flow paths (Paris/Dublin traceroute ECMP detection)
             if !self.hop.flow_paths.is_empty() && self.hop.has_ecmp() {
                 lines.push(Line::from(""));

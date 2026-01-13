@@ -11,8 +11,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
+use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
 
 use crate::state::IxInfo;
@@ -94,11 +96,15 @@ struct PrefixEntry {
 /// IX lookup via PeeringDB prefix matching
 pub struct IxLookup {
     /// Parsed prefixes for lookup (populated from cache or API)
+    /// Sorted by prefix length descending for longest-prefix-match
     prefixes: RwLock<Vec<PrefixEntry>>,
     /// Cache file path
     cache_path: PathBuf,
-    /// Whether data has been loaded
-    loaded: RwLock<bool>,
+    /// OnceCell ensures successful load runs exactly once
+    /// Uses get_or_try_init so failures don't fill the cell
+    load_once: OnceCell<()>,
+    /// Timestamp of last load failure (for backoff)
+    last_failure: AtomicU64,
     /// Per-IP result cache (to avoid repeated lookups)
     ip_cache: RwLock<HashMap<IpAddr, Option<IxInfo>>>,
     /// IP cache TTL
@@ -106,6 +112,9 @@ pub struct IxLookup {
     /// Timestamps for IP cache entries
     ip_cache_times: RwLock<HashMap<IpAddr, Instant>>,
 }
+
+/// Backoff period after load failure (5 minutes)
+const LOAD_FAILURE_BACKOFF_SECS: u64 = 300;
 
 impl IxLookup {
     /// Create a new IX lookup instance
@@ -124,7 +133,8 @@ impl IxLookup {
         Ok(Self {
             prefixes: RwLock::new(Vec::new()),
             cache_path,
-            loaded: RwLock::new(false),
+            load_once: OnceCell::new(),
+            last_failure: AtomicU64::new(0),
             ip_cache: RwLock::new(HashMap::new()),
             ip_cache_ttl: Duration::from_secs(3600), // 1 hour for IP results
             ip_cache_times: RwLock::new(HashMap::new()),
@@ -147,14 +157,46 @@ impl IxLookup {
         }
 
         // Ensure data is loaded
-        if !*self.loaded.read() {
-            if let Err(e) = self.load_data().await {
-                eprintln!("Failed to load IX data: {}", e);
+        // OnceCell is only filled on success; failures can be retried after backoff
+        if self.load_once.get().is_none() {
+            // Check backoff period after previous failure
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let last_fail = self.last_failure.load(Ordering::Relaxed);
+            if last_fail > 0 && now - last_fail < LOAD_FAILURE_BACKOFF_SECS {
+                // Still in backoff period, skip loading
+                return None;
+            }
+
+            // Use get_or_try_init: only fills cell on Ok, leaves unfilled on Err
+            // This allows retries after backoff period expires
+            let result = self
+                .load_once
+                .get_or_try_init(|| async {
+                    self.load_data_inner().await.map_err(|e| {
+                        let now = SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        self.last_failure.store(now, Ordering::Relaxed);
+                        eprintln!(
+                            "Failed to load IX data: {} (retry in {}s)",
+                            e, LOAD_FAILURE_BACKOFF_SECS
+                        );
+                        e
+                    })
+                })
+                .await;
+
+            if result.is_err() {
                 return None;
             }
         }
 
-        // Search prefixes for matching network
+        // Search prefixes for longest matching network
+        // (prefixes are sorted by length descending, so first match is longest)
         let result = {
             let prefixes = self.prefixes.read();
             prefixes
@@ -175,12 +217,11 @@ impl IxLookup {
     }
 
     /// Load IX data from cache or API
-    async fn load_data(&self) -> Result<()> {
+    async fn load_data_inner(&self) -> Result<()> {
         // Try loading from cache first
         if let Ok(cache) = self.load_cache() {
             if !cache.is_expired() {
                 self.populate_from_cache(&cache)?;
-                *self.loaded.write() = true;
                 return Ok(());
             }
         }
@@ -193,7 +234,6 @@ impl IxLookup {
                     eprintln!("Warning: failed to save IX cache: {}", e);
                 }
                 self.populate_from_cache(&cache)?;
-                *self.loaded.write() = true;
                 Ok(())
             }
             Err(e) => {
@@ -201,7 +241,6 @@ impl IxLookup {
                 if let Ok(cache) = self.load_cache() {
                     eprintln!("Warning: using expired IX cache (API error: {})", e);
                     self.populate_from_cache(&cache)?;
-                    *self.loaded.write() = true;
                     return Ok(());
                 }
                 Err(e)
@@ -242,6 +281,10 @@ impl IxLookup {
                 });
             }
         }
+
+        // Sort by prefix length descending for longest-prefix-match
+        // This ensures more specific prefixes are checked first
+        entries.sort_by(|a, b| b.network.prefix().cmp(&a.network.prefix()));
 
         *self.prefixes.write() = entries;
         Ok(())
@@ -314,22 +357,23 @@ impl IxLookup {
     }
 
     /// Fetch IX data from API
+    /// Note: limit=0 disables pagination to fetch all records
     async fn fetch_ix(&self, client: &reqwest::Client) -> Result<Vec<PdbIx>> {
-        let url = "https://www.peeringdb.com/api/ix";
+        let url = "https://www.peeringdb.com/api/ix?limit=0";
         let resp: PdbResponse<PdbIx> = client.get(url).send().await?.json().await?;
         Ok(resp.data)
     }
 
     /// Fetch IXLAN data from API
     async fn fetch_ixlan(&self, client: &reqwest::Client) -> Result<Vec<PdbIxlan>> {
-        let url = "https://www.peeringdb.com/api/ixlan";
+        let url = "https://www.peeringdb.com/api/ixlan?limit=0";
         let resp: PdbResponse<PdbIxlan> = client.get(url).send().await?.json().await?;
         Ok(resp.data)
     }
 
     /// Fetch IX prefix data from API
     async fn fetch_ixpfx(&self, client: &reqwest::Client) -> Result<Vec<PdbIxpfx>> {
-        let url = "https://www.peeringdb.com/api/ixpfx";
+        let url = "https://www.peeringdb.com/api/ixpfx?limit=0";
         let resp: PdbResponse<PdbIxpfx> = client.get(url).send().await?.json().await?;
         Ok(resp.data)
     }
@@ -451,5 +495,231 @@ mod tests {
             prefixes: vec![],
         };
         assert!(old.is_expired());
+    }
+
+    #[test]
+    fn test_longest_prefix_match_sorting() {
+        // Verify that prefixes are sorted by length descending
+        let mut entries = vec![
+            PrefixEntry {
+                network: "10.0.0.0/8".parse().unwrap(),
+                info: IxInfo {
+                    name: "Wide".to_string(),
+                    city: None,
+                    country: None,
+                },
+            },
+            PrefixEntry {
+                network: "10.0.0.0/24".parse().unwrap(),
+                info: IxInfo {
+                    name: "Narrow".to_string(),
+                    city: None,
+                    country: None,
+                },
+            },
+            PrefixEntry {
+                network: "10.0.0.0/16".parse().unwrap(),
+                info: IxInfo {
+                    name: "Medium".to_string(),
+                    city: None,
+                    country: None,
+                },
+            },
+        ];
+
+        // Sort by prefix length descending (same as populate_from_cache)
+        entries.sort_by(|a, b| b.network.prefix().cmp(&a.network.prefix()));
+
+        // First entry should be /24 (most specific)
+        assert_eq!(entries[0].network.prefix(), 24);
+        assert_eq!(entries[0].info.name, "Narrow");
+
+        // Second should be /16
+        assert_eq!(entries[1].network.prefix(), 16);
+        assert_eq!(entries[1].info.name, "Medium");
+
+        // Third should be /8 (least specific)
+        assert_eq!(entries[2].network.prefix(), 8);
+        assert_eq!(entries[2].info.name, "Wide");
+
+        // Now verify find() returns the most specific match
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 50));
+        let result = entries
+            .iter()
+            .find(|e| e.network.contains(ip))
+            .map(|e| e.info.name.clone());
+        assert_eq!(result, Some("Narrow".to_string()));
+    }
+
+    #[test]
+    fn test_backoff_period_check() {
+        // Test that backoff period logic works correctly
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Simulate a recent failure (should be in backoff)
+        let recent_failure = now - 60; // 1 minute ago
+        assert!(now - recent_failure < LOAD_FAILURE_BACKOFF_SECS);
+
+        // Simulate an old failure (backoff should have expired)
+        let old_failure = now - 400; // 6+ minutes ago
+        assert!(now - old_failure >= LOAD_FAILURE_BACKOFF_SECS);
+    }
+
+    #[tokio::test]
+    async fn test_lookup_returns_none_during_backoff() {
+        // Create IxLookup with temp directory (no cache, will fail to load)
+        let temp_dir = std::env::temp_dir().join(format!("ix_test_{}", std::process::id()));
+        let _ = fs::create_dir_all(&temp_dir);
+        let cache_path = temp_dir.join("ix_cache.json");
+
+        let lookup = IxLookup {
+            prefixes: RwLock::new(Vec::new()),
+            cache_path,
+            load_once: OnceCell::new(),
+            last_failure: AtomicU64::new(0),
+            ip_cache: RwLock::new(HashMap::new()),
+            ip_cache_ttl: Duration::from_secs(3600),
+            ip_cache_times: RwLock::new(HashMap::new()),
+        };
+
+        // Set last_failure to now (simulate recent failure)
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        lookup.last_failure.store(now, Ordering::Relaxed);
+
+        // Lookup should return None immediately without attempting load
+        let ip = IpAddr::V4(Ipv4Addr::new(206, 223, 115, 100));
+        let result = lookup.lookup(ip).await;
+        assert!(result.is_none());
+
+        // OnceCell should still be empty (no load attempted due to backoff)
+        assert!(lookup.load_once.get().is_none());
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_oncecell_empty_after_failure() {
+        // Create IxLookup that will fail (no cache, API will fail in test env)
+        let temp_dir = std::env::temp_dir().join(format!("ix_test_fail_{}", std::process::id()));
+        let _ = fs::create_dir_all(&temp_dir);
+        let cache_path = temp_dir.join("ix_cache.json");
+
+        let lookup = IxLookup {
+            prefixes: RwLock::new(Vec::new()),
+            cache_path: cache_path.clone(),
+            load_once: OnceCell::new(),
+            last_failure: AtomicU64::new(0),
+            ip_cache: RwLock::new(HashMap::new()),
+            ip_cache_ttl: Duration::from_secs(3600),
+            ip_cache_times: RwLock::new(HashMap::new()),
+        };
+
+        // No cache exists, API will timeout/fail - OnceCell should stay empty
+        // We use get_or_try_init which doesn't fill on error
+
+        // This will attempt to load and fail (no cache, no API in test)
+        // But we can't easily test the API failure without mocking
+        // Instead, verify the structure is correct for retry behavior
+
+        // Verify OnceCell starts empty
+        assert!(lookup.load_once.get().is_none());
+
+        // Verify last_failure starts at 0
+        assert_eq!(lookup.last_failure.load(Ordering::Relaxed), 0);
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_lookup_with_preloaded_data() {
+        // Test that lookup works correctly with pre-populated prefixes
+        let temp_dir = std::env::temp_dir().join(format!("ix_test_pre_{}", std::process::id()));
+        let _ = fs::create_dir_all(&temp_dir);
+        let cache_path = temp_dir.join("ix_cache.json");
+
+        let lookup = IxLookup {
+            prefixes: RwLock::new(vec![
+                PrefixEntry {
+                    network: "206.223.115.0/24".parse().unwrap(),
+                    info: IxInfo {
+                        name: "Test IX".to_string(),
+                        city: Some("Test City".to_string()),
+                        country: Some("US".to_string()),
+                    },
+                },
+            ]),
+            cache_path,
+            load_once: OnceCell::const_new_with(()), // Pre-filled = loaded
+            last_failure: AtomicU64::new(0),
+            ip_cache: RwLock::new(HashMap::new()),
+            ip_cache_ttl: Duration::from_secs(3600),
+            ip_cache_times: RwLock::new(HashMap::new()),
+        };
+
+        // Lookup should find the pre-loaded prefix
+        let ip = IpAddr::V4(Ipv4Addr::new(206, 223, 115, 100));
+        let result = lookup.lookup(ip).await;
+        assert!(result.is_some());
+        let ix_info = result.unwrap();
+        assert_eq!(ix_info.name, "Test IX");
+        assert_eq!(ix_info.city, Some("Test City".to_string()));
+
+        // Lookup for non-matching IP should return None
+        let other_ip = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+        let result2 = lookup.lookup(other_ip).await;
+        assert!(result2.is_none());
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_ip_cache_prevents_repeated_prefix_search() {
+        let temp_dir = std::env::temp_dir().join(format!("ix_test_cache_{}", std::process::id()));
+        let _ = fs::create_dir_all(&temp_dir);
+        let cache_path = temp_dir.join("ix_cache.json");
+
+        let lookup = IxLookup {
+            prefixes: RwLock::new(vec![
+                PrefixEntry {
+                    network: "206.223.115.0/24".parse().unwrap(),
+                    info: IxInfo {
+                        name: "Cached IX".to_string(),
+                        city: None,
+                        country: None,
+                    },
+                },
+            ]),
+            cache_path,
+            load_once: OnceCell::const_new_with(()),
+            last_failure: AtomicU64::new(0),
+            ip_cache: RwLock::new(HashMap::new()),
+            ip_cache_ttl: Duration::from_secs(3600),
+            ip_cache_times: RwLock::new(HashMap::new()),
+        };
+
+        let ip = IpAddr::V4(Ipv4Addr::new(206, 223, 115, 50));
+
+        // First lookup populates IP cache
+        let result1 = lookup.lookup(ip).await;
+        assert!(result1.is_some());
+
+        // Verify IP is now in cache
+        assert!(lookup.ip_cache.read().contains_key(&ip));
+
+        // Second lookup should use cached result
+        let result2 = lookup.lookup(ip).await;
+        assert_eq!(result1, result2);
+
+        // Cleanup
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

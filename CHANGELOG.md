@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-01-13
+
+### Added
+- **ICMP rate limit detection**: Identify when routers are rate-limiting ICMP responses
+  - Detects misleading packet loss caused by router rate limiting (not actual packet drops)
+  - Three detection heuristics:
+    1. **Isolated hop loss**: Loss at hop N but 0% loss downstream = rate limiting
+    2. **Uniform flow loss**: All flows losing equally in Paris/Dublin mode = hop-level limiting
+    3. **Stable loss ratio**: Consistent loss percentage over time = rate limiting (vs fluctuating congestion)
+  - Loss% column shows "RL" suffix (e.g., "50%RL") when rate limiting suspected
+  - Title bar shows `[RL?]` indicator when any hop has rate limiting detected
+  - Hop detail view shows detection reason, confidence level, and mitigation tip
+  - Tip suggests slower probing with `-i 1.0` or `-i 2.0` to avoid triggering limits
+  - Detection automatically clears when loss drops below threshold
+
+### Fixed
+- **PeeringDB pagination**: Added `limit=0` to API requests to fetch all IX records
+  - Without this, only the first page of results was cached, missing many IX detections
+- **IX lookup race condition**: Use `OnceCell::get_or_try_init` for thread-safe lazy loading
+  - Previously, concurrent lookups could trigger multiple parallel API fetches
+  - `get_or_try_init` only fills cell on success, allowing retries after backoff on failure
+- **IX lookup failure backoff**: Skip retries for 5 minutes after load failure
+  - Prevents log spam and repeated API hits on unstable networks
+- **Longest prefix match**: Sort prefixes by length descending for correct matching
+  - Previously returned first match; now returns most specific (longest) prefix
+
+### Technical
+- New `src/state/ratelimit.rs` module for detection logic
+- `RateLimitInfo` struct with suspected flag, confidence (0-1), reason, and loss data
+- Background async worker runs analysis every 2 seconds (lightweight)
+- Detection integrates with all modes: interactive TUI, batch, and streaming
+- JSON export includes rate limit data via serde
+- IX lookup uses `tokio::sync::OnceCell` for thread-safe lazy initialization
+
 ## [0.9.0] - 2026-01-13
 
 ### Added

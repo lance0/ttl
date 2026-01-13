@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="ttl.png" alt="ttl logo" width="200">
+</p>
+
 # ttl
 
 Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment.
@@ -17,6 +21,7 @@ Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment.
 - ICMP, UDP, and TCP probing modes with auto-detection
 - **Paris/Dublin traceroute**: Multi-flow probing for ECMP path enumeration
 - **NAT detection**: Identify when NAT devices rewrite source ports
+- **ICMP rate limit detection**: Identify misleading loss from router rate limiting
 - **Interface binding**: Force probes through specific network interface
 - Great terminal UX built with ratatui
 - Scriptable mode for CI and automation

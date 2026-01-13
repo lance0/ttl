@@ -97,7 +97,7 @@ pub struct GeoInfo {
 }
 
 /// Internet Exchange information (from PeeringDB)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IxInfo {
     /// IX name (e.g., "DE-CIX Frankfurt", "Equinix Ashburn")
     pub name: String,
@@ -433,6 +433,21 @@ impl NatInfo {
     }
 }
 
+/// Rate limit detection info for a hop
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RateLimitInfo {
+    /// Whether rate limiting is suspected
+    pub suspected: bool,
+    /// Confidence level (0.0 - 1.0)
+    pub confidence: f64,
+    /// Detection reason (human-readable explanation)
+    pub reason: Option<String>,
+    /// Loss percentage at this hop
+    pub hop_loss: f64,
+    /// Loss percentage at next responding hop (for comparison)
+    pub downstream_loss: Option<f64>,
+}
+
 /// A single hop (TTL level) in the path
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hop {
@@ -455,6 +470,9 @@ pub struct Hop {
     /// NAT detection information for this hop
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nat_info: Option<NatInfo>,
+    /// Rate limit detection information for this hop
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<RateLimitInfo>,
 }
 
 impl Hop {
@@ -469,6 +487,7 @@ impl Hop {
             recent_results: VecDeque::with_capacity(60),
             flow_paths: HashMap::new(),
             nat_info: None,
+            rate_limit: None,
         }
     }
 

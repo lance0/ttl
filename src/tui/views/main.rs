@@ -74,6 +74,9 @@ impl Widget for MainView<'_> {
 
         let status = if self.paused { " [PAUSED]" } else { "" };
         let nat_warn = if self.session.has_nat() { " [NAT]" } else { "" };
+        let has_rate_limit = self.session.hops.iter()
+            .any(|h| h.rate_limit.as_ref().map(|r| r.suspected).unwrap_or(false));
+        let rl_warn = if has_rate_limit { " [RL?]" } else { "" };
         let probe_count = self.session.total_sent;
         let interval_ms = self.session.config.interval.as_millis();
 
@@ -87,8 +90,8 @@ impl Widget for MainView<'_> {
             .unwrap_or_default();
 
         let title = format!(
-            "ttl \u{2500}\u{2500} {}{}{} \u{2500}\u{2500} {} probes \u{2500}\u{2500} {}ms interval{}{}",
-            target_indicator, target_str, iface_str, probe_count, interval_ms, status, nat_warn
+            "ttl \u{2500}\u{2500} {}{}{} \u{2500}\u{2500} {} probes \u{2500}\u{2500} {}ms interval{}{}{}",
+            target_indicator, target_str, iface_str, probe_count, interval_ms, status, nat_warn, rl_warn
         );
 
         let block = Block::default()
@@ -188,12 +191,25 @@ impl Widget for MainView<'_> {
                         ("-".into(), "-".into(), "-".into(), "-".into(), "-".into())
                     };
 
-                let loss_style = if hop.loss_pct() > 50.0 {
+                // Determine if rate limiting is suspected
+                let rate_limited = hop.rate_limit.as_ref().map(|r| r.suspected).unwrap_or(false);
+
+                let loss_style = if rate_limited {
+                    // Rate limited: show in different color to indicate it's not real loss
+                    Style::default().fg(self.theme.shortcut)
+                } else if hop.loss_pct() > 50.0 {
                     Style::default().fg(self.theme.error)
                 } else if hop.loss_pct() > 10.0 {
                     Style::default().fg(self.theme.warning)
                 } else {
                     Style::default().fg(self.theme.success)
+                };
+
+                // Format loss with "RL" indicator if rate limited
+                let loss_display = if rate_limited {
+                    format!("{:.0}%RL", hop.loss_pct())
+                } else {
+                    format!("{:.1}%", hop.loss_pct())
                 };
 
                 let row_style = if is_selected {
@@ -208,7 +224,7 @@ impl Widget for MainView<'_> {
                     Cell::from(hop.ttl.to_string()),
                     Cell::from(host),
                     Cell::from(asn_display).style(Style::default().fg(self.theme.text_dim)),
-                    Cell::from(format!("{:.1}%", hop.loss_pct())).style(loss_style),
+                    Cell::from(loss_display).style(loss_style),
                     Cell::from(hop.sent.to_string()),
                     Cell::from(avg),
                     Cell::from(min),

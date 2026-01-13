@@ -25,7 +25,7 @@ use export::{export_csv, export_json, generate_report};
 use lookup::{run_asn_worker, run_dns_worker, run_geo_worker, run_ix_worker, AsnLookup, DnsLookup, GeoLookup, IxLookup};
 use prefs::Prefs;
 use probe::{check_permissions, validate_interface, InterfaceInfo};
-use state::{Session, Target};
+use state::{run_ratelimit_worker, Session, Target};
 use trace::{new_pending_map, spawn_receiver, ProbeEngine, SessionMap};
 use tui::{run_tui, Theme};
 
@@ -357,6 +357,9 @@ async fn run_interactive_mode(
         None
     };
 
+    // Spawn rate limit detection worker (always enabled, lightweight analysis)
+    let ratelimit_handle = tokio::spawn(run_ratelimit_worker(sessions.clone(), cancel.clone()));
+
     // Load saved preferences
     let prefs = Prefs::load();
 
@@ -401,6 +404,7 @@ async fn run_interactive_mode(
     if let Some(handle) = ix_handle {
         handle.await?;
     }
+    ratelimit_handle.await?;
 
     Ok(())
 }
@@ -504,6 +508,9 @@ async fn run_batch_mode(
         None
     };
 
+    // Spawn rate limit detection worker (always enabled, lightweight analysis)
+    let ratelimit_handle = tokio::spawn(run_ratelimit_worker(sessions.clone(), cancel.clone()));
+
     // Wait for all engines to complete
     for handle in engine_handles {
         handle.await??;
@@ -533,6 +540,7 @@ async fn run_batch_mode(
     if let Some(handle) = ix_handle {
         handle.await?;
     }
+    ratelimit_handle.await?;
 
     // Output results for all targets
     let sessions_read = sessions.read();
@@ -654,6 +662,9 @@ async fn run_streaming_mode(
         None
     };
 
+    // Spawn rate limit detection worker (always enabled, lightweight analysis)
+    let ratelimit_handle = tokio::spawn(run_ratelimit_worker(sessions.clone(), cancel.clone()));
+
     // Print results as they come in
     let mut last_total_received: HashMap<IpAddr, u64> = HashMap::new();
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
@@ -723,6 +734,7 @@ async fn run_streaming_mode(
     if let Some(handle) = ix_handle {
         handle.await?;
     }
+    ratelimit_handle.await?;
 
     Ok(())
 }

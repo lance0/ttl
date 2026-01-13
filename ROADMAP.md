@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-## Current Status (v0.9.0)
+## Current Status (v0.10.0)
 
 ### Core Features
 - [x] ICMP Echo probing with TTL sweep
@@ -12,6 +12,7 @@
 - [x] ECMP detection (multiple responders per TTL)
 - [x] Paris/Dublin traceroute (multi-flow ECMP path enumeration)
 - [x] NAT detection (source port rewrite detection)
+- [x] ICMP rate limit detection (identify misleading loss% from router limits)
 - [x] Reverse DNS resolution (parallel lookups)
 - [x] MPLS label detection (RFC 4884/4950 ICMP extensions)
 - [x] JSON, CSV, and report export formats (with full enrichment)
@@ -111,8 +112,8 @@
 - [x] IX info shown in hop detail view
 - [x] `--no-ix` flag to disable
 
-### v0.10.0 - Advanced Diagnostics
-- [ ] Rate limit detection (identify ICMP rate limiting, explain misleading loss%)
+### v0.10.0 - Rate Limit Detection (Released)
+- [x] Rate limit detection (identify ICMP rate limiting, explain misleading loss%)
 - [ ] Asymmetric routing detection (compare forward path TTLs in responses)
 - [ ] Route flap/change detection (alert on path changes, log history)
 - [ ] Packet loss pattern analysis (bursty vs random loss classification)
