@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -24,7 +25,7 @@ use lookup::{run_asn_worker, run_dns_worker, run_geo_worker, AsnLookup, DnsLooku
 use prefs::Prefs;
 use probe::check_permissions;
 use state::{Session, Target};
-use trace::{new_pending_map, spawn_receiver, ProbeEngine};
+use trace::{new_pending_map, spawn_receiver, ProbeEngine, SessionMap};
 use tui::{run_tui, Theme};
 
 #[tokio::main]
@@ -48,17 +49,33 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    // Resolve target
-    let target_str = &args.targets[0]; // MVP: single target
-    let resolved_ip = resolve_target(target_str, args.ipv4, args.ipv6)
-        .with_context(|| format!("Failed to resolve target: {}", target_str))?;
-
-    let target = Target::new(target_str.clone(), resolved_ip);
+    // Resolve all targets
+    let mut targets: Vec<IpAddr> = Vec::new();
+    let mut sessions_map: HashMap<IpAddr, Arc<RwLock<Session>>> = HashMap::new();
     let config = Config::from(&args);
 
-    // Create session
-    let session = Session::new(target, config.clone());
-    let state = Arc::new(RwLock::new(session));
+    for target_str in &args.targets {
+        let resolved_ip = resolve_target(target_str, args.ipv4, args.ipv6)
+            .with_context(|| format!("Failed to resolve target: {}", target_str))?;
+
+        // Skip duplicate targets
+        if sessions_map.contains_key(&resolved_ip) {
+            eprintln!("Warning: Duplicate target {} ({}), skipping", target_str, resolved_ip);
+            continue;
+        }
+
+        let target = Target::new(target_str.clone(), resolved_ip);
+        let session = Session::new(target, config.clone());
+        sessions_map.insert(resolved_ip, Arc::new(RwLock::new(session)));
+        targets.push(resolved_ip);
+    }
+
+    if targets.is_empty() {
+        anyhow::bail!("No valid targets specified");
+    }
+
+    // Create SessionMap (Arc<RwLock<HashMap>>)
+    let sessions: SessionMap = Arc::new(RwLock::new(sessions_map));
 
     // Cancellation token for graceful shutdown
     let cancel = CancellationToken::new();
@@ -70,13 +87,19 @@ async fn main() -> Result<()> {
         cancel_clone.cancel();
     });
 
+    // All targets must be same IP version for now (single receiver)
+    let ipv6 = targets[0].is_ipv6();
+    if targets.iter().any(|t| t.is_ipv6() != ipv6) {
+        anyhow::bail!("Mixed IPv4/IPv6 targets not supported. Use -4 or -6 to force one version.");
+    }
+
     // Run in appropriate mode
     if args.is_batch_mode() {
-        run_batch_mode(args, state, config, resolved_ip, cancel).await
+        run_batch_mode(args, sessions, targets, config, cancel).await
     } else if args.no_tui {
-        run_streaming_mode(state, config, resolved_ip, cancel).await
+        run_streaming_mode(sessions, targets, config, cancel).await
     } else {
-        run_interactive_mode(args, state, config, resolved_ip, cancel).await
+        run_interactive_mode(args, sessions, targets, config, cancel).await
     }
 }
 
@@ -103,6 +126,7 @@ fn load_session(path: &str) -> Result<Session> {
 /// Run replay mode - load a saved session and display/export it
 async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
     let session = load_session(replay_path)?;
+    let target_ip = session.target.resolved;
 
     // Output based on flags
     if args.json {
@@ -116,6 +140,12 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
         // Show in TUI (read-only)
         let state = Arc::new(RwLock::new(session));
         let cancel = CancellationToken::new();
+
+        // Create SessionMap with single session
+        let mut sessions_map: HashMap<IpAddr, Arc<RwLock<Session>>> = HashMap::new();
+        sessions_map.insert(target_ip, state);
+        let sessions: SessionMap = Arc::new(RwLock::new(sessions_map));
+        let targets = vec![target_ip];
 
         // Load saved preferences
         let prefs = Prefs::load();
@@ -135,7 +165,7 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
             cancel_clone.cancel();
         });
 
-        let final_theme = run_tui(state, cancel, theme).await?;
+        let final_theme = run_tui(sessions, targets, cancel, theme).await?;
 
         // Save theme preference (best effort, don't fail on save error)
         let mut prefs = Prefs::load();
@@ -193,39 +223,51 @@ fn resolve_target(target: &str, force_ipv4: bool, force_ipv6: bool) -> Result<Ip
 
 async fn run_interactive_mode(
     args: Args,
-    state: Arc<RwLock<Session>>,
+    sessions: SessionMap,
+    targets: Vec<IpAddr>,
     config: Config,
-    target_ip: IpAddr,
     cancel: CancellationToken,
 ) -> Result<()> {
     // Shared pending map for probe correlation (engine writes, receiver reads)
     let pending = new_pending_map();
 
-    // Spawn receiver thread
+    // All targets must be same IP version (validated in main)
+    let ipv6 = targets[0].is_ipv6();
+
+    // Spawn receiver thread (handles all targets)
     let receiver_handle = spawn_receiver(
-        state.clone(),
+        sessions.clone(),
         pending.clone(),
         cancel.clone(),
         config.timeout,
-        target_ip.is_ipv6(),
+        ipv6,
         config.src_port_base,
         config.flows,
     );
 
-    // Spawn probe engine
-    let engine = ProbeEngine::new(
-        config.clone(),
-        target_ip,
-        state.clone(),
-        pending,
-        cancel.clone(),
-    );
-    let engine_handle = tokio::spawn(async move { engine.run().await });
+    // Spawn probe engine for each target
+    let mut engine_handles = Vec::new();
+    {
+        let sessions_read = sessions.read();
+        for target_ip in &targets {
+            if let Some(state) = sessions_read.get(target_ip) {
+                let engine = ProbeEngine::new(
+                    config.clone(),
+                    *target_ip,
+                    state.clone(),
+                    pending.clone(),
+                    cancel.clone(),
+                );
+                let handle = tokio::spawn(async move { engine.run().await });
+                engine_handles.push(handle);
+            }
+        }
+    }
 
     // Spawn DNS worker (if enabled)
     let dns_handle = if config.dns_enabled {
         let dns = Arc::new(DnsLookup::new().await?);
-        Some(tokio::spawn(run_dns_worker(dns, state.clone(), cancel.clone())))
+        Some(tokio::spawn(run_dns_worker(dns, sessions.clone(), cancel.clone())))
     } else {
         None
     };
@@ -233,7 +275,7 @@ async fn run_interactive_mode(
     // Spawn ASN worker (if enabled)
     let asn_handle = if config.asn_enabled {
         let asn = Arc::new(AsnLookup::new().await?);
-        Some(tokio::spawn(run_asn_worker(asn, state.clone(), cancel.clone())))
+        Some(tokio::spawn(run_asn_worker(asn, sessions.clone(), cancel.clone())))
     } else {
         None
     };
@@ -255,7 +297,7 @@ async fn run_interactive_mode(
         };
 
         if let Some(geo) = geo_lookup {
-            Some(tokio::spawn(run_geo_worker(Arc::new(geo), state.clone(), cancel.clone())))
+            Some(tokio::spawn(run_geo_worker(Arc::new(geo), sessions.clone(), cancel.clone())))
         } else {
             // No database found, continue without geo
             None
@@ -275,8 +317,8 @@ async fn run_interactive_mode(
     };
     let theme = Theme::by_name(theme_name);
 
-    // Run TUI
-    let final_theme = run_tui(state.clone(), cancel.clone(), theme).await?;
+    // Run TUI (with target list for cycling)
+    let final_theme = run_tui(sessions.clone(), targets.clone(), cancel.clone(), theme).await?;
 
     // Save theme preference (best effort, don't fail on save error)
     let mut prefs = Prefs::load();
@@ -285,7 +327,9 @@ async fn run_interactive_mode(
 
     // Cleanup
     cancel.cancel();
-    engine_handle.await??;
+    for handle in engine_handles {
+        handle.await??;
+    }
     receiver_handle.join().map_err(|e| {
         // This branch shouldn't be reached since we use catch_unwind in the receiver,
         // but handle it just in case something panics outside the protected region
@@ -309,36 +353,51 @@ async fn run_interactive_mode(
 
 async fn run_batch_mode(
     args: Args,
-    state: Arc<RwLock<Session>>,
+    sessions: SessionMap,
+    targets: Vec<IpAddr>,
     config: Config,
-    target_ip: IpAddr,
     cancel: CancellationToken,
 ) -> Result<()> {
     // Shared pending map for probe correlation (engine writes, receiver reads)
     let pending = new_pending_map();
 
-    // Spawn receiver thread
+    // All targets must be same IP version (validated in main)
+    let ipv6 = targets[0].is_ipv6();
+
+    // Spawn receiver thread (handles all targets)
     let receiver_handle = spawn_receiver(
-        state.clone(),
+        sessions.clone(),
         pending.clone(),
         cancel.clone(),
         config.timeout,
-        target_ip.is_ipv6(),
+        ipv6,
         config.src_port_base,
         config.flows,
     );
 
-    // Spawn probe engine
-    let engine = ProbeEngine::new(
-        config.clone(),
-        target_ip,
-        state.clone(),
-        pending,
-        cancel.clone(),
-    );
+    // Spawn probe engine for each target
+    let mut engine_handles = Vec::new();
+    {
+        let sessions_read = sessions.read();
+        for target_ip in &targets {
+            if let Some(state) = sessions_read.get(target_ip) {
+                let engine = ProbeEngine::new(
+                    config.clone(),
+                    *target_ip,
+                    state.clone(),
+                    pending.clone(),
+                    cancel.clone(),
+                );
+                let handle = tokio::spawn(async move { engine.run().await });
+                engine_handles.push(handle);
+            }
+        }
+    }
 
-    // Run engine to completion
-    engine.run().await?;
+    // Wait for all engines to complete
+    for handle in engine_handles {
+        handle.await??;
+    }
 
     // Wait a bit for final responses
     tokio::time::sleep(config.timeout).await;
@@ -353,52 +412,71 @@ async fn run_batch_mode(
         anyhow::anyhow!("Receiver thread failed: {}", msg)
     })??;
 
-    // Output results
-    let session = state.read();
-
-    if args.json {
-        export_json(&*session, std::io::stdout())?;
-    } else if args.report {
-        generate_report(&*session, std::io::stdout())?;
-    } else if args.csv {
-        export_csv(&*session, std::io::stdout())?;
+    // Output results for all targets
+    let sessions_read = sessions.read();
+    for (i, target_ip) in targets.iter().enumerate() {
+        if let Some(state) = sessions_read.get(target_ip) {
+            let session = state.read();
+            if targets.len() > 1 && !args.json {
+                println!("\n=== Target {}/{}: {} ===\n", i + 1, targets.len(), target_ip);
+            }
+            if args.json {
+                export_json(&*session, std::io::stdout())?;
+            } else if args.report {
+                generate_report(&*session, std::io::stdout())?;
+            } else if args.csv {
+                export_csv(&*session, std::io::stdout())?;
+            }
+        }
     }
 
     Ok(())
 }
 
 async fn run_streaming_mode(
-    state: Arc<RwLock<Session>>,
+    sessions: SessionMap,
+    targets: Vec<IpAddr>,
     config: Config,
-    target_ip: IpAddr,
     cancel: CancellationToken,
 ) -> Result<()> {
     // Shared pending map for probe correlation (engine writes, receiver reads)
     let pending = new_pending_map();
 
-    // Spawn receiver thread
+    // All targets must be same IP version (validated in main)
+    let ipv6 = targets[0].is_ipv6();
+
+    // Spawn receiver thread (handles all targets)
     let receiver_handle = spawn_receiver(
-        state.clone(),
+        sessions.clone(),
         pending.clone(),
         cancel.clone(),
         config.timeout,
-        target_ip.is_ipv6(),
+        ipv6,
         config.src_port_base,
         config.flows,
     );
 
-    // Spawn probe engine
-    let engine = ProbeEngine::new(
-        config.clone(),
-        target_ip,
-        state.clone(),
-        pending,
-        cancel.clone(),
-    );
-    let engine_handle = tokio::spawn(async move { engine.run().await });
+    // Spawn probe engine for each target
+    let mut engine_handles = Vec::new();
+    {
+        let sessions_read = sessions.read();
+        for target_ip in &targets {
+            if let Some(state) = sessions_read.get(target_ip) {
+                let engine = ProbeEngine::new(
+                    config.clone(),
+                    *target_ip,
+                    state.clone(),
+                    pending.clone(),
+                    cancel.clone(),
+                );
+                let handle = tokio::spawn(async move { engine.run().await });
+                engine_handles.push(handle);
+            }
+        }
+    }
 
     // Print results as they come in
-    let mut last_total_received: u64 = 0;
+    let mut last_total_received: HashMap<IpAddr, u64> = HashMap::new();
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
 
     loop {
@@ -407,32 +485,43 @@ async fn run_streaming_mode(
                 break;
             }
             _ = interval.tick() => {
-                let session = state.read();
-                let total_received: u64 = session.hops.iter().map(|h| h.received).sum();
+                let sessions_read = sessions.read();
+                for target_ip in &targets {
+                    if let Some(state) = sessions_read.get(target_ip) {
+                        let session = state.read();
+                        let total_received: u64 = session.hops.iter().map(|h| h.received).sum();
+                        let last = last_total_received.get(target_ip).copied().unwrap_or(0);
 
-                if total_received > last_total_received {
-                    // Print new results
-                    for hop in &session.hops {
-                        if hop.received > 0 {
-                            if let Some(stats) = hop.primary_stats() {
-                                println!(
-                                    "TTL {:2}  {:15}  {:>6.2}ms  {:>5.1}% loss",
-                                    hop.ttl,
-                                    stats.ip,
-                                    stats.avg_rtt().as_secs_f64() * 1000.0,
-                                    hop.loss_pct()
-                                );
+                        if total_received > last {
+                            if targets.len() > 1 {
+                                println!("[{}]", target_ip);
                             }
+                            // Print new results
+                            for hop in &session.hops {
+                                if hop.received > 0 {
+                                    if let Some(stats) = hop.primary_stats() {
+                                        println!(
+                                            "TTL {:2}  {:15}  {:>6.2}ms  {:>5.1}% loss",
+                                            hop.ttl,
+                                            stats.ip,
+                                            stats.avg_rtt().as_secs_f64() * 1000.0,
+                                            hop.loss_pct()
+                                        );
+                                    }
+                                }
+                            }
+                            println!("---");
+                            last_total_received.insert(*target_ip, total_received);
                         }
                     }
-                    println!("---");
-                    last_total_received = total_received;
                 }
             }
         }
     }
 
-    engine_handle.await??;
+    for handle in engine_handles {
+        handle.await??;
+    }
     receiver_handle.join().map_err(|e| {
         // This branch shouldn't be reached since we use catch_unwind in the receiver,
         // but handle it just in case something panics outside the protected region

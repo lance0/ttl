@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-01-12
+
+### Added
+- **Multiple simultaneous targets**: Trace to multiple destinations at once
+  - Pass multiple targets: `ttl 8.8.8.8 1.1.1.1 google.com`
+  - Tab/n to switch to next target, Shift-Tab/N for previous
+  - Target indicator in title bar shows `[1/3]` for current target
+  - Per-target pause/reset (p/r affect only current target)
+  - Each target runs its own probe engine with independent state
+- **SessionMap architecture**: Shared sessions map for multi-target support
+  - `SessionMap = Arc<RwLock<HashMap<IpAddr, Arc<RwLock<Session>>>>>`
+  - Single receiver demultiplexes responses to correct session
+  - Lookup workers (DNS, ASN, GeoIP) iterate all sessions
+
+### Technical
+- `PendingKey` now includes target IP: `(ProbeId, flow_id, IpAddr)`
+- Receiver iterates target list to find matching probe
+- `run_tui()` accepts SessionMap and targets list
+- `MainView::with_target_info()` for target indicator display
+- Mixed IPv4/IPv6 targets not supported (single receiver limitation)
+
 ## [0.5.1] - 2026-01-12
 
 ### Added

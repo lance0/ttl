@@ -144,7 +144,7 @@ impl ProbeEngine {
                         let flow_id = 0u8;
                         {
                             let mut pending = self.pending.write();
-                            pending.insert((probe_id, flow_id), PendingProbe {
+                            pending.insert((probe_id, flow_id, self.target), PendingProbe {
                                 sent_at,
                                 target: self.target,
                                 flow_id,
@@ -154,7 +154,7 @@ impl ProbeEngine {
 
                         if let Err(e) = send_icmp(&socket, &packet, self.target) {
                             // Remove pending entry on send failure to avoid false timeouts
-                            self.pending.write().remove(&(probe_id, flow_id));
+                            self.pending.write().remove(&(probe_id, flow_id, self.target));
                             eprintln!("Failed to send probe TTL {}: {}", ttl, e);
                             continue;
                         }
@@ -264,10 +264,10 @@ impl ProbeEngine {
 
                             let sent_at = Instant::now();
 
-                            // Register pending BEFORE sending (key includes flow_id for multi-flow)
+                            // Register pending BEFORE sending (key includes flow_id and target for multi-flow/multi-target)
                             {
                                 let mut pending = self.pending.write();
-                                pending.insert((probe_id, flow_id), PendingProbe {
+                                pending.insert((probe_id, flow_id, self.target), PendingProbe {
                                     sent_at,
                                     target: self.target,
                                     flow_id,
@@ -276,7 +276,7 @@ impl ProbeEngine {
                             }
 
                             if let Err(e) = send_udp_probe(socket, &payload, self.target, dst_port) {
-                                self.pending.write().remove(&(probe_id, flow_id));
+                                self.pending.write().remove(&(probe_id, flow_id, self.target));
                                 eprintln!("Failed to send UDP probe TTL {} flow {}: {}", ttl, flow_id, e);
                                 continue;
                             }
@@ -384,10 +384,10 @@ impl ProbeEngine {
 
                             let sent_at = Instant::now();
 
-                            // Register pending BEFORE sending (key includes flow_id for multi-flow)
+                            // Register pending BEFORE sending (key includes flow_id and target for multi-flow/multi-target)
                             {
                                 let mut pending = self.pending.write();
-                                pending.insert((probe_id, flow_id), PendingProbe {
+                                pending.insert((probe_id, flow_id, self.target), PendingProbe {
                                     sent_at,
                                     target: self.target,
                                     flow_id,
@@ -396,7 +396,7 @@ impl ProbeEngine {
                             }
 
                             if let Err(e) = send_tcp_probe(&socket, &packet, self.target, dst_port) {
-                                self.pending.write().remove(&(probe_id, flow_id));
+                                self.pending.write().remove(&(probe_id, flow_id, self.target));
                                 eprintln!("Failed to send TCP probe TTL {} flow {}: {}", ttl, flow_id, e);
                                 continue;
                             }

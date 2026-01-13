@@ -7,6 +7,7 @@ Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment.
 ## Features
 
 - Fast, low-overhead continuous path monitoring
+- **Multiple simultaneous targets**: Trace to several destinations at once
 - Useful hop-level stats (loss, min/avg/max, jitter, stddev, percentiles)
 - RTT percentiles (p50, p95, p99) from sample history
 - MPLS label detection from ICMP extensions
@@ -67,6 +68,16 @@ sudo sysctl -w net.ipv4.ping_group_range='0 65534'
 ```bash
 ttl 1.1.1.1
 ttl google.com
+```
+
+### Multiple targets
+
+```bash
+# Trace to multiple destinations simultaneously
+ttl 8.8.8.8 1.1.1.1 9.9.9.9
+
+# Use Tab/n to switch between targets, Shift-Tab/N for previous
+# Each target shows independent hop data
 ```
 
 ### Report mode

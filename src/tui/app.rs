@@ -11,12 +11,14 @@ use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 use std::io::stdout;
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::export::export_json_file;
 use crate::state::Session;
+use crate::trace::SessionMap;
 use crate::tui::theme::Theme;
 use crate::tui::views::{HelpView, HopDetailView, MainView};
 
@@ -34,6 +36,8 @@ pub struct UiState {
     pub status_message: Option<(String, std::time::Instant)>,
     /// Current theme index
     pub theme_index: usize,
+    /// Currently selected target index (for multi-target mode)
+    pub selected_target: usize,
 }
 
 impl Default for UiState {
@@ -45,6 +49,7 @@ impl Default for UiState {
             show_hop_detail: false,
             status_message: None,
             theme_index: 0,
+            selected_target: 0,
         }
     }
 }
@@ -65,7 +70,8 @@ impl UiState {
 
 /// Run the TUI application. Returns the final theme name for persistence.
 pub async fn run_tui(
-    state: Arc<RwLock<Session>>,
+    sessions: SessionMap,
+    targets: Vec<IpAddr>,
     cancel: CancellationToken,
     initial_theme: Theme,
 ) -> Result<String> {
@@ -88,7 +94,7 @@ pub async fn run_tui(
     };
     let tick_rate = Duration::from_millis(100);
 
-    run_app(&mut terminal, state.clone(), &mut ui_state, cancel.clone(), tick_rate).await?;
+    run_app(&mut terminal, sessions, targets, &mut ui_state, cancel.clone(), tick_rate).await?;
 
     // Restore terminal
     disable_raw_mode()?;
@@ -100,12 +106,14 @@ pub async fn run_tui(
 
 async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
-    state: Arc<RwLock<Session>>,
+    sessions: SessionMap,
+    targets: Vec<IpAddr>,
     ui_state: &mut UiState,
     cancel: CancellationToken,
     tick_rate: Duration,
 ) -> Result<()> {
     let theme_names = Theme::list();
+    let num_targets = targets.len();
 
     loop {
         // Check cancellation
@@ -119,10 +127,16 @@ async fn run_app<B: ratatui::backend::Backend>(
         // Get current theme
         let theme = Theme::by_name(theme_names[ui_state.theme_index]);
 
+        // Get current target's session
+        let current_target = targets[ui_state.selected_target];
+
         // Draw
         terminal.draw(|f| {
-            let session = state.read();
-            draw_ui(f, &session, ui_state, &theme);
+            let sessions_read = sessions.read();
+            if let Some(state) = sessions_read.get(&current_target) {
+                let session = state.read();
+                draw_ui(f, &session, ui_state, &theme, num_targets);
+            }
         })?;
 
         // Handle input with timeout
@@ -153,10 +167,32 @@ async fn run_app<B: ratatui::backend::Backend>(
                     KeyCode::Char('?') | KeyCode::Char('h') => {
                         ui_state.show_help = true;
                     }
+                    // Target switching
+                    KeyCode::Tab | KeyCode::Char('n') => {
+                        if num_targets > 1 {
+                            ui_state.selected_target = (ui_state.selected_target + 1) % num_targets;
+                            ui_state.selected = None; // Reset hop selection when switching targets
+                            let target = targets[ui_state.selected_target];
+                            ui_state.set_status(format!("Target {}/{}: {}", ui_state.selected_target + 1, num_targets, target));
+                        }
+                    }
+                    KeyCode::BackTab | KeyCode::Char('N') => {
+                        if num_targets > 1 {
+                            ui_state.selected_target = if ui_state.selected_target == 0 {
+                                num_targets - 1
+                            } else {
+                                ui_state.selected_target - 1
+                            };
+                            ui_state.selected = None; // Reset hop selection when switching targets
+                            let target = targets[ui_state.selected_target];
+                            ui_state.set_status(format!("Target {}/{}: {}", ui_state.selected_target + 1, num_targets, target));
+                        }
+                    }
                     KeyCode::Char('p') => {
                         ui_state.paused = !ui_state.paused;
-                        // Actually pause/resume probe engine
-                        {
+                        // Pause/resume current target's probe engine
+                        let sessions_read = sessions.read();
+                        if let Some(state) = sessions_read.get(&current_target) {
                             let mut session = state.write();
                             session.paused = ui_state.paused;
                         }
@@ -167,8 +203,9 @@ async fn run_app<B: ratatui::backend::Backend>(
                         });
                     }
                     KeyCode::Char('r') => {
-                        // Reset all statistics
-                        {
+                        // Reset current target's statistics
+                        let sessions_read = sessions.read();
+                        if let Some(state) = sessions_read.get(&current_target) {
                             let mut session = state.write();
                             session.reset_stats();
                         }
@@ -181,36 +218,45 @@ async fn run_app<B: ratatui::backend::Backend>(
                         ui_state.set_status(format!("Theme: {}", new_theme));
                     }
                     KeyCode::Char('e') => {
-                        let session = state.read();
-                        match export_json_file(&session) {
-                            Ok(filename) => {
-                                ui_state.set_status(format!("Exported to {}", filename));
-                            }
-                            Err(e) => {
-                                ui_state.set_status(format!("Export failed: {}", e));
+                        let sessions_read = sessions.read();
+                        if let Some(state) = sessions_read.get(&current_target) {
+                            let session = state.read();
+                            match export_json_file(&session) {
+                                Ok(filename) => {
+                                    ui_state.set_status(format!("Exported to {}", filename));
+                                }
+                                Err(e) => {
+                                    ui_state.set_status(format!("Export failed: {}", e));
+                                }
                             }
                         }
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
-                        let session = state.read();
-                        let hop_count = session.hops.iter().filter(|h| h.sent > 0).count();
-                        if hop_count > 0 {
-                            ui_state.selected = Some(match ui_state.selected {
-                                Some(i) if i > 0 => i - 1,
-                                Some(_) => hop_count - 1,
-                                None => hop_count - 1,
-                            });
+                        let sessions_read = sessions.read();
+                        if let Some(state) = sessions_read.get(&current_target) {
+                            let session = state.read();
+                            let hop_count = session.hops.iter().filter(|h| h.sent > 0).count();
+                            if hop_count > 0 {
+                                ui_state.selected = Some(match ui_state.selected {
+                                    Some(i) if i > 0 => i - 1,
+                                    Some(_) => hop_count - 1,
+                                    None => hop_count - 1,
+                                });
+                            }
                         }
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        let session = state.read();
-                        let hop_count = session.hops.iter().filter(|h| h.sent > 0).count();
-                        if hop_count > 0 {
-                            ui_state.selected = Some(match ui_state.selected {
-                                Some(i) if i < hop_count - 1 => i + 1,
-                                Some(_) => 0,
-                                None => 0,
-                            });
+                        let sessions_read = sessions.read();
+                        if let Some(state) = sessions_read.get(&current_target) {
+                            let session = state.read();
+                            let hop_count = session.hops.iter().filter(|h| h.sent > 0).count();
+                            if hop_count > 0 {
+                                ui_state.selected = Some(match ui_state.selected {
+                                    Some(i) if i < hop_count - 1 => i + 1,
+                                    Some(_) => 0,
+                                    None => 0,
+                                });
+                            }
                         }
                     }
                     KeyCode::Enter => {
@@ -230,7 +276,7 @@ async fn run_app<B: ratatui::backend::Backend>(
     Ok(())
 }
 
-fn draw_ui(f: &mut ratatui::Frame, session: &Session, ui_state: &UiState, theme: &Theme) {
+fn draw_ui(f: &mut ratatui::Frame, session: &Session, ui_state: &UiState, theme: &Theme, num_targets: usize) {
     let area = f.area();
 
     // Layout: main view + status bar
@@ -239,13 +285,16 @@ fn draw_ui(f: &mut ratatui::Frame, session: &Session, ui_state: &UiState, theme:
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(area);
 
-    // Main view
-    let main_view = MainView::new(session, ui_state.selected, ui_state.paused, theme);
+    // Main view (with target indicator)
+    let main_view = MainView::new(session, ui_state.selected, ui_state.paused, theme)
+        .with_target_info(ui_state.selected_target + 1, num_targets);
     f.render_widget(main_view, chunks[0]);
 
     // Status bar
     let status_text = if let Some((ref msg, _)) = ui_state.status_message {
         msg.clone()
+    } else if num_targets > 1 {
+        "q quit | Tab next target | p pause | r reset | t theme | e export | ? help".to_string()
     } else {
         "q quit | p pause | r reset | t theme | e export | ? help | \u{2191}\u{2193} select".to_string()
     };

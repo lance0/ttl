@@ -77,9 +77,12 @@
 - [x] Dublin traceroute - systematic flow enumeration via `--flows` flag
 - [x] Flow-level display (per-path stats) - "Paths" column and hop detail view
 
-### v0.6.0 - Multi-target
+### v0.6.0 - Multi-target (Released)
 - [x] NAT detection (completed in v0.5.1)
-- [ ] Multiple simultaneous targets
+- [x] Multiple simultaneous targets (`ttl 8.8.8.8 1.1.1.1 9.9.9.9`)
+- [x] Tab/n/N to cycle between targets in TUI
+- [x] Per-target pause/reset
+- [x] Target indicator in title bar `[1/3]`
 - [ ] Target groups/presets
 - [ ] Comparative views
 - [ ] Split-screen mode

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use crate::state::Session;
+use crate::trace::SessionMap;
 
 /// DNS cache entry
 struct CacheEntry {
@@ -75,10 +75,10 @@ impl DnsLookup {
 /// Maximum concurrent DNS lookups
 const MAX_CONCURRENT_LOOKUPS: usize = 10;
 
-/// Background DNS lookup worker that updates session state
+/// Background DNS lookup worker that updates session state (multi-target)
 pub async fn run_dns_worker(
     dns: Arc<DnsLookup>,
-    state: Arc<RwLock<Session>>,
+    sessions: SessionMap,
     cancel: CancellationToken,
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -89,13 +89,18 @@ pub async fn run_dns_worker(
                 break;
             }
             _ = interval.tick() => {
-                // Collect IPs that need lookup
+                // Collect IPs that need lookup from all sessions
                 let ips_to_lookup: Vec<IpAddr> = {
-                    let state = state.read();
-                    state.hops.iter()
-                        .flat_map(|hop| hop.responders.values())
-                        .filter(|stats| stats.hostname.is_none())
-                        .map(|stats| stats.ip)
+                    let sessions = sessions.read();
+                    sessions.values()
+                        .flat_map(|state| {
+                            let session = state.read();
+                            session.hops.iter()
+                                .flat_map(|hop| hop.responders.values())
+                                .filter(|stats| stats.hostname.is_none())
+                                .map(|stats| stats.ip)
+                                .collect::<Vec<_>>()
+                        })
                         .collect()
                 };
 
@@ -121,13 +126,16 @@ pub async fn run_dns_worker(
                 // Wait for all lookups to complete
                 let results = futures::future::join_all(futures).await;
 
-                // Update state with results
-                let mut state = state.write();
+                // Update all sessions with results
+                let sessions = sessions.read();
                 for (ip, hostname) in results {
                     if let Some(hostname) = hostname {
-                        for hop in &mut state.hops {
-                            if let Some(stats) = hop.responders.get_mut(&ip) {
-                                stats.hostname = Some(hostname.clone());
+                        for state in sessions.values() {
+                            let mut session = state.write();
+                            for hop in &mut session.hops {
+                                if let Some(stats) = hop.responders.get_mut(&ip) {
+                                    stats.hostname = Some(hostname.clone());
+                                }
                             }
                         }
                     }

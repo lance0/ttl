@@ -23,14 +23,17 @@ pub struct PendingProbe {
     pub original_src_port: Option<u16>,
 }
 
-/// Key for pending probe lookup: (ProbeId, flow_id)
+/// Key for pending probe lookup: (ProbeId, flow_id, target)
 ///
 /// Flow ID is included in the key because multi-flow mode sends the same ProbeId
 /// for each flow per tick. Without flow_id in the key, entries would overwrite
 /// each other, causing incorrect flow attribution.
-pub type PendingKey = (ProbeId, u8);
+///
+/// Target is included to support multiple simultaneous targets - each target
+/// has independent probe sequences.
+pub type PendingKey = (ProbeId, u8, IpAddr);
 
-/// Thread-safe map of pending probes keyed by (ProbeId, flow_id)
+/// Thread-safe map of pending probes keyed by (ProbeId, flow_id, target)
 pub type PendingMap = Arc<RwLock<HashMap<PendingKey, PendingProbe>>>;
 
 /// Create a new empty pending map

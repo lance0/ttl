@@ -1,5 +1,6 @@
 use anyhow::Result;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -8,6 +9,9 @@ use tokio_util::sync::CancellationToken;
 use crate::probe::{create_recv_socket, get_identifier, parse_icmp_response, recv_icmp};
 use crate::state::{IcmpResponseType, MplsLabel, ProbeId, Session};
 use crate::trace::pending::PendingMap;
+
+/// Map of target IP to session, shared across multiple engines and the receiver
+pub type SessionMap = Arc<RwLock<HashMap<IpAddr, Arc<RwLock<Session>>>>>;
 
 /// Maximum consecutive errors before stopping the receiver
 const MAX_CONSECUTIVE_ERRORS: u32 = 50;
@@ -34,7 +38,7 @@ struct BatchedResponse {
 
 /// The receiver listens for ICMP responses and correlates them to probes
 pub struct Receiver {
-    state: Arc<RwLock<Session>>,
+    sessions: SessionMap,
     pending: PendingMap,
     cancel: CancellationToken,
     timeout: Duration,
@@ -44,11 +48,13 @@ pub struct Receiver {
     src_port_base: u16,
     /// Number of flows (for validating derived flow_id is in range)
     num_flows: u8,
+    /// List of target IPs for probe lookup (cached from sessions keys)
+    targets: Vec<IpAddr>,
 }
 
 impl Receiver {
     pub fn new(
-        state: Arc<RwLock<Session>>,
+        sessions: SessionMap,
         pending: PendingMap,
         cancel: CancellationToken,
         timeout: Duration,
@@ -56,8 +62,10 @@ impl Receiver {
         src_port_base: u16,
         num_flows: u8,
     ) -> Self {
+        // Cache target list for probe lookup
+        let targets: Vec<IpAddr> = sessions.read().keys().cloned().collect();
         Self {
-            state,
+            sessions,
             pending,
             cancel,
             timeout,
@@ -65,6 +73,7 @@ impl Receiver {
             consecutive_errors: 0,
             src_port_base,
             num_flows,
+            targets,
         }
     }
 
@@ -122,9 +131,19 @@ impl Receiver {
                                 })
                                 .unwrap_or(0);
 
-                            // Find matching pending probe (key includes flow_id for multi-flow)
-                            let probe = self.pending.write().remove(&(parsed.probe_id, flow_id));
-                            if let Some(probe) = probe {
+                            // Find matching pending probe (key includes flow_id and target)
+                            // Try each target since we don't know which target this response is for
+                            let mut found_probe = None;
+                            {
+                                let mut pending = self.pending.write();
+                                for target in &self.targets {
+                                    if let Some(probe) = pending.remove(&(parsed.probe_id, flow_id, *target)) {
+                                        found_probe = Some(probe);
+                                        break;
+                                    }
+                                }
+                            }
+                            if let Some(probe) = found_probe {
                                 let rtt = Instant::now().duration_since(probe.sent_at);
 
                                 // Collect for batched state update
@@ -180,27 +199,31 @@ impl Receiver {
                 }
             }
 
-            // SECOND: Apply all batched state updates with single lock acquisition
+            // SECOND: Apply all batched state updates
             if !batch.is_empty() {
-                let mut state = self.state.write();
+                let sessions = self.sessions.read();
                 for resp in batch {
-                    if let Some(hop) = state.hop_mut(resp.probe_id.ttl) {
-                        // Record aggregate stats (existing behavior)
-                        hop.record_response_with_mpls(resp.responder, resp.rtt, resp.mpls_labels);
-                        // Record per-flow stats for Paris/Dublin traceroute ECMP detection
-                        hop.record_flow_response(resp.flow_id, resp.responder, resp.rtt);
-                        // Record NAT detection result (compare sent vs returned source port)
-                        hop.record_nat_check(resp.original_src_port, resp.returned_src_port);
-                    }
+                    // Look up the session for this target
+                    if let Some(session) = sessions.get(&resp.target) {
+                        let mut state = session.write();
+                        if let Some(hop) = state.hop_mut(resp.probe_id.ttl) {
+                            // Record aggregate stats (existing behavior)
+                            hop.record_response_with_mpls(resp.responder, resp.rtt, resp.mpls_labels);
+                            // Record per-flow stats for Paris/Dublin traceroute ECMP detection
+                            hop.record_flow_response(resp.flow_id, resp.responder, resp.rtt);
+                            // Record NAT detection result (compare sent vs returned source port)
+                            hop.record_nat_check(resp.original_src_port, resp.returned_src_port);
+                        }
 
-                    // Check if we reached the destination
-                    if matches!(resp.response_type, IcmpResponseType::EchoReply)
-                        && resp.responder == resp.target
-                    {
-                        state.complete = true;
-                        let ttl = resp.probe_id.ttl;
-                        if state.dest_ttl.is_none() || ttl < state.dest_ttl.unwrap() {
-                            state.dest_ttl = Some(ttl);
+                        // Check if we reached the destination
+                        if matches!(resp.response_type, IcmpResponseType::EchoReply)
+                            && resp.responder == resp.target
+                        {
+                            state.complete = true;
+                            let ttl = resp.probe_id.ttl;
+                            if state.dest_ttl.is_none() || ttl < state.dest_ttl.unwrap() {
+                                state.dest_ttl = Some(ttl);
+                            }
                         }
                     }
                 }
@@ -211,15 +234,18 @@ impl Receiver {
             {
                 let now = Instant::now();
                 let mut pending = self.pending.write();
+                let sessions = self.sessions.read();
                 let timeout = self.timeout;
-                // Key is (ProbeId, flow_id) tuple
-                pending.retain(|(probe_id, _flow_id), probe| {
+                // Key is (ProbeId, flow_id, target) tuple
+                pending.retain(|(probe_id, _flow_id, target), probe| {
                     if now.duration_since(probe.sent_at) > timeout {
                         // Record timeout (both hop-level and flow-level)
-                        let mut state = self.state.write();
-                        if let Some(hop) = state.hop_mut(probe_id.ttl) {
-                            hop.record_timeout();
-                            hop.record_flow_timeout(probe.flow_id);
+                        if let Some(session) = sessions.get(target) {
+                            let mut state = session.write();
+                            if let Some(hop) = state.hop_mut(probe_id.ttl) {
+                                hop.record_timeout();
+                                hop.record_flow_timeout(probe.flow_id);
+                            }
                         }
                         false
                     } else {
@@ -235,7 +261,7 @@ impl Receiver {
 
 /// Spawn the receiver on a dedicated OS thread
 pub fn spawn_receiver(
-    state: Arc<RwLock<Session>>,
+    sessions: SessionMap,
     pending: PendingMap,
     cancel: CancellationToken,
     timeout: Duration,
@@ -244,7 +270,7 @@ pub fn spawn_receiver(
     num_flows: u8,
 ) -> std::thread::JoinHandle<Result<()>> {
     std::thread::spawn(move || {
-        let receiver = Receiver::new(state, pending, cancel, timeout, ipv6, src_port_base, num_flows);
+        let receiver = Receiver::new(sessions, pending, cancel, timeout, ipv6, src_port_base, num_flows);
 
         // Catch panics and convert to error with details
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

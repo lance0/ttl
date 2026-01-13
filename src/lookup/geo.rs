@@ -7,7 +7,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use crate::state::{GeoInfo, Session};
+use crate::state::GeoInfo;
+use crate::trace::SessionMap;
 
 /// GeoIP cache entry
 struct CacheEntry {
@@ -136,10 +137,10 @@ impl GeoLookup {
 /// Maximum concurrent GeoIP lookups
 const MAX_CONCURRENT_LOOKUPS: usize = 20;
 
-/// Background GeoIP lookup worker that updates session state
+/// Background GeoIP lookup worker that updates session state (multi-target)
 pub async fn run_geo_worker(
     geo_lookup: Arc<GeoLookup>,
-    state: Arc<RwLock<Session>>,
+    sessions: SessionMap,
     cancel: CancellationToken,
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -150,13 +151,18 @@ pub async fn run_geo_worker(
                 break;
             }
             _ = interval.tick() => {
-                // Collect IPs that need geo lookup
+                // Collect IPs that need geo lookup from all sessions
                 let ips_to_lookup: Vec<IpAddr> = {
-                    let state = state.read();
-                    state.hops.iter()
-                        .flat_map(|hop| hop.responders.values())
-                        .filter(|stats| stats.geo.is_none())
-                        .map(|stats| stats.ip)
+                    let sessions = sessions.read();
+                    sessions.values()
+                        .flat_map(|state| {
+                            let session = state.read();
+                            session.hops.iter()
+                                .flat_map(|hop| hop.responders.values())
+                                .filter(|stats| stats.geo.is_none())
+                                .map(|stats| stats.ip)
+                                .collect::<Vec<_>>()
+                        })
                         .collect()
                 };
 
@@ -176,13 +182,16 @@ pub async fn run_geo_worker(
                     .map(|&ip| (ip, geo_lookup.lookup(ip)))
                     .collect();
 
-                // Update state with results
-                let mut state = state.write();
+                // Update all sessions with results
+                let sessions = sessions.read();
                 for (ip, geo_info) in results {
                     if let Some(geo_info) = geo_info {
-                        for hop in &mut state.hops {
-                            if let Some(stats) = hop.responders.get_mut(&ip) {
-                                stats.geo = Some(geo_info.clone());
+                        for state in sessions.values() {
+                            let mut session = state.write();
+                            for hop in &mut session.hops {
+                                if let Some(stats) = hop.responders.get_mut(&ip) {
+                                    stats.geo = Some(geo_info.clone());
+                                }
                             }
                         }
                     }

@@ -25,6 +25,10 @@ pub struct MainView<'a> {
     selected: Option<usize>,
     paused: bool,
     theme: &'a Theme,
+    /// Current target index (1-indexed) for multi-target display
+    target_index: Option<usize>,
+    /// Total number of targets
+    num_targets: usize,
 }
 
 impl<'a> MainView<'a> {
@@ -34,7 +38,18 @@ impl<'a> MainView<'a> {
             selected,
             paused,
             theme,
+            target_index: None,
+            num_targets: 1,
         }
+    }
+
+    /// Set target info for multi-target display
+    pub fn with_target_info(mut self, index: usize, total: usize) -> Self {
+        if total > 1 {
+            self.target_index = Some(index);
+            self.num_targets = total;
+        }
+        self
     }
 }
 
@@ -50,14 +65,21 @@ impl Widget for MainView<'_> {
             self.session.target.resolved.to_string()
         };
 
+        // Target indicator for multi-target mode
+        let target_indicator = if let Some(idx) = self.target_index {
+            format!("[{}/{}] ", idx, self.num_targets)
+        } else {
+            String::new()
+        };
+
         let status = if self.paused { " [PAUSED]" } else { "" };
         let nat_warn = if self.session.has_nat() { " [NAT]" } else { "" };
         let probe_count = self.session.total_sent;
         let interval_ms = self.session.config.interval.as_millis();
 
         let title = format!(
-            "ttl \u{2500}\u{2500} {} \u{2500}\u{2500} {} probes \u{2500}\u{2500} {}ms interval{}{}",
-            target_str, probe_count, interval_ms, status, nat_warn
+            "ttl \u{2500}\u{2500} {}{} \u{2500}\u{2500} {} probes \u{2500}\u{2500} {}ms interval{}{}",
+            target_indicator, target_str, probe_count, interval_ms, status, nat_warn
         );
 
         let block = Block::default()
