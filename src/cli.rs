@@ -93,6 +93,14 @@ pub struct Args {
     /// Color theme (default, kawaii, cyber, dracula, monochrome, matrix, nord, gruvbox, catppuccin, tokyo_night, solarized)
     #[arg(long = "theme", default_value = "default")]
     pub theme: String,
+
+    /// Bind probes to specific network interface (e.g., eth0, wlan0)
+    #[arg(long = "interface")]
+    pub interface: Option<String>,
+
+    /// Don't bind receiver socket to interface (allows asymmetric routing)
+    #[arg(long = "recv-any", requires = "interface")]
+    pub recv_any: bool,
 }
 
 impl Args {
@@ -151,6 +159,17 @@ impl Args {
         const MAX_FLOWS: u8 = 16;
         if self.flows > MAX_FLOWS {
             return Err(format!("Flows cannot exceed {} (resource limit)", MAX_FLOWS));
+        }
+
+        // Validate interface name
+        if let Some(ref iface) = self.interface {
+            if iface.is_empty() {
+                return Err("Interface name cannot be empty".into());
+            }
+            // IFNAMSIZ on Linux is 16 including null terminator
+            if iface.len() > 15 {
+                return Err(format!("Interface name too long: {} (max 15 chars)", iface));
+            }
         }
 
         Ok(())

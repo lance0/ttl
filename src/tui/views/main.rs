@@ -77,9 +77,18 @@ impl Widget for MainView<'_> {
         let probe_count = self.session.total_sent;
         let interval_ms = self.session.config.interval.as_millis();
 
+        // Show interface binding if specified
+        let iface_str = self
+            .session
+            .config
+            .interface
+            .as_ref()
+            .map(|i| format!(" via {}", i))
+            .unwrap_or_default();
+
         let title = format!(
-            "ttl \u{2500}\u{2500} {}{} \u{2500}\u{2500} {} probes \u{2500}\u{2500} {}ms interval{}{}",
-            target_indicator, target_str, probe_count, interval_ms, status, nat_warn
+            "ttl \u{2500}\u{2500} {}{}{} \u{2500}\u{2500} {} probes \u{2500}\u{2500} {}ms interval{}{}",
+            target_indicator, target_str, iface_str, probe_count, interval_ms, status, nat_warn
         );
 
         let block = Block::default()

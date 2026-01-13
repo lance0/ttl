@@ -6,6 +6,9 @@ use crate::state::Session;
 pub fn generate_report<W: Write>(session: &Session, mut writer: W) -> std::io::Result<()> {
     writeln!(writer, "ttl report for {} ({})", session.target.original, session.target.resolved)?;
     writeln!(writer, "Started: {}", session.started_at.format("%Y-%m-%d %H:%M:%S UTC"))?;
+    if let Some(ref iface) = session.config.interface {
+        writeln!(writer, "Interface: {}", iface)?;
+    }
     writeln!(writer)?;
 
     // Header

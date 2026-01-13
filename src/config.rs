@@ -44,6 +44,12 @@ pub struct Config {
     pub asn_enabled: bool,
     /// Enable geolocation
     pub geo_enabled: bool,
+    /// Network interface to bind sockets to
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface: Option<String>,
+    /// Don't bind receiver to interface (for asymmetric routing)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub recv_any: bool,
 }
 
 fn default_flows() -> u8 { 1 }
@@ -64,6 +70,8 @@ impl Default for Config {
             dns_enabled: true,
             asn_enabled: true,
             geo_enabled: true,
+            interface: None,
+            recv_any: false,
         }
     }
 }
@@ -97,6 +105,8 @@ impl From<&Args> for Config {
             dns_enabled: !args.no_dns,
             asn_enabled: !args.no_asn,
             geo_enabled: !args.no_geo,
+            interface: args.interface.clone(),
+            recv_any: args.recv_any,
         }
     }
 }

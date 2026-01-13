@@ -6,7 +6,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
-use crate::probe::{create_recv_socket, get_identifier, parse_icmp_response, recv_icmp};
+use crate::probe::{
+    create_recv_socket_with_interface, get_identifier, parse_icmp_response, recv_icmp,
+    InterfaceInfo,
+};
 use crate::state::{IcmpResponseType, MplsLabel, ProbeId, Session};
 use crate::trace::pending::PendingMap;
 
@@ -50,6 +53,10 @@ pub struct Receiver {
     num_flows: u8,
     /// List of target IPs for probe lookup (cached from sessions keys)
     targets: Vec<IpAddr>,
+    /// Network interface to bind receiver socket to
+    interface: Option<InterfaceInfo>,
+    /// Don't bind receiver to interface (for asymmetric routing)
+    recv_any: bool,
 }
 
 impl Receiver {
@@ -61,6 +68,8 @@ impl Receiver {
         ipv6: bool,
         src_port_base: u16,
         num_flows: u8,
+        interface: Option<InterfaceInfo>,
+        recv_any: bool,
     ) -> Self {
         // Cache target list for probe lookup
         let targets: Vec<IpAddr> = sessions.read().keys().cloned().collect();
@@ -74,13 +83,21 @@ impl Receiver {
             src_port_base,
             num_flows,
             targets,
+            interface,
+            recv_any,
         }
     }
 
     /// Run the receiver on a dedicated thread (blocking I/O)
     pub fn run_blocking(mut self) -> Result<()> {
         let identifier = get_identifier();
-        let socket = create_recv_socket(self.ipv6)?;
+        // Skip interface binding if recv_any is set (allows asymmetric routing)
+        let effective_interface = if self.recv_any {
+            None
+        } else {
+            self.interface.as_ref()
+        };
+        let socket = create_recv_socket_with_interface(self.ipv6, effective_interface)?;
 
         // Set non-blocking with short timeout for polling
         socket.set_read_timeout(Some(Duration::from_millis(100)))?;
@@ -268,9 +285,13 @@ pub fn spawn_receiver(
     ipv6: bool,
     src_port_base: u16,
     num_flows: u8,
+    interface: Option<InterfaceInfo>,
+    recv_any: bool,
 ) -> std::thread::JoinHandle<Result<()>> {
     std::thread::spawn(move || {
-        let receiver = Receiver::new(sessions, pending, cancel, timeout, ipv6, src_port_base, num_flows);
+        let receiver = Receiver::new(
+            sessions, pending, cancel, timeout, ipv6, src_port_base, num_flows, interface, recv_any,
+        );
 
         // Catch panics and convert to error with details
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

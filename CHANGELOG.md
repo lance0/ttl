@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-01-13
+
+### Added
+- **Interface binding**: Force probes through a specific network interface
+  - New `--interface <NAME>` flag binds all sockets to the specified interface
+  - Useful for multi-homed hosts, VPN split tunneling, or deterministic egress path selection
+  - Works with all probe protocols (ICMP, UDP, TCP)
+  - Interface name shown in TUI title bar ("via eth0") and report output
+  - Linux uses `SO_BINDTODEVICE`, macOS uses `IP_BOUND_IF`
+- **Asymmetric routing support**: New `--recv-any` flag
+  - Requires `--interface` to be set
+  - Disables receiver socket binding to interface
+  - Allows receiving replies on any interface (for asymmetric routing, VPN scenarios)
+  - Send sockets remain bound to the specified interface
+
+### Fixed
+- **IPv6 interface detection**: Fixed bug where global IPv6 addresses were incorrectly rejected
+  - The link-local check used bitwise NOT (`!v6.segments()[0]`) instead of comparison (`!=`)
+  - Global IPv6 addresses like `2001:db8::1` now correctly detected on dual-stack interfaces
+- **Link-local only rejection**: Non-loopback interfaces with only link-local IPv6 now return clear error
+  - Link-local addresses require scope IDs and can't reach Internet targets
+  - Error message explains the issue and suggests assigning a global address
+- **Auto-protocol UDP binding**: Auto-protocol mode now tests UDP with interface binding
+  - Previously could select UDP even if interface binding would fail later
+  - Now fails fast with clear error instead of confusing runtime failure
+
+### Technical
+- New `src/probe/interface.rs` module for cross-platform interface validation and binding
+- `is_link_local_ipv6()` helper function shared between production code and tests
+- `InterfaceInfo` struct holds validated interface name, index, IPv4/IPv6 addresses
+- Interface passed through `ProbeEngine`, `Receiver`, and all socket creation functions
+- `recv_any` field in `Config` controls receiver binding behavior
+- Uses `pnet::datalink::interfaces()` for enumeration, `socket2` for binding
+
 ## [0.6.1] - 2026-01-13
 
 ### Fixed

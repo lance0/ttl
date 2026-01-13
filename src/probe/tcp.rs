@@ -197,6 +197,41 @@ pub fn get_local_addr(target: IpAddr) -> IpAddr {
     }
 }
 
+use crate::probe::interface::{bind_socket_to_interface, InterfaceInfo};
+
+/// Get source IP address for checksum calculation, using interface IP if specified
+///
+/// When interface is provided, uses that interface's IP address.
+/// Otherwise, falls back to the UDP connect trick to determine routing.
+pub fn get_local_addr_with_interface(target: IpAddr, interface: Option<&InterfaceInfo>) -> IpAddr {
+    // If interface specified, use its IP address for the correct family
+    if let Some(info) = interface {
+        if target.is_ipv6() {
+            if let Some(v6) = info.ipv6 {
+                return IpAddr::V6(v6);
+            }
+        } else if let Some(v4) = info.ipv4 {
+            return IpAddr::V4(v4);
+        }
+        // Fall through if interface doesn't have matching address family
+    }
+
+    // Fallback to UDP connect trick
+    get_local_addr(target)
+}
+
+/// Create a raw TCP socket, optionally bound to an interface
+pub fn create_tcp_socket_with_interface(
+    ipv6: bool,
+    interface: Option<&InterfaceInfo>,
+) -> Result<Socket> {
+    let socket = create_tcp_socket(ipv6)?;
+    if let Some(info) = interface {
+        bind_socket_to_interface(&socket, info)?;
+    }
+    Ok(socket)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

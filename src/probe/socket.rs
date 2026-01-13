@@ -123,6 +123,36 @@ pub fn recv_icmp(socket: &Socket, buffer: &mut [u8]) -> Result<(usize, IpAddr)> 
     Ok((len, ip))
 }
 
+// ============================================================================
+// Interface-aware socket creation variants
+// ============================================================================
+
+use crate::probe::interface::{bind_socket_to_interface, InterfaceInfo};
+
+/// Create a socket for sending ICMP probes, optionally bound to an interface
+pub fn create_send_socket_with_interface(
+    ipv6: bool,
+    interface: Option<&InterfaceInfo>,
+) -> Result<Socket> {
+    let socket = create_send_socket(ipv6)?;
+    if let Some(info) = interface {
+        bind_socket_to_interface(&socket, info)?;
+    }
+    Ok(socket)
+}
+
+/// Create a socket for receiving ICMP responses, optionally bound to an interface
+pub fn create_recv_socket_with_interface(
+    ipv6: bool,
+    interface: Option<&InterfaceInfo>,
+) -> Result<Socket> {
+    let socket = create_recv_socket(ipv6)?;
+    if let Some(info) = interface {
+        bind_socket_to_interface(&socket, info)?;
+    }
+    Ok(socket)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

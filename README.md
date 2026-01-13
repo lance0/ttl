@@ -16,6 +16,7 @@ Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment.
 - ICMP, UDP, and TCP probing modes with auto-detection
 - **Paris/Dublin traceroute**: Multi-flow probing for ECMP path enumeration
 - **NAT detection**: Identify when NAT devices rewrite source ports
+- **Interface binding**: Force probes through specific network interface
 - Great terminal UX built with ratatui
 - Scriptable mode for CI and automation
 - Reverse DNS resolution (parallel lookups)
@@ -145,6 +146,23 @@ ttl 1.1.1.1 --flows 4 --src-port 33000
 
 Each flow uses a different source port, causing ECMP routers to route flows along different paths. The TUI shows a "Paths" column when `--flows > 1`, highlighted when multiple paths are detected.
 
+### Interface binding
+
+```bash
+# Bind all probes to specific interface
+ttl --interface eth0 8.8.8.8
+
+# Useful for multi-homed hosts or VPN split tunneling
+ttl --interface wlan0 1.1.1.1
+
+# Allow asymmetric routing (don't bind receiver socket)
+ttl --interface eth0 --recv-any 8.8.8.8
+```
+
+The `--interface` flag ensures probes egress through the specified network interface. This is useful on multi-homed systems where you need deterministic path selection.
+
+The `--recv-any` flag (requires `--interface`) disables receiver socket binding. Use this when replies may arrive on a different interface than the one used for sending (asymmetric routing, VPN split-tunnel).
+
 ### Options
 
 ```
@@ -157,6 +175,8 @@ Each flow uses a different source port, causing ECMP routers to route flows alon
 --flows <N>          Number of flows for ECMP detection (1-16, default: 1)
 --src-port <N>       Base source port for multi-flow (default: 50000)
 --timeout <S>        Probe timeout in seconds (default: 3)
+--interface <NAME>   Bind probes to specific network interface
+--recv-any           Don't bind receiver to interface (asymmetric routing)
 -4, --ipv4           Force IPv4
 -6, --ipv6           Force IPv6
 --no-dns             Skip reverse DNS lookups

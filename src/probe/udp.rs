@@ -68,6 +68,34 @@ pub fn create_udp_dgram_socket_bound(ipv6: bool, src_port: u16) -> Result<Socket
     Ok(socket)
 }
 
+use crate::probe::interface::{bind_socket_to_interface, InterfaceInfo};
+
+/// Create a DGRAM UDP socket bound to source port and optionally to an interface
+/// Interface binding must happen BEFORE address binding for proper behavior
+pub fn create_udp_dgram_socket_bound_with_interface(
+    ipv6: bool,
+    src_port: u16,
+    interface: Option<&InterfaceInfo>,
+) -> Result<Socket> {
+    let socket = create_udp_dgram_socket(ipv6)?;
+
+    // Bind to interface BEFORE binding to address
+    // SO_BINDTODEVICE affects which interface's addresses are valid for binding
+    if let Some(info) = interface {
+        bind_socket_to_interface(&socket, info)?;
+    }
+
+    // Bind to the specified source port
+    let bind_addr = if ipv6 {
+        SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), src_port)
+    } else {
+        SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), src_port)
+    };
+    socket.bind(&SockAddr::from(bind_addr))?;
+
+    Ok(socket)
+}
+
 /// Send a UDP probe to target
 pub fn send_udp_probe(socket: &Socket, payload: &[u8], target: IpAddr, port: u16) -> Result<usize> {
     let addr = SocketAddr::new(target, port);

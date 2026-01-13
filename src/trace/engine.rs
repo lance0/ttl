@@ -7,9 +7,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{Config, ProbeProtocol};
 use crate::probe::{
-    build_echo_request, build_tcp_syn, build_udp_payload, create_send_socket,
-    create_tcp_socket, create_udp_dgram_socket, create_udp_dgram_socket_bound,
-    get_identifier, get_local_addr, send_icmp, send_tcp_probe, send_udp_probe, set_ttl,
+    build_echo_request, build_tcp_syn, build_udp_payload,
+    create_send_socket_with_interface,
+    create_tcp_socket_with_interface, create_udp_dgram_socket,
+    create_udp_dgram_socket_bound_with_interface,
+    get_identifier, get_local_addr_with_interface,
+    send_icmp, send_tcp_probe, send_udp_probe, set_ttl,
+    InterfaceInfo,
 };
 use crate::state::{ProbeId, Session};
 use crate::trace::pending::{PendingMap, PendingProbe};
@@ -22,6 +26,7 @@ pub struct ProbeEngine {
     state: Arc<RwLock<Session>>,
     pending: PendingMap,
     cancel: CancellationToken,
+    interface: Option<InterfaceInfo>,
 }
 
 impl ProbeEngine {
@@ -31,6 +36,7 @@ impl ProbeEngine {
         state: Arc<RwLock<Session>>,
         pending: PendingMap,
         cancel: CancellationToken,
+        interface: Option<InterfaceInfo>,
     ) -> Self {
         Self {
             config,
@@ -39,6 +45,7 @@ impl ProbeEngine {
             state,
             pending,
             cancel,
+            interface,
         }
     }
 
@@ -57,12 +64,26 @@ impl ProbeEngine {
         let ipv6 = self.target.is_ipv6();
 
         // Try ICMP first (most reliable, but requires raw sockets)
-        if create_send_socket(ipv6).is_ok() {
+        // Use interface-aware socket creation to test if interface binding works
+        if create_send_socket_with_interface(ipv6, self.interface.as_ref()).is_ok() {
             return self.run_icmp().await;
         }
 
         // Fallback to UDP (works with DGRAM sockets, less privileged)
-        if create_udp_dgram_socket(ipv6).is_ok() {
+        // Test with interface binding when --interface is set to fail fast
+        let udp_works = if self.interface.is_some() {
+            // Test that we can create a bound socket with interface binding
+            create_udp_dgram_socket_bound_with_interface(
+                ipv6,
+                self.config.src_port_base,
+                self.interface.as_ref(),
+            )
+            .is_ok()
+        } else {
+            create_udp_dgram_socket(ipv6).is_ok()
+        };
+
+        if udp_works {
             // Set default UDP port if not specified
             if self.config.port.is_none() {
                 self.config.port = Some(33434);
@@ -80,7 +101,7 @@ impl ProbeEngine {
     /// Run ICMP probing mode
     async fn run_icmp(self) -> Result<()> {
         let ipv6 = self.target.is_ipv6();
-        let socket = create_send_socket(ipv6)?;
+        let socket = create_send_socket_with_interface(ipv6, self.interface.as_ref())?;
 
         let mut seq: u8 = 0;
         let mut total_sent: u64 = 0;
@@ -190,7 +211,11 @@ impl ProbeEngine {
         let mut sockets = Vec::with_capacity(num_flows as usize);
         for flow_id in 0..num_flows {
             let src_port = self.config.src_port_base + (flow_id as u16);
-            let socket = create_udp_dgram_socket_bound(ipv6, src_port)?;
+            let socket = create_udp_dgram_socket_bound_with_interface(
+                ipv6,
+                src_port,
+                self.interface.as_ref(),
+            )?;
             sockets.push(socket);
         }
 
@@ -306,14 +331,14 @@ impl ProbeEngine {
     /// Run TCP SYN probing mode
     async fn run_tcp(self) -> Result<()> {
         let ipv6 = self.target.is_ipv6();
-        let socket = create_tcp_socket(ipv6)?;
+        let socket = create_tcp_socket_with_interface(ipv6, self.interface.as_ref())?;
         let num_flows = self.config.flows;
 
         // Base port for TCP probes (default: 80)
         let base_port = self.config.port.unwrap_or(80);
 
-        // Source IP for checksum calculation
-        let src_ip = get_local_addr(self.target);
+        // Source IP for checksum calculation (use interface IP if specified)
+        let src_ip = get_local_addr_with_interface(self.target, self.interface.as_ref());
 
         let mut seq: u8 = 0;
         let mut total_sent: u64 = 0;

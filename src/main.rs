@@ -24,7 +24,7 @@ use config::Config;
 use export::{export_csv, export_json, generate_report};
 use lookup::{run_asn_worker, run_dns_worker, run_geo_worker, AsnLookup, DnsLookup, GeoLookup};
 use prefs::Prefs;
-use probe::check_permissions;
+use probe::{check_permissions, validate_interface, InterfaceInfo};
 use state::{Session, Target};
 use trace::{new_pending_map, spawn_receiver, ProbeEngine, SessionMap};
 use tui::{run_tui, Theme};
@@ -49,6 +49,19 @@ async fn main() -> Result<()> {
         eprintln!("{}", e);
         std::process::exit(1);
     }
+
+    // Validate interface early (before target resolution)
+    let interface_info: Option<InterfaceInfo> = if let Some(ref name) = args.interface {
+        match validate_interface(name) {
+            Ok(info) => Some(info),
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
 
     // Resolve all targets
     let mut targets: Vec<IpAddr> = Vec::new();
@@ -94,13 +107,33 @@ async fn main() -> Result<()> {
         anyhow::bail!("Mixed IPv4/IPv6 targets not supported. Use -4 or -6 to force one version.");
     }
 
+    // Validate interface has address matching target IP family
+    if let Some(ref info) = interface_info {
+        if ipv6 && info.ipv6.is_none() {
+            eprintln!(
+                "Error: Interface '{}' has no IPv6 address but targets require IPv6. \
+                 Use -4 to force IPv4.",
+                info.name
+            );
+            std::process::exit(1);
+        }
+        if !ipv6 && info.ipv4.is_none() {
+            eprintln!(
+                "Error: Interface '{}' has no IPv4 address but targets require IPv4. \
+                 Use -6 to force IPv6.",
+                info.name
+            );
+            std::process::exit(1);
+        }
+    }
+
     // Run in appropriate mode
     if args.is_batch_mode() {
-        run_batch_mode(args, sessions, targets, config, cancel).await
+        run_batch_mode(args, sessions, targets, config, cancel, interface_info).await
     } else if args.no_tui {
-        run_streaming_mode(args, sessions, targets, config, cancel).await
+        run_streaming_mode(args, sessions, targets, config, cancel, interface_info).await
     } else {
-        run_interactive_mode(args, sessions, targets, config, cancel).await
+        run_interactive_mode(args, sessions, targets, config, cancel, interface_info).await
     }
 }
 
@@ -228,6 +261,7 @@ async fn run_interactive_mode(
     targets: Vec<IpAddr>,
     config: Config,
     cancel: CancellationToken,
+    interface: Option<InterfaceInfo>,
 ) -> Result<()> {
     // Shared pending map for probe correlation (engine writes, receiver reads)
     let pending = new_pending_map();
@@ -244,6 +278,8 @@ async fn run_interactive_mode(
         ipv6,
         config.src_port_base,
         config.flows,
+        interface.clone(),
+        config.recv_any,
     );
 
     // Spawn probe engine for each target
@@ -258,6 +294,7 @@ async fn run_interactive_mode(
                     state.clone(),
                     pending.clone(),
                     cancel.clone(),
+                    interface.clone(),
                 );
                 let handle = tokio::spawn(async move { engine.run().await });
                 engine_handles.push(handle);
@@ -358,6 +395,7 @@ async fn run_batch_mode(
     targets: Vec<IpAddr>,
     config: Config,
     cancel: CancellationToken,
+    interface: Option<InterfaceInfo>,
 ) -> Result<()> {
     // Shared pending map for probe correlation (engine writes, receiver reads)
     let pending = new_pending_map();
@@ -374,6 +412,8 @@ async fn run_batch_mode(
         ipv6,
         config.src_port_base,
         config.flows,
+        interface.clone(),
+        config.recv_any,
     );
 
     // Spawn probe engine for each target
@@ -388,6 +428,7 @@ async fn run_batch_mode(
                     state.clone(),
                     pending.clone(),
                     cancel.clone(),
+                    interface.clone(),
                 );
                 let handle = tokio::spawn(async move { engine.run().await });
                 engine_handles.push(handle);
@@ -488,6 +529,7 @@ async fn run_streaming_mode(
     targets: Vec<IpAddr>,
     config: Config,
     cancel: CancellationToken,
+    interface: Option<InterfaceInfo>,
 ) -> Result<()> {
     // Shared pending map for probe correlation (engine writes, receiver reads)
     let pending = new_pending_map();
@@ -504,6 +546,8 @@ async fn run_streaming_mode(
         ipv6,
         config.src_port_base,
         config.flows,
+        interface.clone(),
+        config.recv_any,
     );
 
     // Spawn probe engine for each target
@@ -518,6 +562,7 @@ async fn run_streaming_mode(
                     state.clone(),
                     pending.clone(),
                     cancel.clone(),
+                    interface.clone(),
                 );
                 let handle = tokio::spawn(async move { engine.run().await });
                 engine_handles.push(handle);
