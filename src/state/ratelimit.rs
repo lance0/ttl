@@ -45,14 +45,15 @@ pub fn analyze_rate_limiting(session: &mut Session) {
                 let existing = hop.rate_limit.as_mut().unwrap();
                 existing.negative_checks = existing.negative_checks.saturating_add(1);
 
-                // Clear after 2 consecutive negative checks AND either:
-                // - loss dropped below 5%, OR
-                // - downstream loss rose above 10% (isolated loss no longer applies)
-                let should_clear = existing.negative_checks >= 2
+                // Clear RL when:
+                // 1. After 2 negatives AND (loss < 5% OR downstream >= 10%), OR
+                // 2. After 5 negatives regardless (signal is gone if heuristics stop matching)
+                let quick_clear = existing.negative_checks >= 2
                     && completed > 20
                     && (hop_loss < 5.0 || downstream_high);
+                let force_clear = existing.negative_checks >= 5 && completed > 20;
 
-                if should_clear {
+                if quick_clear || force_clear {
                     hop.rate_limit = None;
                 }
             }
@@ -113,7 +114,9 @@ fn detect_rate_limiting(session: &Session, ttl: u8) -> Option<RateLimitInfo> {
 
     // Check 3: Consistent loss ratio over time
     // Rate limiting produces stable loss; real congestion fluctuates
-    if is_stable_loss_ratio(&hop.recent_results) && hop_loss > 10.0 {
+    // Use recent window loss (not lifetime) to avoid sticky detection during recovery
+    let recent_loss = calculate_recent_loss(&hop.recent_results);
+    if is_stable_loss_ratio(&hop.recent_results) && recent_loss > 10.0 {
         return Some(RateLimitInfo {
             suspected: true,
             confidence: 0.6,
@@ -125,6 +128,15 @@ fn detect_rate_limiting(session: &Session, ttl: u8) -> Option<RateLimitInfo> {
     }
 
     None
+}
+
+/// Calculate loss percentage from recent results window
+fn calculate_recent_loss(recent: &VecDeque<bool>) -> f64 {
+    if recent.is_empty() {
+        return 0.0;
+    }
+    let losses = recent.iter().filter(|&&r| !r).count();
+    (losses as f64 / recent.len() as f64) * 100.0
 }
 
 /// Find loss percentage of next hop that has responses
@@ -299,5 +311,33 @@ mod tests {
             recent2.push_back(i % 2 == 0);
         }
         assert!(is_stable_loss_ratio(&recent2));
+    }
+
+    #[test]
+    fn test_calculate_recent_loss() {
+        // Empty window
+        let empty: VecDeque<bool> = VecDeque::new();
+        assert_eq!(calculate_recent_loss(&empty), 0.0);
+
+        // All success (true = success, false = loss)
+        let mut all_success = VecDeque::new();
+        for _ in 0..10 {
+            all_success.push_back(true);
+        }
+        assert_eq!(calculate_recent_loss(&all_success), 0.0);
+
+        // All loss
+        let mut all_loss = VecDeque::new();
+        for _ in 0..10 {
+            all_loss.push_back(false);
+        }
+        assert_eq!(calculate_recent_loss(&all_loss), 100.0);
+
+        // 50% loss
+        let mut half_loss = VecDeque::new();
+        for i in 0..10 {
+            half_loss.push_back(i % 2 == 0); // true, false, true, false...
+        }
+        assert_eq!(calculate_recent_loss(&half_loss), 50.0);
     }
 }

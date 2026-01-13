@@ -40,7 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Previously third segment used wrong divisor, skewing detection
 - **Rate limit clearing hysteresis**: Require 2 consecutive negative checks before clearing
   - Also clears when downstream loss rises above 10% (isolated loss no longer applies)
+  - Force clears after 5 negatives regardless (signal gone if heuristics stop matching)
   - Prevents UI flicker while ensuring stale RL doesn't linger
+- **Stable-loss uses recent window**: Detection now uses recent_results loss, not lifetime
+  - Fixes sticky RL during recovery when lifetime loss is still high but recent is 0%
 
 ### Technical
 - New `src/state/ratelimit.rs` module for detection logic
