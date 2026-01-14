@@ -3,11 +3,11 @@
 //! These tests verify the data flow from simulated probe sends
 //! through state updates, without requiring actual network access.
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 use ttl::config::Config;
-use ttl::state::session::{PmtudPhase, Session, Target};
+use ttl::state::session::{PmtudPhase, PmtudState, Session, Target};
 
 /// Create a test session for 8.8.8.8 with default config
 fn test_session() -> Session {
@@ -19,6 +19,17 @@ fn test_session() -> Session {
 /// Create a test session with PMTUD enabled
 fn test_session_with_pmtud() -> Session {
     let target = Target::new("8.8.8.8".to_string(), IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)));
+    let mut config = Config::default();
+    config.pmtud = true;
+    Session::new(target, config)
+}
+
+/// Create an IPv6 test session with PMTUD enabled
+fn test_session_ipv6_with_pmtud() -> Session {
+    let target = Target::new(
+        "2001:4860:4860::8888".to_string(),
+        IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888)),
+    );
     let mut config = Config::default();
     config.pmtud = true;
     Session::new(target, config)
@@ -340,4 +351,52 @@ fn test_pmtud_binary_search_convergence() {
         let mtu = pmtud.discovered_mtu.unwrap();
         assert!(mtu >= 1392 && mtu <= 1400);
     }
+}
+
+#[test]
+fn test_pmtud_ipv6_min_size() {
+    let session = test_session_ipv6_with_pmtud();
+
+    // IPv6 PMTUD should use 1280 as minimum (RFC 8200)
+    assert!(session.pmtud.is_some());
+    let pmtud = session.pmtud.as_ref().unwrap();
+    assert_eq!(pmtud.min_size, 1280);
+    assert_eq!(pmtud.max_size, 1500);
+    assert_eq!(pmtud.phase, PmtudPhase::WaitingForDestination);
+}
+
+#[test]
+fn test_pmtud_frag_needed_below_min() {
+    // Test that record_frag_needed clamps to reported MTU even if below typical min
+    let mut pmtud = PmtudState::new(false); // IPv4
+    pmtud.start_search();
+
+    // Router reports MTU of 576 (old internet minimum)
+    pmtud.record_frag_needed(576);
+
+    // max_size should be clamped to 576
+    assert_eq!(pmtud.max_size, 576);
+
+    // min_size stays at 68 (IPv4 absolute minimum)
+    assert_eq!(pmtud.min_size, 68);
+
+    // Binary search should continue in valid range
+    assert!(pmtud.current_size <= 576);
+    assert!(pmtud.current_size >= 68);
+}
+
+#[test]
+fn test_pmtud_frag_needed_at_min() {
+    // Edge case: reported MTU equals or is below min_size
+    let mut pmtud = PmtudState::new(true); // IPv6, min=1280
+    pmtud.start_search();
+
+    // Router reports exactly 1280
+    pmtud.record_frag_needed(1280);
+
+    assert_eq!(pmtud.max_size, 1280);
+    assert_eq!(pmtud.min_size, 1280);
+
+    // Should immediately converge since min == max
+    assert!(pmtud.is_converged());
 }
