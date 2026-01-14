@@ -43,7 +43,7 @@ jobs:
 
       - name: Install cross
         if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --version 0.2.5
 
       - name: Build (native)
         if: ${{ !matrix.cross }}
@@ -57,11 +57,7 @@ jobs:
         shell: bash
         run: |
           cd target/${{ matrix.target }}/release
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            7z a ../../../ttl-${{ matrix.target }}.zip ttl.exe
-          else
-            tar czvf ../../../ttl-${{ matrix.target }}.tar.gz ttl
-          fi
+          tar czvf ../../../ttl-${{ matrix.target }}.tar.gz ttl
           cd -
 
       - name: Upload artifact

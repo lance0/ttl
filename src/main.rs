@@ -95,9 +95,15 @@ async fn main() -> Result<()> {
 
         // Set source IP and gateway for display in TUI
         let ipv6 = resolved_ip.is_ipv6();
-        session.source_ip = config
-            .source_ip
-            .or_else(|| Some(get_local_addr_with_interface(resolved_ip, interface_info.as_ref())));
+        session.source_ip = config.source_ip.or_else(|| {
+            let addr = get_local_addr_with_interface(resolved_ip, interface_info.as_ref());
+            // Filter out unspecified addresses (0.0.0.0 or ::)
+            if addr.is_unspecified() {
+                None
+            } else {
+                Some(addr)
+            }
+        });
         session.gateway = if let Some(ref info) = interface_info {
             // Use interface-specific gateway
             if ipv6 {
