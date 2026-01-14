@@ -486,8 +486,15 @@ fn test_session_json_file_roundtrip() {
         pmtud.record_frag_needed(1400);
     }
 
-    // Save to temp file
-    let temp_path = std::env::temp_dir().join("ttl_test_session.json");
+    // Save to temp file with unique name (pid + timestamp to avoid parallel test collisions)
+    let temp_path = std::env::temp_dir().join(format!(
+        "ttl_test_session_{}_{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
     let json = serde_json::to_string_pretty(&session).expect("serialize");
     fs::write(&temp_path, &json).expect("write file");
 

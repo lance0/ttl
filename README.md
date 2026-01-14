@@ -63,8 +63,10 @@ Download from [GitHub Releases](https://github.com/lance0/ttl/releases):
 curl -LO https://github.com/lance0/ttl/releases/latest/download/ttl-x86_64-unknown-linux-gnu.tar.gz
 curl -LO https://github.com/lance0/ttl/releases/latest/download/SHA256SUMS
 
-# Verify checksum
+# Verify checksum (Linux)
 sha256sum -c SHA256SUMS --ignore-missing
+# Or on macOS:
+shasum -a 256 -c SHA256SUMS --ignore-missing
 
 # Extract and install
 tar xzf ttl-x86_64-unknown-linux-gnu.tar.gz
