@@ -441,6 +441,41 @@ fn test_pmtud_reset_clears_discovered_mtu() {
 }
 
 #[test]
+fn test_pmtud_reset_clears_discovered_mtu_ipv6() {
+    let mut session = test_session_ipv6_with_pmtud();
+
+    // Complete PMTUD to set discovered_mtu
+    if let Some(pmtud) = session.pmtud.as_mut() {
+        pmtud.start_search();
+        pmtud.record_frag_needed(1400);
+
+        while !pmtud.is_converged() && pmtud.phase == PmtudPhase::Searching {
+            if pmtud.current_size <= 1400 {
+                pmtud.record_success();
+                pmtud.record_success();
+            } else {
+                pmtud.record_failure();
+                pmtud.record_failure();
+            }
+        }
+    }
+
+    // Verify PMTUD completed
+    assert_eq!(session.pmtud.as_ref().unwrap().phase, PmtudPhase::Complete);
+    assert!(session.pmtud.as_ref().unwrap().discovered_mtu.is_some());
+
+    // Reset session
+    session.reset_stats();
+
+    // Verify PMTUD state reset to IPv6 defaults
+    let pmtud = session.pmtud.as_ref().unwrap();
+    assert_eq!(pmtud.phase, PmtudPhase::WaitingForDestination);
+    assert_eq!(pmtud.min_size, 1280); // IPv6 minimum
+    assert_eq!(pmtud.max_size, 1500);
+    assert_eq!(pmtud.discovered_mtu, None);
+}
+
+#[test]
 fn test_pmtud_frag_needed_above_max() {
     // Edge case: router reports MTU > 1500 (jumbo frames or bogus value)
     let mut pmtud = PmtudState::new(false); // IPv4

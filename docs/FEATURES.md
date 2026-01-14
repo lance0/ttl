@@ -160,6 +160,8 @@ The JSON output includes PMTUD state:
     "min_size": 1400,
     "max_size": 1500,
     "current_size": 1450,
+    "successes": 0,
+    "failures": 0,
     "discovered_mtu": 1400,
     "phase": "Complete"
   }
@@ -169,6 +171,7 @@ The JSON output includes PMTUD state:
 Fields:
 - `min_size`: Lower bound (known to work)
 - `max_size`: Upper bound (known to fail or untested)
+- `current_size`: Size being tested in current binary search step
 - `discovered_mtu`: Final MTU when `phase` is `Complete`
 - `phase`: `WaitingForDestination`, `Searching`, or `Complete`
 
