@@ -32,6 +32,7 @@ sudo ttl 8.8.8.8 1.1.1.1 9.9.9.9     # Multiple targets
 - **Paris/Dublin traceroute** - multi-flow probing for ECMP path enumeration
 - **Path MTU discovery** - binary search for maximum unfragmented size
 - **NAT detection** - identify when NAT devices rewrite source ports
+- **Route flap detection** - alert on path changes indicating routing instability
 - **Rich enrichment** - ASN, GeoIP, reverse DNS, IX detection (PeeringDB)
 - **MPLS label detection** from ICMP extensions
 - **ICMP, UDP, TCP probing** with auto-detection

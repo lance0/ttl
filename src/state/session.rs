@@ -437,6 +437,17 @@ impl NatInfo {
     }
 }
 
+/// A detected route change (flap) at a hop
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteChange {
+    /// Previous primary responder IP
+    pub from_ip: IpAddr,
+    /// New primary responder IP
+    pub to_ip: IpAddr,
+    /// Response count when change was detected
+    pub at_seq: u64,
+}
+
 /// Rate limit detection info for a hop
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RateLimitInfo {
@@ -606,9 +617,23 @@ pub struct Hop {
     /// Rate limit detection information for this hop
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<RateLimitInfo>,
+    /// Route changes (flaps) detected at this hop (single-flow mode only)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub route_changes: Vec<RouteChange>,
+    /// Internal: tracks primary with hysteresis for flap detection only
+    /// (separate from `primary` which always reflects true most-frequent)
+    #[serde(skip)]
+    flap_tracking_primary: Option<IpAddr>,
 }
 
 impl Hop {
+    /// Margin required for primary to change (avoids per-packet LB noise)
+    const PRIMARY_CHANGE_MARGIN: u64 = 2;
+    /// Minimum responses before tracking route changes
+    const MIN_RESPONSES_FOR_FLAP: u64 = 5;
+    /// Maximum route changes to store
+    const MAX_ROUTE_CHANGES: usize = 50;
+
     pub fn new(ttl: u8) -> Self {
         Self {
             ttl,
@@ -621,6 +646,8 @@ impl Hop {
             flow_paths: HashMap::new(),
             nat_info: None,
             rate_limit: None,
+            route_changes: Vec::new(),
+            flap_tracking_primary: None,
         }
     }
 
@@ -666,6 +693,56 @@ impl Hop {
         self.update_primary();
     }
 
+    /// Record a response and detect route changes (single-flow mode only)
+    ///
+    /// This is the same as `record_response_with_mpls` but also tracks when
+    /// the primary responder changes, indicating route instability.
+    ///
+    /// Uses a separate `flap_tracking_primary` with hysteresis (margin of 2)
+    /// to avoid false flaps from per-packet load balancing noise, while keeping
+    /// `self.primary` as the true most-frequent responder for UI/export.
+    pub fn record_response_detecting_flaps(
+        &mut self,
+        ip: IpAddr,
+        rtt: Duration,
+        mpls_labels: Option<Vec<MplsLabel>>,
+    ) {
+        let old_flap_primary = self.flap_tracking_primary;
+        self.record_response_with_mpls(ip, rtt, mpls_labels);
+
+        // Update flap_tracking_primary with hysteresis
+        let current_count = self
+            .flap_tracking_primary
+            .and_then(|ip| self.responders.get(&ip))
+            .map(|s| s.received)
+            .unwrap_or(0);
+
+        if let Some((new_ip, stats)) = self.responders.iter().max_by_key(|(_, s)| s.received) {
+            // Only change if: no current tracking primary, OR new leader exceeds by margin
+            if self.flap_tracking_primary.is_none()
+                || stats.received >= current_count + Self::PRIMARY_CHANGE_MARGIN
+            {
+                self.flap_tracking_primary = Some(*new_ip);
+            }
+        }
+
+        // Check for route change (only after minimum responses)
+        if self.received >= Self::MIN_RESPONSES_FOR_FLAP
+            && let (Some(old), Some(new)) = (old_flap_primary, self.flap_tracking_primary)
+            && old != new
+        {
+            self.route_changes.push(RouteChange {
+                from_ip: old,
+                to_ip: new,
+                at_seq: self.received,
+            });
+            // Cap history size
+            if self.route_changes.len() > Self::MAX_ROUTE_CHANGES {
+                self.route_changes.remove(0);
+            }
+        }
+    }
+
     /// Record a timeout - updates hop-level stats only
     ///
     /// Timeouts are tracked in `recent_results` for hop-level loss visualization.
@@ -683,6 +760,9 @@ impl Hop {
     }
 
     /// Update primary responder based on response count
+    ///
+    /// Simple max: primary is always the responder with the most responses.
+    /// For flap detection with hysteresis, see `record_response_detecting_flaps()`.
     pub fn update_primary(&mut self) {
         self.primary = self
             .responders
@@ -923,6 +1003,8 @@ impl Session {
             hop.flow_paths.clear();
             hop.nat_info = None;
             hop.rate_limit = None;
+            hop.route_changes.clear();
+            hop.flap_tracking_primary = None;
         }
     }
 
@@ -1472,5 +1554,198 @@ mod tests {
         // Reset should clear flow_paths
         session.reset_stats();
         assert!(session.hop(1).unwrap().flow_paths.is_empty());
+    }
+
+    #[test]
+    fn test_route_flap_sticky_tie() {
+        // Test that no false flaps occur when counts are equal (sticky tie-breaker)
+        // The internal flap_tracking_primary uses hysteresis to prevent oscillation
+        let mut hop = Hop::new(5);
+        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
+        // Alternate responses to keep counts equal, past the min threshold
+        // ip1: 3, ip2: 3 after 6 responses (past threshold of 5)
+        for _ in 0..3 {
+            hop.record_response_detecting_flaps(ip1, Duration::from_millis(10), None);
+            hop.record_response_detecting_flaps(ip2, Duration::from_millis(10), None);
+        }
+
+        // No flaps should be recorded because:
+        // - flap_tracking_primary stuck with ip1 (first responder)
+        // - ip2 never exceeded ip1's count by margin of 2
+        assert!(
+            hop.route_changes.is_empty(),
+            "Tied counts should not cause flap (sticky tie-breaker)"
+        );
+    }
+
+    #[test]
+    fn test_route_flap_margin_threshold() {
+        // Test that flaps are only recorded when new IP exceeds by margin of 2
+        let mut hop = Hop::new(5);
+        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
+        // ip1 gets 3 responses, becomes initial flap_tracking_primary
+        for _ in 0..3 {
+            hop.record_response_detecting_flaps(ip1, Duration::from_millis(10), None);
+        }
+
+        // ip2 gets 4 responses (only +1 over ip1's 3) - not enough margin
+        for _ in 0..4 {
+            hop.record_response_detecting_flaps(ip2, Duration::from_millis(10), None);
+        }
+        // ip1: 3, ip2: 4 - only +1, below margin of 2
+        // No flap recorded (flap_tracking_primary still ip1)
+        assert!(
+            hop.route_changes.is_empty(),
+            "Sub-margin lead should not cause flap"
+        );
+
+        // ip2 gets one more (now +2 margin: 5 vs 3)
+        hop.record_response_detecting_flaps(ip2, Duration::from_millis(10), None);
+        // ip1: 3, ip2: 5 - now +2, should record flap
+        assert_eq!(
+            hop.route_changes.len(),
+            1,
+            "Margin of +2 should trigger flap"
+        );
+        assert_eq!(hop.route_changes[0].from_ip, ip1);
+        assert_eq!(hop.route_changes[0].to_ip, ip2);
+    }
+
+    #[test]
+    fn test_route_flap_min_response_threshold() {
+        // Test that flaps are only recorded after MIN_RESPONSES_FOR_FLAP (5)
+        let mut hop = Hop::new(5);
+        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
+        // Record 1 from ip1 (becomes flap_tracking_primary)
+        hop.record_response_detecting_flaps(ip1, Duration::from_millis(10), None);
+
+        // Record 3 from ip2 (margin +2 at received=4, switches flap_tracking_primary)
+        // But below min threshold, so no flap recorded
+        for _ in 0..3 {
+            hop.record_response_detecting_flaps(ip2, Duration::from_millis(10), None);
+        }
+        // Total: 4, ip1=1, ip2=3 - switch happened but below threshold
+        assert!(
+            hop.route_changes.is_empty(),
+            "Switch below min threshold should not record flap"
+        );
+        assert_eq!(hop.received, 4);
+
+        // Now add one more from ip1 - brings total to 5, ip1=2, ip2=3
+        // ip2 still leads by only 1, not enough margin for another switch
+        hop.record_response_detecting_flaps(ip1, Duration::from_millis(10), None);
+        assert!(hop.route_changes.is_empty());
+        assert_eq!(hop.received, 5);
+
+        // Add 2 more from ip1 - now ip1=4, ip2=3, ip1 leads by 1
+        for _ in 0..2 {
+            hop.record_response_detecting_flaps(ip1, Duration::from_millis(10), None);
+        }
+        // Not enough margin to switch back, no flap
+        assert!(hop.route_changes.is_empty());
+
+        // Add 3 more from ip1 - now ip1=7, ip2=3, margin is +4
+        // This should finally trigger a flap (ip2 -> ip1) since:
+        // - We're past min threshold (received=10)
+        // - ip1 exceeds ip2 by more than margin of 2
+        for _ in 0..3 {
+            hop.record_response_detecting_flaps(ip1, Duration::from_millis(10), None);
+        }
+        assert_eq!(
+            hop.route_changes.len(),
+            1,
+            "Should record flap when margin met after threshold"
+        );
+        assert_eq!(hop.route_changes[0].from_ip, ip2);
+        assert_eq!(hop.route_changes[0].to_ip, ip1);
+    }
+
+    #[test]
+    fn test_route_flap_capped_history() {
+        // Test that route_changes is capped at MAX_ROUTE_CHANGES (50)
+        let mut hop = Hop::new(5);
+        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
+        // Manually add route changes to test cap
+        for i in 0..55 {
+            hop.route_changes.push(RouteChange {
+                from_ip: if i % 2 == 0 { ip1 } else { ip2 },
+                to_ip: if i % 2 == 0 { ip2 } else { ip1 },
+                at_seq: i as u64,
+            });
+
+            // Simulate cap behavior
+            if hop.route_changes.len() > Hop::MAX_ROUTE_CHANGES {
+                hop.route_changes.remove(0);
+            }
+        }
+
+        // Should be capped at 50
+        assert_eq!(hop.route_changes.len(), Hop::MAX_ROUTE_CHANGES);
+        // Oldest entries should be removed (entries 0-4 removed, 5-54 remain)
+        assert_eq!(hop.route_changes[0].at_seq, 5);
+    }
+
+    #[test]
+    fn test_route_flap_reset_clears() {
+        // Test that reset_stats() clears route_changes
+        let target = Target::new(
+            "test.com".to_string(),
+            IpAddr::V4(std::net::Ipv4Addr::new(1, 2, 3, 4)),
+        );
+        let config = Config::default();
+        let mut session = Session::new(target, config);
+
+        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
+        // Add a route change manually
+        if let Some(hop) = session.hop_mut(1) {
+            hop.route_changes.push(RouteChange {
+                from_ip: ip1,
+                to_ip: ip2,
+                at_seq: 10,
+            });
+        }
+
+        assert!(!session.hop(1).unwrap().route_changes.is_empty());
+
+        // Reset should clear
+        session.reset_stats();
+        assert!(session.hop(1).unwrap().route_changes.is_empty());
+    }
+
+    #[test]
+    fn test_multi_flow_no_flap_detection() {
+        // Test that record_response_with_mpls (used in multi-flow mode)
+        // does NOT record route changes - only record_response_detecting_flaps does
+        let mut hop = Hop::new(5);
+        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
+        // ip1 gets 3 responses
+        for _ in 0..3 {
+            hop.record_response_with_mpls(ip1, Duration::from_millis(10), None);
+        }
+
+        // ip2 gets 6 responses (exceeds margin of +2 and past threshold of 5)
+        for _ in 0..6 {
+            hop.record_response_with_mpls(ip2, Duration::from_millis(10), None);
+        }
+
+        // primary should be ip2 (most frequent)
+        assert_eq!(hop.primary, Some(ip2));
+        // But no route change should be recorded (multi-flow path)
+        assert!(
+            hop.route_changes.is_empty(),
+            "record_response_with_mpls should NOT record flaps (multi-flow mode)"
+        );
     }
 }

@@ -75,6 +75,23 @@ ttl automatically detects NAT devices that rewrite source ports:
 - Displays "NAT" indicator in hop details when mismatch detected
 - Useful for diagnosing carrier-grade NAT (CGNAT) or enterprise NAT
 
+## Route Flap Detection
+
+ttl detects route instability when the primary responder IP changes at a hop:
+
+- Main table shows "!" indicator after hostname when route changes detected
+- Hop detail view (Enter key) shows route change history with timestamps
+- Uses hysteresis (margin of 2 responses) to avoid false positives from per-packet load balancing
+- Requires 5+ responses before recording changes (avoids startup noise)
+- History capped at 50 changes per hop
+- Only active in single-flow mode (disabled when `--flows > 1` since ECMP expects path variation)
+
+Route flaps can indicate:
+- Unstable BGP routes
+- Flapping links
+- Load balancer issues
+- Network convergence events
+
 ## Interface Binding
 
 ```bash

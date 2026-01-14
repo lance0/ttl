@@ -62,6 +62,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Works with or without `--interface` flag
   - Parses `ip route show` on Linux, `route -n get default` on macOS
   - Gateway info also populated when using `--interface` option
+- **Route flap detection**: Detect when primary responder IP changes at a hop
+  - Indicates routing instability in single-flow mode
+  - Main table shows "!" after hostname when flaps detected
+  - Hop detail view shows route change history (last 5 changes)
+  - Uses sticky tie-breaker with margin (requires new IP to exceed old by 2+ responses)
+  - Minimum 5 responses before recording flaps (avoids startup noise)
+  - Disabled in multi-flow mode (`--flows > 1`) where path changes are expected
+  - History capped at 50 changes per hop
 
 ### Fixed
 - **PeeringDB pagination**: Added `limit=0` to API requests to fetch all IX records

@@ -115,7 +115,7 @@
 ### v0.10.0 - Rate Limit Detection (Released)
 - [x] Rate limit detection (identify ICMP rate limiting, explain misleading loss%)
 - [ ] Asymmetric routing detection (compare forward path TTLs in responses)
-- [ ] Route flap/change detection (alert on path changes, log history)
+- [x] Route flap/change detection (alert on path changes, show in TUI)
 - [ ] Packet loss pattern analysis (bursty vs random loss classification)
 - [ ] DNS resolution timing (separate DNS latency from network latency)
 - [ ] IPv4 + IPv6 simultaneous (happy eyeballs dual-stack testing)

@@ -240,12 +240,21 @@ impl Receiver {
                     if let Some(session) = sessions.get(&resp.target) {
                         let mut state = session.write();
                         if let Some(hop) = state.hop_mut(resp.probe_id.ttl) {
-                            // Record aggregate stats (existing behavior)
-                            hop.record_response_with_mpls(
-                                resp.responder,
-                                resp.rtt,
-                                resp.mpls_labels,
-                            );
+                            // Record aggregate stats with optional flap detection
+                            // Only detect flaps in single-flow mode (multi-flow expects path changes)
+                            if self.config.num_flows == 1 {
+                                hop.record_response_detecting_flaps(
+                                    resp.responder,
+                                    resp.rtt,
+                                    resp.mpls_labels,
+                                );
+                            } else {
+                                hop.record_response_with_mpls(
+                                    resp.responder,
+                                    resp.rtt,
+                                    resp.mpls_labels,
+                                );
+                            }
                             // Record per-flow stats for Paris/Dublin traceroute ECMP detection
                             hop.record_flow_response(resp.flow_id, resp.responder, resp.rtt);
                             // Record NAT detection result (compare sent vs returned source port)

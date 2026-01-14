@@ -200,7 +200,13 @@ impl Widget for MainView<'_> {
                     } else {
                         String::new()
                     };
-                    (truncate_with_ellipsis(&display, 28), asn)
+                    // Add flap indicator in single-flow mode when route changes detected
+                    let has_flap = !multi_flow && !hop.route_changes.is_empty();
+                    // Truncate to 26 when flap indicator shown (2 chars), otherwise 28
+                    let max_len = if has_flap { 26 } else { 28 };
+                    let truncated = truncate_with_ellipsis(&display, max_len);
+                    let flap_indicator = if has_flap { " !" } else { "" };
+                    (format!("{}{}", truncated, flap_indicator), asn)
                 } else if hop.received == 0 {
                     ("* * *".to_string(), String::new())
                 } else {

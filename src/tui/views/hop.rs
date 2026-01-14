@@ -305,6 +305,36 @@ impl Widget for HopDetailView<'_> {
                 ]));
             }
 
+            // Route changes (flaps) detected at this hop
+            if !self.hop.route_changes.is_empty() {
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![Span::styled(
+                    format!("  Route Changes: {} detected", self.hop.route_changes.len()),
+                    Style::default().fg(self.theme.warning),
+                )]));
+
+                // Show last few route changes
+                for change in self.hop.route_changes.iter().rev().take(5) {
+                    lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::raw(format!("{}", change.from_ip)),
+                        Span::styled(" → ", Style::default().fg(self.theme.text_dim)),
+                        Span::raw(format!("{}", change.to_ip)),
+                        Span::styled(
+                            format!(" (after {} responses)", change.at_seq),
+                            Style::default().fg(self.theme.text_dim),
+                        ),
+                    ]));
+                }
+
+                if self.hop.route_changes.len() > 5 {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("    ... and {} more", self.hop.route_changes.len() - 5),
+                        Style::default().fg(self.theme.text_dim),
+                    )]));
+                }
+            }
+
             // Per-flow paths (Paris/Dublin traceroute ECMP detection)
             if !self.hop.flow_paths.is_empty() && self.hop.has_ecmp() {
                 lines.push(Line::from(""));
