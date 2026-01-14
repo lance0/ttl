@@ -32,7 +32,7 @@ pub struct Args {
 
     /// Use fixed port (disable per-TTL port variation)
     #[arg(long = "fixed-port")]
-    pub fixed_port: bool,
+    pub port_fixed: bool,
 
     /// Number of flows for multi-path ECMP detection (1 = classic mode)
     #[arg(long = "flows", default_value = "1")]

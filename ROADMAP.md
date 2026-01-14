@@ -151,9 +151,9 @@
 - [ ] Integration tests for probe→receive→state pipeline
 - [ ] Property-based/fuzz tests for packet parsing (correlate.rs)
 - [ ] IX lookup performance: radix trie for O(prefix_len) instead of O(n) linear scan
-- [ ] Refactor Receiver::new() 9-arg signature to config struct
-- [ ] Document --pmtud flag in README
-- [ ] Fix naming inconsistency: fixed_port (CLI) vs port_fixed (Config)
+- [x] Refactor Receiver::new() 9-arg signature to config struct
+- [x] Document --pmtud flag in README
+- [x] Fix naming inconsistency: fixed_port (CLI) vs port_fixed (Config)
 
 ### Infrastructure
 - [x] GitHub Actions CI (build, test, clippy)

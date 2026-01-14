@@ -131,7 +131,7 @@ impl From<&Args> for Config {
             timeout: args.timeout_duration(),
             protocol,
             port,
-            port_fixed: args.fixed_port,
+            port_fixed: args.port_fixed,
             flows: args.flows,
             src_port_base: args.src_port,
             dns_enabled: !args.no_dns,

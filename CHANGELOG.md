@@ -106,6 +106,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Detection integrates with all modes: interactive TUI, batch, and streaming
 - JSON export includes rate limit data via serde
 - IX lookup uses `tokio::sync::OnceCell` for thread-safe lazy initialization
+- Refactored `Receiver::new()` and `spawn_receiver()` to use `ReceiverConfig` struct (9 args → 4 args)
+- Renamed internal `fixed_port` field to `port_fixed` for Rust naming consistency
 
 ## [0.9.0] - 2026-01-13
 

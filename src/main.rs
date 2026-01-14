@@ -31,7 +31,7 @@ use probe::{InterfaceInfo, check_permissions, validate_interface};
 use state::{Session, Target, run_ratelimit_worker};
 use trace::engine::ProbeEngine;
 use trace::pending::new_pending_map;
-use trace::receiver::{SessionMap, spawn_receiver};
+use trace::receiver::{ReceiverConfig, SessionMap, spawn_receiver};
 use tui::app::run_tui;
 use tui::theme::Theme;
 
@@ -294,16 +294,19 @@ async fn run_interactive_mode(
     let ipv6 = targets[0].is_ipv6();
 
     // Spawn receiver thread (handles all targets)
+    let receiver_config = ReceiverConfig {
+        timeout: config.timeout,
+        ipv6,
+        src_port_base: config.src_port_base,
+        num_flows: config.flows,
+        interface: interface.clone(),
+        recv_any: config.recv_any,
+    };
     let receiver_handle = spawn_receiver(
         sessions.clone(),
         pending.clone(),
         cancel.clone(),
-        config.timeout,
-        ipv6,
-        config.src_port_base,
-        config.flows,
-        interface.clone(),
-        config.recv_any,
+        receiver_config,
     );
 
     // Spawn probe engine for each target
@@ -463,16 +466,19 @@ async fn run_batch_mode(
     let ipv6 = targets[0].is_ipv6();
 
     // Spawn receiver thread (handles all targets)
+    let receiver_config = ReceiverConfig {
+        timeout: config.timeout,
+        ipv6,
+        src_port_base: config.src_port_base,
+        num_flows: config.flows,
+        interface: interface.clone(),
+        recv_any: config.recv_any,
+    };
     let receiver_handle = spawn_receiver(
         sessions.clone(),
         pending.clone(),
         cancel.clone(),
-        config.timeout,
-        ipv6,
-        config.src_port_base,
-        config.flows,
-        interface.clone(),
-        config.recv_any,
+        receiver_config,
     );
 
     // Spawn probe engine for each target
@@ -661,16 +667,19 @@ async fn run_streaming_mode(
     let ipv6 = targets[0].is_ipv6();
 
     // Spawn receiver thread (handles all targets)
+    let receiver_config = ReceiverConfig {
+        timeout: config.timeout,
+        ipv6,
+        src_port_base: config.src_port_base,
+        num_flows: config.flows,
+        interface: interface.clone(),
+        recv_any: config.recv_any,
+    };
     let receiver_handle = spawn_receiver(
         sessions.clone(),
         pending.clone(),
         cancel.clone(),
-        config.timeout,
-        ipv6,
-        config.src_port_base,
-        config.flows,
-        interface.clone(),
-        config.recv_any,
+        receiver_config,
     );
 
     // Spawn probe engine for each target

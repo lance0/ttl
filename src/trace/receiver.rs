@@ -16,6 +16,23 @@ use crate::trace::pending::PendingMap;
 /// Map of target IP to session, shared across multiple engines and the receiver
 pub type SessionMap = Arc<RwLock<HashMap<IpAddr, Arc<RwLock<Session>>>>>;
 
+/// Configuration for the ICMP receiver
+#[derive(Clone)]
+pub struct ReceiverConfig {
+    /// Probe timeout duration
+    pub timeout: Duration,
+    /// Whether targets are IPv6
+    pub ipv6: bool,
+    /// Base source port for flow identification (Paris/Dublin traceroute)
+    pub src_port_base: u16,
+    /// Number of flows for multi-path ECMP detection
+    pub num_flows: u8,
+    /// Network interface to bind receiver socket to
+    pub interface: Option<InterfaceInfo>,
+    /// Don't bind receiver to interface (for asymmetric routing)
+    pub recv_any: bool,
+}
+
 /// Maximum consecutive errors before stopping the receiver
 const MAX_CONSECUTIVE_ERRORS: u32 = 50;
 
@@ -48,33 +65,18 @@ pub struct Receiver {
     sessions: SessionMap,
     pending: PendingMap,
     cancel: CancellationToken,
-    timeout: Duration,
-    ipv6: bool,
+    config: ReceiverConfig,
     consecutive_errors: u32,
-    /// Base source port for calculating flow_id from response (Paris/Dublin traceroute)
-    src_port_base: u16,
-    /// Number of flows (for validating derived flow_id is in range)
-    num_flows: u8,
     /// List of target IPs for probe lookup (cached from sessions keys)
     targets: Vec<IpAddr>,
-    /// Network interface to bind receiver socket to
-    interface: Option<InterfaceInfo>,
-    /// Don't bind receiver to interface (for asymmetric routing)
-    recv_any: bool,
 }
 
 impl Receiver {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sessions: SessionMap,
         pending: PendingMap,
         cancel: CancellationToken,
-        timeout: Duration,
-        ipv6: bool,
-        src_port_base: u16,
-        num_flows: u8,
-        interface: Option<InterfaceInfo>,
-        recv_any: bool,
+        config: ReceiverConfig,
     ) -> Self {
         // Cache target list for probe lookup
         let targets: Vec<IpAddr> = sessions.read().keys().cloned().collect();
@@ -82,14 +84,9 @@ impl Receiver {
             sessions,
             pending,
             cancel,
-            timeout,
-            ipv6,
+            config,
             consecutive_errors: 0,
-            src_port_base,
-            num_flows,
             targets,
-            interface,
-            recv_any,
         }
     }
 
@@ -97,12 +94,12 @@ impl Receiver {
     pub fn run_blocking(mut self) -> Result<()> {
         let identifier = get_identifier();
         // Skip interface binding if recv_any is set (allows asymmetric routing)
-        let effective_interface = if self.recv_any {
+        let effective_interface = if self.config.recv_any {
             None
         } else {
-            self.interface.as_ref()
+            self.config.interface.as_ref()
         };
-        let socket = create_recv_socket_with_interface(self.ipv6, effective_interface)?;
+        let socket = create_recv_socket_with_interface(self.config.ipv6, effective_interface)?;
 
         // Set non-blocking with short timeout for polling
         socket.set_read_timeout(Some(Duration::from_millis(100)))?;
@@ -142,10 +139,10 @@ impl Receiver {
                             let flow_id = parsed
                                 .src_port
                                 .and_then(|p| {
-                                    if p >= self.src_port_base
-                                        && p < self.src_port_base + self.num_flows as u16
+                                    if p >= self.config.src_port_base
+                                        && p < self.config.src_port_base + self.config.num_flows as u16
                                     {
-                                        Some((p - self.src_port_base) as u8)
+                                        Some((p - self.config.src_port_base) as u8)
                                     } else {
                                         // Port outside expected range - treat as ICMP (flow 0)
                                         None
@@ -303,7 +300,7 @@ impl Receiver {
                 let now = Instant::now();
                 let mut pending = self.pending.write();
                 let sessions = self.sessions.read();
-                let timeout = self.timeout;
+                let timeout = self.config.timeout;
                 // Key is (ProbeId, flow_id, target, is_pmtud) tuple
                 pending.retain(|(probe_id, _flow_id, target, _is_pmtud), probe| {
                     if now.duration_since(probe.sent_at) > timeout {
@@ -338,30 +335,14 @@ impl Receiver {
 }
 
 /// Spawn the receiver on a dedicated OS thread
-#[allow(clippy::too_many_arguments)]
 pub fn spawn_receiver(
     sessions: SessionMap,
     pending: PendingMap,
     cancel: CancellationToken,
-    timeout: Duration,
-    ipv6: bool,
-    src_port_base: u16,
-    num_flows: u8,
-    interface: Option<InterfaceInfo>,
-    recv_any: bool,
+    config: ReceiverConfig,
 ) -> std::thread::JoinHandle<Result<()>> {
     std::thread::spawn(move || {
-        let receiver = Receiver::new(
-            sessions,
-            pending,
-            cancel,
-            timeout,
-            ipv6,
-            src_port_base,
-            num_flows,
-            interface,
-            recv_any,
-        );
+        let receiver = Receiver::new(sessions, pending, cancel, config);
 
         // Catch panics and convert to error with details
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| receiver.run_blocking())) {
