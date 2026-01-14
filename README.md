@@ -54,6 +54,25 @@ cargo install ttl
 cargo install --git https://github.com/lance0/ttl
 ```
 
+### Pre-built binaries
+
+Download from [GitHub Releases](https://github.com/lance0/ttl/releases):
+
+```bash
+# Download and extract
+curl -LO https://github.com/lance0/ttl/releases/latest/download/ttl-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/lance0/ttl/releases/latest/download/SHA256SUMS
+
+# Verify checksum
+sha256sum -c SHA256SUMS --ignore-missing
+
+# Extract and install
+tar xzf ttl-x86_64-unknown-linux-gnu.tar.gz
+sudo mv ttl /usr/local/bin/
+```
+
+Available targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`
+
 ### Permissions
 
 Raw sockets require elevated privileges:

@@ -3,6 +3,7 @@
 //! These tests verify the data flow from simulated probe sends
 //! through state updates, without requiring actual network access.
 
+use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
@@ -399,4 +400,120 @@ fn test_pmtud_frag_needed_at_min() {
 
     // Should immediately converge since min == max
     assert!(pmtud.is_converged());
+}
+
+#[test]
+fn test_pmtud_frag_needed_above_max() {
+    // Edge case: router reports MTU > 1500 (jumbo frames or bogus value)
+    let mut pmtud = PmtudState::new(false); // IPv4
+    pmtud.start_search();
+
+    // Router reports 9000 (jumbo frame MTU)
+    pmtud.record_frag_needed(9000);
+
+    // max_size should stay at 1500 (min of current max and reported)
+    assert_eq!(pmtud.max_size, 1500);
+
+    // Search continues normally
+    assert_eq!(pmtud.phase, PmtudPhase::Searching);
+}
+
+#[test]
+fn test_pmtud_ipv6_convergence() {
+    // Full IPv6 PMTUD cycle with realistic MTU
+    let mut pmtud = PmtudState::new(true); // IPv6, min=1280
+    pmtud.start_search();
+
+    // Simulate link with 1400 byte MTU (common for tunnels)
+    pmtud.record_frag_needed(1400);
+    assert!(pmtud.max_size <= 1400);
+
+    // Binary search to convergence
+    while !pmtud.is_converged() && pmtud.phase == PmtudPhase::Searching {
+        if pmtud.current_size <= 1400 {
+            pmtud.record_success();
+            pmtud.record_success();
+        } else {
+            pmtud.record_failure();
+            pmtud.record_failure();
+        }
+    }
+
+    assert_eq!(pmtud.phase, PmtudPhase::Complete);
+    let mtu = pmtud.discovered_mtu.unwrap();
+    // Should converge between 1280 and 1400
+    assert!(mtu >= 1280 && mtu <= 1400);
+}
+
+#[test]
+fn test_session_json_file_roundtrip() {
+    let mut session = test_session_with_pmtud();
+
+    // Populate session with realistic data
+    let router1 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+    let router2 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+    let target = session.target.resolved;
+
+    // Hop 1: gateway
+    if let Some(hop) = session.hop_mut(1) {
+        hop.record_sent();
+        hop.record_response(router1, Duration::from_millis(2));
+    }
+
+    // Hop 2: ISP router
+    if let Some(hop) = session.hop_mut(2) {
+        hop.record_sent();
+        hop.record_response(router2, Duration::from_millis(10));
+        hop.record_sent();
+        hop.record_timeout(); // Some loss
+    }
+
+    // Hop 3: destination
+    if let Some(hop) = session.hop_mut(3) {
+        hop.record_sent();
+        hop.record_response(target, Duration::from_millis(15));
+    }
+
+    session.complete = true;
+    session.dest_ttl = Some(3);
+    session.total_sent = 4;
+    session.source_ip = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)));
+    session.gateway = Some(router1);
+
+    // Advance PMTUD state
+    if let Some(pmtud) = session.pmtud.as_mut() {
+        pmtud.start_search();
+        pmtud.record_frag_needed(1400);
+    }
+
+    // Save to temp file
+    let temp_path = std::env::temp_dir().join("ttl_test_session.json");
+    let json = serde_json::to_string_pretty(&session).expect("serialize");
+    fs::write(&temp_path, &json).expect("write file");
+
+    // Load from file
+    let loaded_json = fs::read_to_string(&temp_path).expect("read file");
+    let loaded: Session = serde_json::from_str(&loaded_json).expect("deserialize");
+
+    // Verify all fields preserved
+    assert_eq!(loaded.target.original, "8.8.8.8");
+    assert_eq!(loaded.complete, true);
+    assert_eq!(loaded.dest_ttl, Some(3));
+    assert_eq!(loaded.total_sent, 4);
+    assert_eq!(loaded.source_ip, session.source_ip);
+    assert_eq!(loaded.gateway, session.gateway);
+
+    // Verify hop data
+    assert_eq!(loaded.hop(1).unwrap().received, 1);
+    assert_eq!(loaded.hop(2).unwrap().timeouts, 1);
+    assert_eq!(loaded.hop(3).unwrap().primary, Some(target));
+
+    // Verify PMTUD state
+    assert!(loaded.pmtud.is_some());
+    let pmtud = loaded.pmtud.as_ref().unwrap();
+    assert_eq!(pmtud.phase, PmtudPhase::Searching);
+    assert!(pmtud.max_size <= 1400);
+
+    // Cleanup
+    let _ = fs::remove_file(&temp_path);
 }
