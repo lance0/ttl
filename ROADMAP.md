@@ -145,7 +145,6 @@
 - [ ] Customizable columns (choose which stats to display)
 - [ ] Custom keybindings
 - [ ] World map visualization (ASCII/Unicode geographic path display)
-- [ ] Hop privacy mode (mask sensitive IPs for screenshots/sharing)
 
 ### Testing & Code Quality
 - [ ] Integration tests for probe→receive→state pipeline
@@ -157,7 +156,7 @@
 
 ### Infrastructure
 - [x] GitHub Actions CI (build, test, clippy)
-- [ ] Binary releases (Linux, macOS)
+- [x] Binary releases (Linux x86_64/aarch64, macOS x86_64/aarch64)
 - [ ] Homebrew formula
 - [ ] AUR package
 
@@ -167,8 +166,11 @@
 - [ ] Bandwidth/capacity estimation (pathchar-style probing)
 - [ ] SNMP integration (query router interface stats)
 - [ ] Web UI mode (browser-based interface)
-- [ ] Multi-language TUI (i18n support)
 - [ ] Packet capture integration (optional pcap output)
+
+## Scope Creep (Not Planned)
+- Hop privacy mode (mask IPs for screenshots) - users can redact manually
+- Multi-language TUI (i18n) - English-only is fine for CLI tools
 
 ## Non-Goals
 - Full packet capture/analysis (use tcpdump/wireshark)

@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **GitHub Actions CI**: Automated build, test, clippy, and format checks on PRs
   - Runs on ubuntu-latest for all pushes to master and PRs
   - Strict clippy (`-D warnings`) catches issues before merge
+- **Binary releases**: Automated builds on version tags via GitHub Actions
+  - Linux x86_64 and aarch64 (cross-compiled)
+  - macOS x86_64 (Intel) and aarch64 (Apple Silicon)
+  - Pre-built binaries attached to GitHub releases
 - **Rate limiting** (`--rate`): Limit probes per second to avoid triggering router rate limits
   - Useful for slow links or avoiding overwhelming targets
   - `--rate 0` = unlimited (default), `--rate 10` = 10 probes/sec max
