@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-01-14
+
+### Added
+- **CLI examples in help**: `--help` now shows usage examples and detection indicator legend
+- **Smoke test script**: `tests/smoke.sh` for cross-platform verification
+
+### Changed
+- **README improvements**: Homebrew install, simplified permissions, Known Limitations section, better troubleshooting
+
 ## [0.10.0] - 2026-01-13
 
 **Highlights**: Path MTU discovery, ICMP rate limit detection, route flap detection, asymmetric routing detection, TTL manipulation detection, and CI/CD automation. Major release for network diagnostic capabilities.
