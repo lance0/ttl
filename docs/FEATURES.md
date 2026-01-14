@@ -90,6 +90,20 @@ Bind probes to a specific network interface. Useful for:
 
 The `--recv-any` flag disables receiver socket binding, allowing asymmetric routing where replies arrive on a different interface.
 
+### Title Bar Routing Display
+
+When binding to an interface or when the source can be determined, the TUI title bar shows routing information:
+
+```
+ttl -- 8.8.8.8 -- eth0 (192.168.1.100 → 192.168.1.1) -- 100 probes
+```
+
+- **Interface name** (eth0, wlan0) - shown when `--interface` is used
+- **Source IP** (192.168.1.100) - the local address used for probes
+- **Gateway** (192.168.1.1) - the default gateway for the route
+
+This helps verify which network path your probes are taking, especially useful on multi-homed systems or when testing VPN configurations.
+
 ## Packet Size and DSCP
 
 ```bash

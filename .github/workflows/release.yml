@@ -9,6 +9,21 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Run security audit
+        run: cargo audit
+
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -68,7 +83,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
+    needs: [audit, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -83,10 +98,20 @@ jobs:
       - name: List artifacts
         run: find artifacts -type f
 
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          find . -name "*.tar.gz" -exec mv {} . \;
+          sha256sum *.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+          cd -
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
+          files: |
+            artifacts/*.tar.gz
+            artifacts/SHA256SUMS
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}

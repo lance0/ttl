@@ -477,4 +477,58 @@ mod tests {
         let above_range: Ipv6Addr = "fec0::1".parse().unwrap();
         assert!(!is_link_local_ipv6(&above_range));
     }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_parse_linux_route_gateway_ipv4() {
+        // Standard DHCP route
+        let output = "default via 192.168.1.1 dev eth0 proto dhcp src 192.168.1.100 metric 100";
+        assert_eq!(
+            parse_linux_route_gateway(output),
+            Some("192.168.1.1".parse().unwrap())
+        );
+
+        // Minimal route
+        let output = "default via 10.0.0.1 dev wlan0";
+        assert_eq!(
+            parse_linux_route_gateway(output),
+            Some("10.0.0.1".parse().unwrap())
+        );
+
+        // No default route
+        let output = "192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.100";
+        assert_eq!(parse_linux_route_gateway(output), None);
+
+        // Empty output
+        assert_eq!(parse_linux_route_gateway(""), None);
+
+        // Default without via (directly connected)
+        let output = "default dev ppp0 scope link";
+        assert_eq!(parse_linux_route_gateway(output), None);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn test_parse_linux_route_gateway_ipv6() {
+        // Standard IPv6 default route
+        let output = "default via fe80::1 dev eth0 proto ra metric 100 pref medium";
+        assert_eq!(
+            parse_linux_route_gateway_v6(output),
+            Some("fe80::1".parse().unwrap())
+        );
+
+        // Full link-local gateway address
+        let output = "default via fe80::fe3d:73ff:fe5d:7fd2 dev eno1 proto ra metric 100";
+        assert_eq!(
+            parse_linux_route_gateway_v6(output),
+            Some("fe80::fe3d:73ff:fe5d:7fd2".parse().unwrap())
+        );
+
+        // No default route
+        let output = "2001:db8::/32 dev eth0 proto kernel metric 256";
+        assert_eq!(parse_linux_route_gateway_v6(output), None);
+
+        // Empty output
+        assert_eq!(parse_linux_route_gateway_v6(""), None);
+    }
 }
