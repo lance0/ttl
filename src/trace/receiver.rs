@@ -140,7 +140,8 @@ impl Receiver {
                                 .src_port
                                 .and_then(|p| {
                                     if p >= self.config.src_port_base
-                                        && p < self.config.src_port_base + self.config.num_flows as u16
+                                        && p < self.config.src_port_base
+                                            + self.config.num_flows as u16
                                     {
                                         Some((p - self.config.src_port_base) as u8)
                                     } else {
