@@ -403,6 +403,44 @@ fn test_pmtud_frag_needed_at_min() {
 }
 
 #[test]
+fn test_pmtud_reset_clears_discovered_mtu() {
+    let mut session = test_session_with_pmtud();
+
+    // Complete PMTUD to set discovered_mtu
+    if let Some(pmtud) = session.pmtud.as_mut() {
+        pmtud.start_search();
+        pmtud.record_frag_needed(1400);
+
+        // Drive to completion
+        while !pmtud.is_converged() && pmtud.phase == PmtudPhase::Searching {
+            if pmtud.current_size <= 1400 {
+                pmtud.record_success();
+                pmtud.record_success();
+            } else {
+                pmtud.record_failure();
+                pmtud.record_failure();
+            }
+        }
+    }
+
+    // Verify PMTUD completed with discovered MTU
+    assert_eq!(session.pmtud.as_ref().unwrap().phase, PmtudPhase::Complete);
+    assert!(session.pmtud.as_ref().unwrap().discovered_mtu.is_some());
+
+    // Reset session
+    session.reset_stats();
+
+    // Verify PMTUD state is fully reset including discovered_mtu
+    let pmtud = session.pmtud.as_ref().unwrap();
+    assert_eq!(pmtud.phase, PmtudPhase::WaitingForDestination);
+    assert_eq!(pmtud.min_size, 68);
+    assert_eq!(pmtud.max_size, 1500);
+    assert_eq!(pmtud.discovered_mtu, None); // Key assertion
+    assert_eq!(pmtud.successes, 0);
+    assert_eq!(pmtud.failures, 0);
+}
+
+#[test]
 fn test_pmtud_frag_needed_above_max() {
     // Edge case: router reports MTU > 1500 (jumbo frames or bogus value)
     let mut pmtud = PmtudState::new(false); // IPv4

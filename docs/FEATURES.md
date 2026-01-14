@@ -146,6 +146,32 @@ Discover the path MTU using binary search:
 
 PMTUD runs in the background after the destination is discovered, without interrupting normal tracing.
 
+### JSON Output with PMTUD
+
+```bash
+ttl --pmtud 8.8.8.8 -c 50 --json > pmtud_results.json
+```
+
+The JSON output includes PMTUD state:
+
+```json
+{
+  "pmtud": {
+    "min_size": 1400,
+    "max_size": 1500,
+    "current_size": 1450,
+    "discovered_mtu": 1400,
+    "phase": "Complete"
+  }
+}
+```
+
+Fields:
+- `min_size`: Lower bound (known to work)
+- `max_size`: Upper bound (known to fail or untested)
+- `discovered_mtu`: Final MTU when `phase` is `Complete`
+- `phase`: `WaitingForDestination`, `Searching`, or `Complete`
+
 ## Enrichment Lookups
 
 ### ASN Lookup (enabled by default)
@@ -320,3 +346,29 @@ Options:
   -h, --help             Print help
   -V, --version          Print version
 ```
+
+## Download Verification
+
+Pre-built binaries are available from [GitHub Releases](https://github.com/lance0/ttl/releases). Each release includes a `SHA256SUMS` file for verification.
+
+### Linux
+
+```bash
+curl -LO https://github.com/lance0/ttl/releases/latest/download/ttl-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/lance0/ttl/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+### macOS
+
+```bash
+curl -LO https://github.com/lance0/ttl/releases/latest/download/ttl-aarch64-apple-darwin.tar.gz
+curl -LO https://github.com/lance0/ttl/releases/latest/download/SHA256SUMS
+shasum -a 256 -c SHA256SUMS --ignore-missing
+```
+
+Available targets:
+- `x86_64-unknown-linux-gnu` - Linux x86_64
+- `aarch64-unknown-linux-gnu` - Linux ARM64
+- `x86_64-apple-darwin` - macOS Intel
+- `aarch64-apple-darwin` - macOS Apple Silicon
