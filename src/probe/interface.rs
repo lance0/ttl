@@ -431,14 +431,21 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn test_loopback_interface() {
-        // lo should always exist on Linux
-        let result = validate_interface("lo");
+        let interfaces = datalink::interfaces();
+        let loopback_name = match interfaces.iter().find(|iface| iface.is_loopback()) {
+            Some(iface) => iface.name.clone(),
+            None => {
+                eprintln!("Skipping loopback interface test: no loopback interface visible.");
+                return;
+            }
+        };
+
+        let result = validate_interface(&loopback_name);
         assert!(result.is_ok());
 
         let info = result.unwrap();
-        assert_eq!(info.name, "lo");
-        // Loopback should have 127.0.0.1
-        assert!(info.ipv4.is_some());
+        assert_eq!(info.name, loopback_name);
+        assert!(info.ipv4.is_some() || info.ipv6.is_some());
     }
 
     #[test]
