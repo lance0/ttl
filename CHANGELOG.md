@@ -5,13 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.11.3] - 2026-01-15
+## [Unreleased]
 
 ### Fixed
-- **macOS Sequoia compatibility**: Fix TUI display issue on macOS 15 (Sequoia)
-  - Binary built on Tahoe (26) without deployment target had issues on Sequoia (15)
-  - Set `MACOSX_DEPLOYMENT_TARGET=15.0` to ensure backward compatibility
-  - Continues using `macos-latest` runner for newest toolchain
+- **Multi-target response misattribution**: Fix bug where responses could be attributed to wrong target when tracing multiple destinations concurrently
+  - Extract original destination IP from quoted ICMP error packets for direct lookup
+  - Use responder IP for Echo Reply disambiguation (responder IS the target)
+  - Eliminates ambiguous linear target iteration
+
+### Changed
+- **MSG_CTRUNC detection**: Return `None` TTL when control message is truncated to prevent unreliable asymmetry detection
+- **IPv6 permission check on Linux**: Warn if IPv6 sockets unavailable (mirrors macOS behavior)
+- **macOS CI**: Add macOS test job to catch platform-specific issues before release
+
+### Improved
+- Remove panic-able `unwrap()` from MPLS label parsing (use direct array conversion)
+
+## [0.11.3] - 2026-01-15
+
+### Changed
+- **macOS Sequoia (15) support**: Document as "build from source" only
+  - Pre-built binaries are built on Tahoe (26) and may have display issues on Sequoia
+  - Users on macOS 15 should use `cargo install ttl` to compile from source
+  - Updated README Platform Support table to clarify compatibility
 
 ## [0.11.2] - 2026-01-15
 

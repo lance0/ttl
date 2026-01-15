@@ -161,25 +161,48 @@ impl Receiver {
                                 .unwrap_or(0);
 
                             // Find matching pending probe (key includes flow_id, target, is_pmtud)
-                            // Try each target since we don't know which target this response is for
-                            // Try normal probes first (is_pmtud=false), then PMTUD probes (is_pmtud=true)
                             let mut found_probe = None;
                             {
                                 let mut pending = self.pending.write();
-                                for target in &self.targets {
+
+                                // If we have original_dest from ICMP error, use direct lookup
+                                if let Some(dest) = parsed.original_dest {
                                     // Try normal probe first
                                     if let Some(probe) =
-                                        pending.remove(&(parsed.probe_id, flow_id, *target, false))
+                                        pending.remove(&(parsed.probe_id, flow_id, dest, false))
                                     {
                                         found_probe = Some(probe);
-                                        break;
+                                    } else if let Some(probe) =
+                                        pending.remove(&(parsed.probe_id, flow_id, dest, true))
+                                    {
+                                        // Try PMTUD probe
+                                        found_probe = Some(probe);
                                     }
-                                    // Try PMTUD probe
-                                    if let Some(probe) =
-                                        pending.remove(&(parsed.probe_id, flow_id, *target, true))
-                                    {
-                                        found_probe = Some(probe);
-                                        break;
+                                }
+
+                                // Fallback: iterate targets (for Echo Reply which has no quoted dest)
+                                if found_probe.is_none() {
+                                    for target in &self.targets {
+                                        // Try normal probe first
+                                        if let Some(probe) = pending.remove(&(
+                                            parsed.probe_id,
+                                            flow_id,
+                                            *target,
+                                            false,
+                                        )) {
+                                            found_probe = Some(probe);
+                                            break;
+                                        }
+                                        // Try PMTUD probe
+                                        if let Some(probe) = pending.remove(&(
+                                            parsed.probe_id,
+                                            flow_id,
+                                            *target,
+                                            true,
+                                        )) {
+                                            found_probe = Some(probe);
+                                            break;
+                                        }
                                     }
                                 }
                             }

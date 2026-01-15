@@ -37,6 +37,9 @@ pub struct ParsedResponse {
     /// TTL from quoted IP header in ICMP error (for TTL manipulation detection)
     /// For Time Exceeded, this should be 0 or 1 per RFC; values > 1 suggest manipulation
     pub quoted_ttl: Option<u8>,
+    /// Original destination IP from quoted packet in ICMP error
+    /// Used to disambiguate multi-target responses
+    pub original_dest: Option<IpAddr>,
 }
 
 // ICMP extension constants (RFC 4884, RFC 4950)
@@ -99,7 +102,9 @@ fn parse_icmp_extensions_with_length(
 
             // Each label entry is 4 bytes
             for chunk in label_data.chunks_exact(4) {
-                let label = MplsLabel::from_bytes(chunk.try_into().unwrap());
+                // chunks_exact(4) guarantees chunk.len() == 4, so this is infallible
+                let bytes: [u8; 4] = [chunk[0], chunk[1], chunk[2], chunk[3]];
+                let label = MplsLabel::from_bytes(&bytes);
                 labels.push(label);
                 // Stop at bottom of stack
                 if label.bottom {
@@ -227,6 +232,8 @@ fn parse_icmp_response_v4(
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
+                    // For Echo Reply, responder IS the target
+                    original_dest: Some(responder),
                 });
             }
 
@@ -244,6 +251,8 @@ fn parse_icmp_response_v4(
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
+                    // For Echo Reply, responder IS the target
+                    original_dest: Some(responder),
                 });
             }
             None
@@ -377,6 +386,8 @@ fn parse_icmp_response_v6(
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
+                    // For Echo Reply, responder IS the target
+                    original_dest: Some(responder),
                 });
             }
 
@@ -393,6 +404,8 @@ fn parse_icmp_response_v6(
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
+                    // For Echo Reply, responder IS the target
+                    original_dest: Some(responder),
                 });
             }
             None
@@ -470,6 +483,8 @@ fn parse_icmp_error_payload_v4_with_mtu(
     let orig_protocol = original_ip.get_next_level_protocol().0;
     // Extract quoted TTL for TTL manipulation detection
     let quoted_ttl = original_ip.get_ttl();
+    // Extract original destination for multi-target disambiguation
+    let original_dest = Some(IpAddr::V4(original_ip.get_destination()));
 
     if original_ip_data.len() < orig_ihl + 8 {
         return None;
@@ -507,6 +522,7 @@ fn parse_icmp_error_payload_v4_with_mtu(
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
+                    original_dest,
                 });
             }
 
@@ -529,6 +545,7 @@ fn parse_icmp_error_payload_v4_with_mtu(
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
+                    original_dest,
                 });
             }
             None
@@ -555,6 +572,7 @@ fn parse_icmp_error_payload_v4_with_mtu(
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
+                original_dest,
             })
         }
         IPPROTO_UDP => {
@@ -580,6 +598,7 @@ fn parse_icmp_error_payload_v4_with_mtu(
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
+                original_dest,
             })
         }
         _ => None,
@@ -621,6 +640,17 @@ fn parse_icmp_error_payload_v6_with_mtu(
     let next_header = original_ipv6_data[6];
     // Hop limit (IPv6 equivalent of TTL) is at byte 7
     let quoted_ttl = original_ipv6_data[7];
+    // Extract original destination for multi-target disambiguation (bytes 24-39)
+    let original_dest = Some(IpAddr::V6(std::net::Ipv6Addr::new(
+        u16::from_be_bytes([original_ipv6_data[24], original_ipv6_data[25]]),
+        u16::from_be_bytes([original_ipv6_data[26], original_ipv6_data[27]]),
+        u16::from_be_bytes([original_ipv6_data[28], original_ipv6_data[29]]),
+        u16::from_be_bytes([original_ipv6_data[30], original_ipv6_data[31]]),
+        u16::from_be_bytes([original_ipv6_data[32], original_ipv6_data[33]]),
+        u16::from_be_bytes([original_ipv6_data[34], original_ipv6_data[35]]),
+        u16::from_be_bytes([original_ipv6_data[36], original_ipv6_data[37]]),
+        u16::from_be_bytes([original_ipv6_data[38], original_ipv6_data[39]]),
+    )));
     let original_payload = &original_ipv6_data[IPV6_HEADER_LEN..];
 
     // Try to parse ICMP extensions using RFC 4884 length field
@@ -653,6 +683,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
+                    original_dest,
                 });
             }
 
@@ -674,6 +705,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
+                    original_dest,
                 });
             }
             None
@@ -700,6 +732,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
+                original_dest,
             })
         }
         IPPROTO_UDP => {
@@ -725,6 +758,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
+                original_dest,
             })
         }
         _ => None,
@@ -784,6 +818,8 @@ fn parse_icmp_response_v4_dgram(
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
+                    // For Echo Reply, responder IS the target
+                    original_dest: Some(responder),
                 });
             }
 
@@ -801,6 +837,8 @@ fn parse_icmp_response_v4_dgram(
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
+                    // For Echo Reply, responder IS the target
+                    original_dest: Some(responder),
                 });
             }
             None
@@ -854,6 +892,7 @@ fn parse_icmp_error_payload_v4_dgram(
     let orig_ihl = (original_ip.get_header_length() as usize) * 4;
     let orig_protocol = original_ip.get_next_level_protocol().0;
     let quoted_ttl = original_ip.get_ttl();
+    let original_dest = Some(IpAddr::V4(original_ip.get_destination()));
 
     if original_ip_data.len() < orig_ihl + 8 {
         return None;
@@ -886,6 +925,7 @@ fn parse_icmp_error_payload_v4_dgram(
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
+                    original_dest,
                 });
             }
 
@@ -904,6 +944,7 @@ fn parse_icmp_error_payload_v4_dgram(
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
+                    original_dest,
                 });
             }
             None
@@ -923,6 +964,7 @@ fn parse_icmp_error_payload_v4_dgram(
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
+                original_dest,
             })
         }
         IPPROTO_UDP => {
@@ -941,6 +983,7 @@ fn parse_icmp_error_payload_v4_dgram(
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
+                original_dest,
             })
         }
         _ => None,
@@ -974,6 +1017,8 @@ fn parse_icmp_response_v6_dgram(
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
+                    // For Echo Reply, responder IS the target
+                    original_dest: Some(responder),
                 });
             }
 
@@ -990,6 +1035,8 @@ fn parse_icmp_response_v6_dgram(
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
+                    // For Echo Reply, responder IS the target
+                    original_dest: Some(responder),
                 });
             }
             None
@@ -1050,6 +1097,17 @@ fn parse_icmp_error_payload_v6_dgram(
     let original_ipv6_data = &icmp_data[8..];
     let next_header = original_ipv6_data[6];
     let quoted_ttl = original_ipv6_data[7]; // Hop limit
+    // Extract original destination for multi-target disambiguation (bytes 24-39)
+    let original_dest = Some(IpAddr::V6(std::net::Ipv6Addr::new(
+        u16::from_be_bytes([original_ipv6_data[24], original_ipv6_data[25]]),
+        u16::from_be_bytes([original_ipv6_data[26], original_ipv6_data[27]]),
+        u16::from_be_bytes([original_ipv6_data[28], original_ipv6_data[29]]),
+        u16::from_be_bytes([original_ipv6_data[30], original_ipv6_data[31]]),
+        u16::from_be_bytes([original_ipv6_data[32], original_ipv6_data[33]]),
+        u16::from_be_bytes([original_ipv6_data[34], original_ipv6_data[35]]),
+        u16::from_be_bytes([original_ipv6_data[36], original_ipv6_data[37]]),
+        u16::from_be_bytes([original_ipv6_data[38], original_ipv6_data[39]]),
+    )));
     let original_payload = &original_ipv6_data[IPV6_HEADER_LEN..];
 
     let mpls_labels = parse_icmp_extensions_with_length(&icmp_data[8..], icmp_length);
@@ -1072,6 +1130,7 @@ fn parse_icmp_error_payload_v6_dgram(
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
+                    original_dest,
                 });
             }
 
@@ -1088,6 +1147,7 @@ fn parse_icmp_error_payload_v6_dgram(
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
+                    original_dest,
                 });
             }
             None
@@ -1107,6 +1167,7 @@ fn parse_icmp_error_payload_v6_dgram(
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
+                original_dest,
             })
         }
         IPPROTO_UDP => {
@@ -1125,6 +1186,7 @@ fn parse_icmp_error_payload_v6_dgram(
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
+                original_dest,
             })
         }
         _ => None,

@@ -69,12 +69,20 @@ pub fn check_permissions() -> Result<SocketCapability> {
 pub fn check_permissions() -> Result<SocketCapability> {
     // Try raw socket first (full functionality)
     if create_raw_icmp_socket(false).is_ok() {
+        // Also check IPv6 RAW - warn if unavailable
+        if create_raw_icmp_socket(true).is_err() {
+            eprintln!("Note: IPv6 raw sockets unavailable; IPv6 traceroute will not work.");
+        }
         return Ok(SocketCapability::Raw);
     }
 
     // Try unprivileged ICMP (SOCK_DGRAM with IPPROTO_ICMP)
     if create_dgram_icmp_socket().is_ok() {
         eprintln!("Warning: Using unprivileged ICMP sockets. Some features may be limited.");
+        // Also check IPv6 DGRAM - warn if unavailable
+        if create_dgram_icmpv6_socket().is_err() {
+            eprintln!("Note: IPv6 ICMP sockets unavailable; IPv6 traceroute will not work.");
+        }
         return Ok(SocketCapability::Dgram);
     }
 
@@ -430,8 +438,13 @@ pub fn recv_icmp_with_ttl(socket: &Socket, buffer: &mut [u8], ipv6: bool) -> Res
     // Parse source address
     let source = parse_sockaddr_storage(&src_storage)?;
 
-    // Extract TTL from control message
-    let response_ttl = extract_ttl_from_cmsg(&msg, ipv6);
+    // Check for MSG_CTRUNC - control message truncated, TTL may be unreliable
+    let response_ttl = if msg.msg_flags & libc::MSG_CTRUNC != 0 {
+        // Control buffer was too small, TTL extraction may fail
+        None
+    } else {
+        extract_ttl_from_cmsg(&msg, ipv6)
+    };
 
     Ok(RecvResult {
         len: len as usize,
