@@ -20,8 +20,10 @@ fn test_session() -> Session {
 /// Create a test session with PMTUD enabled
 fn test_session_with_pmtud() -> Session {
     let target = Target::new("8.8.8.8".to_string(), IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)));
-    let mut config = Config::default();
-    config.pmtud = true;
+    let config = Config {
+        pmtud: true,
+        ..Default::default()
+    };
     Session::new(target, config)
 }
 
@@ -31,8 +33,10 @@ fn test_session_ipv6_with_pmtud() -> Session {
         "2001:4860:4860::8888".to_string(),
         IpAddr::V6(Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888)),
     );
-    let mut config = Config::default();
-    config.pmtud = true;
+    let config = Config {
+        pmtud: true,
+        ..Default::default()
+    };
     Session::new(target, config)
 }
 
@@ -168,11 +172,11 @@ fn test_destination_detection() {
     }
 
     // Mark complete when destination is detected
-    if let Some(hop) = session.hop(4) {
-        if hop.primary == Some(target_ip) {
-            session.complete = true;
-            session.dest_ttl = Some(4);
-        }
+    if let Some(hop) = session.hop(4)
+        && hop.primary == Some(target_ip)
+    {
+        session.complete = true;
+        session.dest_ttl = Some(4);
     }
 
     assert!(session.complete);
@@ -350,7 +354,7 @@ fn test_pmtud_binary_search_convergence() {
         assert!(pmtud.discovered_mtu.is_some());
         // Should converge near 1400 (within 8 bytes)
         let mtu = pmtud.discovered_mtu.unwrap();
-        assert!(mtu >= 1392 && mtu <= 1400);
+        assert!((1392..=1400).contains(&mtu));
     }
 }
 
@@ -515,7 +519,7 @@ fn test_pmtud_ipv6_convergence() {
     assert_eq!(pmtud.phase, PmtudPhase::Complete);
     let mtu = pmtud.discovered_mtu.unwrap();
     // Should converge between 1280 and 1400
-    assert!(mtu >= 1280 && mtu <= 1400);
+    assert!((1280..=1400).contains(&mtu));
 }
 
 #[test]
@@ -577,7 +581,7 @@ fn test_session_json_file_roundtrip() {
 
     // Verify all fields preserved
     assert_eq!(loaded.target.original, "8.8.8.8");
-    assert_eq!(loaded.complete, true);
+    assert!(loaded.complete);
     assert_eq!(loaded.dest_ttl, Some(3));
     assert_eq!(loaded.total_sent, 4);
     assert_eq!(loaded.source_ip, session.source_ip);

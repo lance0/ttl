@@ -1778,7 +1778,7 @@ mod tests {
         packet[83] = 0x01; // Type = 1
 
         // MPLS label: label=16000, exp=0, S=1, TTL=64
-        let label_word: u32 = (16000 << 12) | (0 << 9) | (1 << 8) | 64;
+        let label_word: u32 = (16000 << 12) | (1 << 8) | 64;
         let label_bytes = label_word.to_be_bytes();
         packet[84..88].copy_from_slice(&label_bytes);
 
