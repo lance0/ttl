@@ -71,16 +71,25 @@ TTL works great on Windows through WSL2. Setup takes under 2 minutes:
 ```powershell
 # 1. Install WSL (if not already installed)
 wsl --install
+# Restart your computer, then open Ubuntu from Start menu
+```
 
-# 2. Open Ubuntu and install ttl
-wsl
+```bash
+# 2. In Ubuntu, install ttl (choose one):
+
+# Option A: Pre-built binary (fastest)
 curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
+
+# Option B: Build from source
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+cargo install ttl
 
 # 3. Run ttl
 sudo ttl 8.8.8.8
 ```
 
-That's it. WSL2 has full network stack access, so all ttl features work including ICMP, UDP, and TCP probes.
+WSL2 has full network stack access, so all ttl features work including ICMP, UDP, and TCP probes.
 
 ## When to Use Each Tool
 

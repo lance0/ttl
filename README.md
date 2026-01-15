@@ -151,7 +151,13 @@ tar xzf ttl-*.tar.gz && sudo mv ttl /usr/local/bin/
 
 ### From crates.io
 
+Requires [Rust](https://www.rust-lang.org/tools/install):
+
 ```bash
+# Install Rust (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Install ttl
 cargo install ttl
 ```
 
@@ -242,10 +248,24 @@ ttl 1.1.1.1 --theme dracula    # Start with theme
 ### Windows via WSL2
 
 ```powershell
-wsl --install                    # Install WSL if needed
+wsl --install                    # Install WSL if needed, then restart
 wsl                              # Open Ubuntu
+```
+
+Then in Ubuntu, either use the install script (pre-built binary):
+
+```bash
 curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
 sudo ttl 8.8.8.8
+```
+
+Or build from source:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh  # Install Rust
+source ~/.cargo/env
+cargo install ttl
+sudo ~/.cargo/bin/ttl 8.8.8.8
 ```
 
 ## Known Issues
