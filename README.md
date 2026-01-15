@@ -4,7 +4,7 @@
 
 # ttl
 
-Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment.
+Network diagnostic tool that goes beyond traceroute: MTU discovery, NAT detection, route flap alerts, IX identification, and more.
 
 ![ttl screenshot](ttlss.png)
 
@@ -44,6 +44,78 @@ sudo ttl 8.8.8.8 1.1.1.1 9.9.9.9     # Multiple targets
 - **Scriptable** - JSON, CSV, and text report output
 
 See [docs/FEATURES.md](docs/FEATURES.md) for detailed feature documentation.
+
+## Real-World Use Cases
+
+### Find MTU Blackholes in VPNs
+
+VPN tunnels often have lower MTU than expected. Large packets get silently dropped, causing mysterious connection hangs.
+
+```bash
+ttl --pmtud vpn-gateway.example.com
+```
+
+TTL binary-searches to find the maximum packet size that works. If it reports MTU of 1400 instead of 1500, you've found your blackhole. The `[MTU: 1400]` indicator in the title bar shows exactly where fragmentation occurs.
+
+### Detect Carrier-Grade NAT Breaking Your Flows
+
+Running multi-flow traceroute but getting inconsistent results? NAT devices may be rewriting your source ports.
+
+```bash
+ttl --flows 4 target.com
+```
+
+TTL detects when returned source ports don't match what was sent. The `[NAT]` indicator warns you, and hop details show which device is doing the rewriting. Essential for diagnosing ECMP issues behind CGNAT.
+
+### Identify Internet Exchange Points in Your Path
+
+See exactly where your traffic peers with other networks:
+
+```bash
+ttl cloudflare.com
+```
+
+TTL queries PeeringDB to identify IX points. When a hop IP belongs to an exchange like DE-CIX or AMS-IX, the hop detail view shows the IX name, city, and country. Useful for understanding your traffic's peering path.
+
+### Catch Flapping Routes
+
+Unstable BGP or failover issues cause intermittent problems that are hard to catch:
+
+```bash
+ttl -i 0.5 production-server.com
+```
+
+TTL tracks when the responding IP at a hop changes. The `!` indicator appears next to hostnames when route flaps are detected, and hop details show the change history. No more "it was fine when I checked."
+
+### Detect Transparent Proxies and Middleboxes
+
+Some networks intercept traffic with transparent proxies that manipulate TTL values:
+
+```bash
+ttl -p tcp --port 80 website.com
+```
+
+TTL analyzes the quoted TTL in ICMP responses. If a middlebox is intercepting traffic, the `[TTL!]` indicator appears and hop details show where TTL manipulation is occurring.
+
+### Distinguish Real Packet Loss from ICMP Rate Limiting
+
+That 30% packet loss at hop 5 might be fake - routers often rate-limit ICMP responses:
+
+```bash
+ttl target.com
+```
+
+TTL automatically detects rate limiting patterns. The `[RL?]` indicator and `50%RL` in the loss column tell you the "loss" is just the router deprioritizing ICMP, not actual packet drops. Stop chasing phantom problems.
+
+### Compare Multiple Paths Simultaneously
+
+Investigating asymmetric routing or comparing providers:
+
+```bash
+ttl 8.8.8.8 1.1.1.1 9.9.9.9
+```
+
+Trace to multiple destinations at once. Press `Tab` to switch between them. Each target maintains independent statistics - useful for A/B comparisons during network changes.
 
 ## Installation
 
