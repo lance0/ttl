@@ -9,6 +9,8 @@ pub enum SocketCapability {
     /// Full raw socket access - can send/receive with custom IP headers
     Raw,
     /// Unprivileged ICMP socket (limited functionality)
+    /// Note: Only used on Linux; macOS always requires Raw for receiving ICMP errors
+    #[allow(dead_code)]
     Dgram,
 }
 
