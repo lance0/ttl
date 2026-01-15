@@ -234,9 +234,19 @@ ttl 1.1.1.1 --theme dracula    # Start with theme
 | Linux | Full support |
 | macOS (Tahoe 26+) | Full support |
 | macOS (Sequoia 15) | Build from source* |
-| Windows | Not supported |
+| Windows (WSL2) | Full support |
+| Windows (native) | Not supported |
 
 *Pre-built binaries are built on `macos-latest` (Tahoe). Older macOS versions may have display issues - use `cargo install ttl` to compile from source.
+
+### Windows via WSL2
+
+```powershell
+wsl --install                    # Install WSL if needed
+wsl                              # Open Ubuntu
+curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
+sudo ttl 8.8.8.8
+```
 
 ## Known Issues
 
@@ -260,9 +270,10 @@ ttl 1.1.1.1 --theme dracula    # Start with theme
 ## Documentation
 
 - [Features](docs/FEATURES.md) - Detailed feature documentation and CLI reference
+- [Scripting](docs/SCRIPTING.md) - CI/CD integration, JSON parsing, Docker usage
 - [Architecture](docs/ARCHITECTURE.md) - Internal design and module structure
 - [Contributing](docs/CONTRIBUTING.md) - Development setup and guidelines
-- [Comparison](docs/COMPARISON.md) - Comparison with similar tools
+- [Comparison](docs/COMPARISON.md) - Comparison with similar tools (including pathping)
 - [Changelog](CHANGELOG.md) - Release history
 - [Roadmap](ROADMAP.md) - Planned features
 
