@@ -156,8 +156,11 @@ ttl 1.1.1.1 --theme dracula    # Start with theme
 | Platform | Status |
 |----------|--------|
 | Linux | Full support |
-| macOS | Full support |
+| macOS (Tahoe 26+) | Full support |
+| macOS (Sequoia 15) | Build from source* |
 | Windows | Not supported |
+
+*Pre-built binaries are built on `macos-latest` (Tahoe). Older macOS versions may have display issues - use `cargo install ttl` to compile from source.
 
 ## Known Limitations
 

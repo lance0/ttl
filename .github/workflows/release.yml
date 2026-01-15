@@ -46,10 +46,10 @@ jobs:
             os: ubuntu-latest
             cross: true
           # macOS aarch64 (Apple Silicon) - Intel Macs no longer supported
+          # Binaries built on macos-latest; older macOS versions may need to compile from source
           - target: aarch64-apple-darwin
             os: macos-latest
             cross: false
-            macos_deployment_target: "15.0"
 
     steps:
       - uses: actions/checkout@v4
@@ -75,8 +75,6 @@ jobs:
 
       - name: Build (native)
         if: ${{ !matrix.cross }}
-        env:
-          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target || '' }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Build (cross)
