@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-## Current Status (v0.11.0)
+## Current Status (v0.11.1)
 
 ### Core Features
 - [x] ICMP Echo probing with TTL sweep
@@ -127,6 +127,12 @@
 - [x] ProbeId payload fallback (handle macOS identifier override)
 - [x] Homebrew formula and curl installer
 
+### v0.11.1 - macOS Fix Part 2 (Released)
+- [x] macOS: Use RAW recv + DGRAM send (DGRAM can't receive Time Exceeded)
+- [x] Payload-based correlation fallback for RAW receive paths
+- [x] Restore Linux unprivileged ICMP support (broken in v0.11.0)
+- [x] IPv6 DGRAM availability check with warning on macOS
+
 ### v1.0.0 - BGP & Routing Integration
 - [ ] Looking glass integration (query public route servers)
 - [ ] BGP community display (show communities on path if available)
@@ -155,6 +161,8 @@
 ### Testing & Code Quality
 - [x] Integration tests for probe→receive→state pipeline
 - [x] Property-based/fuzz tests for packet parsing (correlate.rs)
+- [x] RAW payload fallback unit tests (IPv4 Echo Reply, Time Exceeded)
+- [ ] IPv6 RAW payload fallback unit tests (Echo Reply, Time Exceeded)
 - [ ] IX lookup performance: radix trie for O(prefix_len) instead of O(n) linear scan
 - [x] Refactor Receiver::new() 9-arg signature to config struct
 - [x] Document --pmtud flag in README

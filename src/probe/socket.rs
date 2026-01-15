@@ -49,6 +49,11 @@ pub fn check_permissions() -> Result<SocketCapability> {
         ));
     }
 
+    // Check IPv6 DGRAM and warn if unavailable
+    if create_dgram_icmpv6_socket().is_err() {
+        eprintln!("Note: IPv6 DGRAM sockets unavailable; IPv6 traceroute may not work correctly.");
+    }
+
     // Return Raw capability since we're using RAW for receiving
     Ok(SocketCapability::Raw)
 }
@@ -114,8 +119,7 @@ pub fn create_dgram_icmp_socket() -> Result<Socket> {
 }
 
 /// Create an unprivileged IPv6 ICMPv6 socket (SOCK_DGRAM)
-/// Only used on macOS where SOCK_DGRAM is preferred for IP_TTL support
-#[cfg(target_os = "macos")]
+/// Used on macOS for IP_TTL support, and on Linux for unprivileged ICMP fallback
 pub fn create_dgram_icmpv6_socket() -> Result<Socket> {
     let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::ICMPV6))?;
     socket.set_nonblocking(false)?;
@@ -124,8 +128,7 @@ pub fn create_dgram_icmpv6_socket() -> Result<Socket> {
 }
 
 /// Create DGRAM ICMP socket for either IPv4 or IPv6
-/// Only used on macOS where SOCK_DGRAM is preferred for IP_TTL support
-#[cfg(target_os = "macos")]
+/// Used on macOS for IP_TTL support, and on Linux for unprivileged ICMP fallback
 pub fn create_dgram_icmp_socket_any(ipv6: bool) -> Result<Socket> {
     if ipv6 {
         create_dgram_icmpv6_socket()
@@ -136,48 +139,79 @@ pub fn create_dgram_icmp_socket_any(ipv6: bool) -> Result<Socket> {
 
 /// Create a socket for sending ICMP probes with configurable TTL
 /// On macOS, uses DGRAM socket because RAW sockets don't support IP_TTL
+/// On Linux, prefers RAW, falls back to DGRAM for unprivileged ICMP
 pub fn create_send_socket(ipv6: bool) -> Result<SocketInfo> {
     #[cfg(target_os = "macos")]
     {
-        // Try DGRAM first on macOS (supports IP_TTL)
+        // macOS: Prefer DGRAM (supports IP_TTL)
         if let Ok(socket) = create_dgram_icmp_socket_any(ipv6) {
             return Ok(SocketInfo {
                 socket,
                 is_dgram: true,
             });
         }
+        // Fall back to RAW (won't support TTL but might work for something)
+        let socket = create_raw_icmp_socket(ipv6)?;
+        return Ok(SocketInfo {
+            socket,
+            is_dgram: false,
+        });
     }
 
-    // Fall back to RAW (Linux, or macOS if DGRAM fails)
-    let socket = create_raw_icmp_socket(ipv6)?;
-    Ok(SocketInfo {
-        socket,
-        is_dgram: false,
-    })
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Linux: Prefer RAW, fall back to DGRAM for unprivileged
+        if let Ok(socket) = create_raw_icmp_socket(ipv6) {
+            return Ok(SocketInfo {
+                socket,
+                is_dgram: false,
+            });
+        }
+        // DGRAM fallback - don't try RAW again, just error if DGRAM fails
+        let socket = create_dgram_icmp_socket_any(ipv6)?;
+        Ok(SocketInfo {
+            socket,
+            is_dgram: true,
+        })
+    }
 }
 
 /// Create a socket for receiving ICMP responses
 /// On macOS, must use RAW socket to receive ICMP Time Exceeded messages
 /// (DGRAM sockets only receive Echo Reply, not error messages from intermediate routers)
+/// On Linux, tries RAW first, falls back to DGRAM for unprivileged ICMP
 pub fn create_recv_socket(ipv6: bool) -> Result<SocketInfo> {
-    // On macOS, DGRAM ICMP sockets cannot receive ICMP Time Exceeded messages
-    // from intermediate routers - they only receive Echo Reply messages.
-    // We must use RAW sockets for receiving, which requires root.
-    // (The send socket still uses DGRAM for TTL support.)
-
-    let socket = create_raw_icmp_socket(ipv6)?;
-
-    // Increase receive buffer size for high probe rates
-    // This may fail if the requested size exceeds net.core.rmem_max
-    if let Err(e) = socket.set_recv_buffer_size(1024 * 1024) {
-        eprintln!("Warning: Could not set receive buffer to 1MB: {}", e);
-        // Continue with default buffer size
+    #[cfg(target_os = "macos")]
+    {
+        // macOS: Must use RAW (DGRAM can't receive Time Exceeded from routers)
+        let socket = create_raw_icmp_socket(ipv6)?;
+        if let Err(e) = socket.set_recv_buffer_size(1024 * 1024) {
+            eprintln!("Warning: Could not set receive buffer to 1MB: {}", e);
+        }
+        return Ok(SocketInfo {
+            socket,
+            is_dgram: false,
+        });
     }
 
-    Ok(SocketInfo {
-        socket,
-        is_dgram: false,
-    })
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Linux: Try RAW first, fall back to DGRAM for unprivileged ICMP
+        if let Ok(socket) = create_raw_icmp_socket(ipv6) {
+            let _ = socket.set_recv_buffer_size(1024 * 1024);
+            return Ok(SocketInfo {
+                socket,
+                is_dgram: false,
+            });
+        }
+        // DGRAM fallback for unprivileged users (ping_group_range)
+        let socket = create_dgram_icmp_socket_any(ipv6)?;
+        let _ = socket.set_recv_buffer_size(1024 * 1024);
+        Ok(SocketInfo {
+            socket,
+            is_dgram: true,
+        })
+    }
 }
 
 /// Set TTL on a socket

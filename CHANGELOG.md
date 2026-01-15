@@ -11,8 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **macOS traceroute 100% packet loss**: Fix ICMP traceroute showing all hops as `* * *`
   - DGRAM ICMP sockets cannot receive ICMP Time Exceeded messages from intermediate routers
   - Now uses RAW socket for receiving (can receive all ICMP types) while keeping DGRAM for sending (supports IP_TTL)
+  - Added payload-based correlation fallback for RAW receive paths (fixes 100% loss when macOS kernel modifies ICMP identifier)
   - Requires `sudo` on macOS since RAW sockets need root privileges
   - Clear error message when run without elevated privileges
+- **Linux unprivileged ICMP**: Restore support for unprivileged ICMP sockets (broken in v0.11.0)
+  - Linux users with `ping_group_range` enabled can run without sudo
+  - Falls back to DGRAM sockets when RAW sockets are unavailable
+- **IPv6 DGRAM availability check**: Warn on macOS if IPv6 DGRAM sockets are unavailable
 
 ## [0.11.0] - 2026-01-14
 
