@@ -334,7 +334,7 @@ Arguments:
   <TARGETS>...  One or more target hostnames or IP addresses
 
 Options:
-  -c, --count <N>        Number of probes (0 = infinite, default)
+  -c, --count <N>        Number of probe rounds (0 = infinite, default)
   -i, --interval <S>     Probe interval in seconds (default: 1.0)
   -m, --max-ttl <N>      Maximum TTL (default: 30)
   -p, --protocol <P>     Probe protocol: auto, icmp, udp, tcp

@@ -40,10 +40,10 @@ For detailed documentation: https://github.com/lance0/ttl/blob/master/docs/FEATU
 ")]
 pub struct Args {
     /// Target hosts to trace (IP address or hostname)
-    #[arg(required_unless_present = "completions")]
+    #[arg(required_unless_present_any = ["completions", "replay"])]
     pub targets: Vec<String>,
 
-    /// Number of probes to send (0 = infinite)
+    /// Number of probe rounds (0 = infinite). Each round sends probes to all TTLs.
     #[arg(short = 'c', long = "count", default_value = "0")]
     pub count: u64,
 
@@ -229,6 +229,26 @@ impl Args {
             ));
         }
 
+        // Validate src_port + (flows - 1) doesn't overflow u16
+        // Ports used are src_port, src_port+1, ..., src_port+(flows-1)
+        let max_port = self.src_port as u32 + (self.flows as u32 - 1);
+        if max_port > u16::MAX as u32 {
+            return Err(format!(
+                "src_port ({}) + flows ({}) would use port {} (max 65535)",
+                self.src_port, self.flows, max_port
+            ));
+        }
+
+        // Validate timeout vs interval to prevent probe sequence wrap
+        // ProbeId.seq is u8 (0-255), so sequence wraps every 256 intervals
+        // If timeout > 256 * interval, old probes may still be pending when seq wraps
+        if self.timeout > 256.0 * self.interval {
+            return Err(format!(
+                "Timeout ({:.1}s) cannot exceed 256 × interval ({:.1}s = {:.1}s) to prevent sequence wrap",
+                self.timeout, self.interval, 256.0 * self.interval
+            ));
+        }
+
         // Validate interface name
         if let Some(ref iface) = self.interface {
             if iface.is_empty() {
@@ -241,5 +261,101 @@ impl Args {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_args(overrides: impl FnOnce(&mut Args)) -> Args {
+        let mut args = Args {
+            targets: vec!["8.8.8.8".to_string()],
+            count: 0,
+            interval: 1.0,
+            max_ttl: 30,
+            protocol: "auto".to_string(),
+            port: None,
+            port_fixed: false,
+            flows: 1,
+            src_port: 50000,
+            timeout: 3.0,
+            ipv4: false,
+            ipv6: false,
+            no_dns: false,
+            no_asn: false,
+            no_geo: false,
+            no_ix: false,
+            geoip_db: None,
+            no_tui: false,
+            json: false,
+            csv: false,
+            report: false,
+            replay: None,
+            theme: "default".to_string(),
+            interface: None,
+            recv_any: false,
+            dscp: None,
+            size: None,
+            pmtud: false,
+            rate: None,
+            source_ip: None,
+            completions: None,
+        };
+        overrides(&mut args);
+        args
+    }
+
+    #[test]
+    fn test_src_port_flows_valid_at_max() {
+        // src_port=65520, flows=16 uses ports 65520..65535 (valid)
+        let args = make_args(|a| {
+            a.src_port = 65520;
+            a.flows = 16;
+        });
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn test_src_port_flows_overflow() {
+        // src_port=65521, flows=16 would use port 65536 (invalid)
+        let args = make_args(|a| {
+            a.src_port = 65521;
+            a.flows = 16;
+        });
+        let err = args.validate().unwrap_err();
+        assert!(err.contains("65536"));
+    }
+
+    #[test]
+    fn test_timeout_interval_valid() {
+        // timeout=256s with interval=1s is exactly at the limit
+        let args = make_args(|a| {
+            a.timeout = 256.0;
+            a.interval = 1.0;
+        });
+        assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn test_timeout_interval_wrap_rejected() {
+        // timeout=257s with interval=1s exceeds 256 × interval
+        let args = make_args(|a| {
+            a.timeout = 257.0;
+            a.interval = 1.0;
+        });
+        let err = args.validate().unwrap_err();
+        assert!(err.contains("sequence wrap"));
+    }
+
+    #[test]
+    fn test_timeout_interval_fast_probes() {
+        // With 0.1s interval, timeout must be <= 25.6s
+        let args = make_args(|a| {
+            a.timeout = 30.0;
+            a.interval = 0.1;
+        });
+        let err = args.validate().unwrap_err();
+        assert!(err.contains("sequence wrap"));
     }
 }

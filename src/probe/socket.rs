@@ -220,9 +220,13 @@ pub fn create_recv_socket(ipv6: bool) -> Result<SocketInfo> {
     }
 }
 
-/// Set TTL on a socket
-pub fn set_ttl(socket: &Socket, ttl: u8) -> Result<()> {
-    socket.set_ttl(ttl as u32)?;
+/// Set TTL on a socket (IPv4) or hop limit (IPv6)
+pub fn set_ttl(socket: &Socket, ttl: u8, ipv6: bool) -> Result<()> {
+    if ipv6 {
+        socket.set_unicast_hops_v6(ttl as u32)?;
+    } else {
+        socket.set_ttl_v4(ttl as u32)?;
+    }
     Ok(())
 }
 
@@ -233,7 +237,7 @@ pub fn set_dscp(socket: &Socket, dscp: u8, ipv6: bool) -> Result<()> {
     if ipv6 {
         socket.set_tclass_v6(tos)?;
     } else {
-        socket.set_tos(tos)?;
+        socket.set_tos_v4(tos)?;
     }
     Ok(())
 }

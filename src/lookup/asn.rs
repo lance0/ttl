@@ -1,6 +1,6 @@
 use anyhow::Result;
-use hickory_resolver::TokioAsyncResolver;
-use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::config::ResolverConfig;
+use hickory_resolver::{Resolver, TokioResolver};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+use super::sanitize_display;
 use crate::state::AsnInfo;
 use crate::trace::receiver::SessionMap;
 
@@ -19,15 +20,25 @@ struct CacheEntry {
 
 /// ASN lookup via Team Cymru DNS
 pub struct AsnLookup {
-    resolver: TokioAsyncResolver,
+    resolver: TokioResolver,
     cache: RwLock<HashMap<IpAddr, CacheEntry>>,
     cache_ttl: Duration,
 }
 
 impl AsnLookup {
     pub async fn new() -> Result<Self> {
-        let resolver =
-            TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+        // Try system DNS config first, fall back to Google DNS if unavailable
+        let resolver = match Resolver::builder_tokio() {
+            Ok(builder) => builder.build(),
+            Err(_) => {
+                eprintln!("Warning: System DNS config unavailable, using Google DNS (8.8.8.8)");
+                Resolver::builder_with_config(
+                    ResolverConfig::google(),
+                    hickory_resolver::name_server::TokioConnectionProvider::default(),
+                )
+                .build()
+            }
+        };
 
         Ok(Self {
             resolver,
@@ -174,8 +185,8 @@ impl AsnLookup {
         // Example: "15169 | US | arin | 2000-03-30 | GOOGLE, US"
         let parts: Vec<&str> = txt_str.split('|').map(|s| s.trim()).collect();
 
-        // AS name is at index 4
-        parts.get(4).map(|s| s.to_string())
+        // AS name is at index 4, sanitize for safe display
+        parts.get(4).map(|s| sanitize_display(s))
     }
 }
 

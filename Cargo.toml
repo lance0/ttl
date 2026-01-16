@@ -1,6 +1,6 @@
 [package]
 name = "ttl"
-version = "0.12.0"
+version = "0.12.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment"
@@ -24,30 +24,29 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4.5"
 
 # Networking
-socket2 = { version = "0.5", features = ["all"] }
+socket2 = { version = "0.6", features = ["all"] }
 pnet = "0.35"
 libc = "0.2"
 
 # DNS (note: trust-dns-resolver is now hickory-resolver)
-hickory-resolver = "0.24"
+hickory-resolver = "0.25"
 
 # HTTP client for PeeringDB API
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 # ASN/Geo databases
 maxminddb = "0.27"
-ipnetwork = "0.20"
+ipnetwork = "0.21"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "0.9"
 csv = "1.3"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Error handling
 anyhow = "1"
-thiserror = "1"
 
 # Better locks
 parking_lot = "0.12"
@@ -56,7 +55,7 @@ parking_lot = "0.12"
 scopeguard = "1"
 
 # Config directories
-dirs = "5.0"
+dirs = "6.0"
 
 [dev-dependencies]
 tokio-test = "0.4"

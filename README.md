@@ -126,6 +126,9 @@ ttl --completions zsh > ~/.zfunc/_ttl
 
 # Fish
 ttl --completions fish > ~/.config/fish/completions/ttl.fish
+
+# PowerShell (add to $PROFILE)
+ttl --completions powershell >> $PROFILE
 ```
 
 ## Usage Examples
@@ -346,6 +349,14 @@ Some routers rate-limit ICMP - look for the `[RL?]` indicator in the TUI.
 ### All hops showing `* * *`
 
 Check firewall rules, VPN configuration, or try a different protocol: `ttl -p udp target`
+
+### Theme/config not persisting (macOS)
+
+As of v0.12.1, the config directory on macOS changed from `~/Library/Preferences/ttl/` to `~/Library/Application Support/ttl/` to align with Apple guidelines. If you have an existing config, move it:
+
+```bash
+mv ~/Library/Preferences/ttl ~/Library/Application\ Support/ttl
+```
 
 ## License
 

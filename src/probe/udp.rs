@@ -1,6 +1,5 @@
 use anyhow::Result;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-use std::mem::MaybeUninit;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
@@ -139,22 +138,6 @@ pub fn send_udp_probe(socket: &Socket, payload: &[u8], target: IpAddr, port: u16
     let sock_addr = SockAddr::from(addr);
     let sent = socket.send_to(payload, &sock_addr)?;
     Ok(sent)
-}
-
-/// Receive ICMP response (for UDP probes, responses come as ICMP errors)
-/// This is the same as recv_icmp - we listen on a separate raw ICMP socket
-#[allow(dead_code)]
-pub fn recv_icmp_for_udp(socket: &Socket, buffer: &mut [u8]) -> Result<(usize, IpAddr)> {
-    let uninit_buf: &mut [MaybeUninit<u8>] = unsafe {
-        std::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut MaybeUninit<u8>, buffer.len())
-    };
-
-    let (len, addr) = socket.recv_from(uninit_buf)?;
-    let ip = addr
-        .as_socket()
-        .map(|s| s.ip())
-        .ok_or_else(|| anyhow::anyhow!("Invalid source address"))?;
-    Ok((len, ip))
 }
 
 /// Extract ProbeId from UDP payload in ICMP error

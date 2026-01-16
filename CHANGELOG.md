@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-01-16
+
+### Security
+- **Terminal injection protection**: Sanitize DNS hostnames, ASN names, and IX info before display
+  - Filters control characters from external data sources (PTR records, Team Cymru, PeeringDB)
+  - Prevents malicious terminal escape sequences from affecting the TUI
+
+### Fixed
+- **--count semantics**: `-c N` now sends N probe rounds (one probe per TTL), not N × max_ttl probes
+  - Each round sends probes to all active TTLs in a single interval
+  - Behavior now matches user expectations: `-c 10` = 10 rounds of probing
+  - Updated help text to clarify "probe rounds" semantics
+- **Port overflow validation**: `--src-port` + `--flows` combination now correctly validated
+  - Fixed off-by-one: ports 65520 + 16 flows (max port 65535) now accepted
+  - Clear error message shows the computed maximum port number
+- **Sequence wrap prevention**: Reject `--timeout` > 256 × `--interval`
+  - ProbeId uses u8 sequence (0-255), wraps every 256 intervals
+  - Validation prevents mis-correlation when old probes outlive sequence wrap
+- **Dead code removal**: Removed unused `recv_icmp_for_udp` function
+
+### Changed
+- **Dependencies updated**:
+  - hickory-resolver 0.24 → 0.25
+  - socket2 0.5 → 0.6
+  - reqwest 0.12 → 0.13
+  - dirs 5.0 → 6.0
+  - toml 0.8 → 0.9
+  - ipnetwork 0.20 → 0.21
+  - Removed unused `thiserror` dependency
+
+### Technical
+- Added `sanitize_display()` helper in lookup module for control character filtering
+- Added 5 CLI validation tests for port overflow and timeout/interval checks
+- All three probe modes (ICMP, UDP, TCP) now track `rounds_completed` for consistent `-c` behavior
+
 ## [0.12.0] - 2026-01-16
 
 ### Added

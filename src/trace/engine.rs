@@ -129,7 +129,7 @@ impl ProbeEngine {
         let mut seq: u8 = 0;
         // PMTUD uses separate seq counter; collision prevented by is_pmtud flag in pending key
         let mut pmtud_seq: u8 = 0;
-        let mut total_sent: u64 = 0;
+        let mut rounds_completed: u64 = 0;
         let mut interval = tokio::time::interval(self.config.interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -147,9 +147,9 @@ impl ProbeEngine {
                         }
                     }
 
-                    // Check probe count limit
+                    // Check probe round limit (-c flag means number of probe rounds)
                     if let Some(count) = self.config.count
-                        && total_sent >= count * self.config.max_ttl as u64
+                        && rounds_completed >= count
                     {
                         // Signal completion
                         self.cancel.cancel();
@@ -185,7 +185,7 @@ impl ProbeEngine {
                         let packet = build_echo_request(self.identifier, probe_id.to_sequence(), payload_size);
 
                         // Set TTL before sending
-                        if let Err(e) = set_ttl(&socket, ttl) {
+                        if let Err(e) = set_ttl(&socket, ttl, self.target.is_ipv6()) {
                             eprintln!("Failed to set TTL {}: {}", ttl, e);
                             continue;
                         }
@@ -230,8 +230,6 @@ impl ProbeEngine {
                             state.total_sent += 1;
                         }
 
-                        total_sent += 1;
-
                         // Apply rate limiting if configured
                         self.apply_rate_limit().await;
                     }
@@ -243,11 +241,11 @@ impl ProbeEngine {
                         && self.send_pmtud_probe_icmp(&socket, dest_ttl, probe_size, pmtud_seq).await
                     {
                         pmtud_seq = pmtud_seq.wrapping_add(1);
-                        total_sent += 1;
                         self.apply_rate_limit().await;
                     }
 
                     seq = seq.wrapping_add(1);
+                    rounds_completed += 1;
                 }
             }
         }
@@ -286,7 +284,7 @@ impl ProbeEngine {
         let base_port = self.config.port.unwrap_or(33434);
 
         let mut seq: u8 = 0;
-        let mut total_sent: u64 = 0;
+        let mut rounds_completed: u64 = 0;
         let mut interval = tokio::time::interval(self.config.interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -304,13 +302,12 @@ impl ProbeEngine {
                         }
                     }
 
-                    // Check probe count limit (multiplied by flows)
-                    if let Some(count) = self.config.count {
-                        let total_probes = count * self.config.max_ttl as u64 * num_flows as u64;
-                        if total_sent >= total_probes {
-                            self.cancel.cancel();
-                            break;
-                        }
+                    // Check probe round limit (-c flag means number of probe rounds)
+                    if let Some(count) = self.config.count
+                        && rounds_completed >= count
+                    {
+                        self.cancel.cancel();
+                        break;
                     }
 
                     // Determine max TTL to probe
@@ -346,7 +343,7 @@ impl ProbeEngine {
                             let payload = build_udp_payload_sized(probe_id, payload_size);
 
                             // Set TTL before sending
-                            if let Err(e) = set_ttl(socket, ttl) {
+                            if let Err(e) = set_ttl(socket, ttl, ipv6) {
                                 eprintln!("Failed to set TTL {}: {}", ttl, e);
                                 continue;
                             }
@@ -388,14 +385,13 @@ impl ProbeEngine {
                                 state.total_sent += 1;
                             }
 
-                            total_sent += 1;
-
                             // Apply rate limiting if configured
                             self.apply_rate_limit().await;
                         }
                     }
 
                     seq = seq.wrapping_add(1);
+                    rounds_completed += 1;
                 }
             }
         }
@@ -432,7 +428,7 @@ impl ProbeEngine {
             .unwrap_or_else(|| get_local_addr_with_interface(self.target, self.interface.as_ref()));
 
         let mut seq: u8 = 0;
-        let mut total_sent: u64 = 0;
+        let mut rounds_completed: u64 = 0;
         let mut interval = tokio::time::interval(self.config.interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -450,13 +446,12 @@ impl ProbeEngine {
                         }
                     }
 
-                    // Check probe count limit (multiplied by flows)
-                    if let Some(count) = self.config.count {
-                        let total_probes = count * self.config.max_ttl as u64 * num_flows as u64;
-                        if total_sent >= total_probes {
-                            self.cancel.cancel();
-                            break;
-                        }
+                    // Check probe round limit (-c flag means number of probe rounds)
+                    if let Some(count) = self.config.count
+                        && rounds_completed >= count
+                    {
+                        self.cancel.cancel();
+                        break;
                     }
 
                     // Determine max TTL to probe
@@ -500,7 +495,7 @@ impl ProbeEngine {
                             let packet = build_tcp_syn_sized(probe_id, src_port, dst_port, src_ip, self.target, payload_size);
 
                             // Set TTL before sending
-                            if let Err(e) = set_ttl(&socket, ttl) {
+                            if let Err(e) = set_ttl(&socket, ttl, self.target.is_ipv6()) {
                                 eprintln!("Failed to set TTL {}: {}", ttl, e);
                                 continue;
                             }
@@ -535,14 +530,13 @@ impl ProbeEngine {
                                 state.total_sent += 1;
                             }
 
-                            total_sent += 1;
-
                             // Apply rate limiting if configured
                             self.apply_rate_limit().await;
                         }
                     }
 
                     seq = seq.wrapping_add(1);
+                    rounds_completed += 1;
                 }
             }
         }
@@ -611,7 +605,7 @@ impl ProbeEngine {
         let packet = build_echo_request(self.identifier, probe_id.to_sequence(), payload_size);
 
         // Set TTL
-        if let Err(e) = set_ttl(socket, dest_ttl) {
+        if let Err(e) = set_ttl(socket, dest_ttl, self.target.is_ipv6()) {
             eprintln!("PMTUD: Failed to set TTL {}: {}", dest_ttl, e);
             return false;
         }

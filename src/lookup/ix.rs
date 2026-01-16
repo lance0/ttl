@@ -17,6 +17,7 @@ use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
 
+use super::sanitize_display;
 use crate::state::IxInfo;
 use crate::trace::receiver::SessionMap;
 
@@ -268,10 +269,11 @@ impl IxLookup {
             if let Ok(network) = p.prefix.parse::<IpNetwork>() {
                 entries.push(PrefixEntry {
                     network,
+                    // Sanitize IX names for safe terminal display
                     info: IxInfo {
-                        name: p.ix_name.clone(),
-                        city: p.ix_city.clone(),
-                        country: p.ix_country.clone(),
+                        name: sanitize_display(&p.ix_name),
+                        city: p.ix_city.as_ref().map(|s| sanitize_display(s)),
+                        country: p.ix_country.as_ref().map(|s| sanitize_display(s)),
                     },
                 });
             }
@@ -338,7 +340,7 @@ impl IxLookup {
             })
             .collect();
 
-        // Build prefix cache entries
+        // Build prefix cache entries (sanitize for safe terminal display)
         let mut prefixes = Vec::with_capacity(ixpfx_data.len());
         for pfx in ixpfx_data {
             if let Some(&ix_id) = ixlan_to_ix.get(&pfx.ixlan_id)
@@ -346,9 +348,9 @@ impl IxLookup {
             {
                 prefixes.push(PrefixCacheEntry {
                     prefix: pfx.prefix,
-                    ix_name: ix.name.clone(),
-                    ix_city: ix.city.clone(),
-                    ix_country: ix.country.clone(),
+                    ix_name: sanitize_display(&ix.name),
+                    ix_city: ix.city.as_ref().map(|s| sanitize_display(s)),
+                    ix_country: ix.country.as_ref().map(|s| sanitize_display(s)),
                 });
             }
         }

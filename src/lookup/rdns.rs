@@ -1,6 +1,6 @@
 use anyhow::Result;
-use hickory_resolver::TokioAsyncResolver;
-use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::config::ResolverConfig;
+use hickory_resolver::{Resolver, TokioResolver};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+use super::sanitize_display;
 use crate::trace::receiver::SessionMap;
 
 /// DNS cache entry
@@ -18,15 +19,25 @@ struct CacheEntry {
 
 /// DNS lookup worker with caching
 pub struct DnsLookup {
-    resolver: TokioAsyncResolver,
+    resolver: TokioResolver,
     cache: RwLock<HashMap<IpAddr, CacheEntry>>,
     cache_ttl: Duration,
 }
 
 impl DnsLookup {
     pub async fn new() -> Result<Self> {
-        let resolver =
-            TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default());
+        // Try system DNS config first, fall back to Google DNS if unavailable
+        let resolver = match Resolver::builder_tokio() {
+            Ok(builder) => builder.build(),
+            Err(_) => {
+                eprintln!("Warning: System DNS config unavailable, using Google DNS (8.8.8.8)");
+                Resolver::builder_with_config(
+                    ResolverConfig::google(),
+                    hickory_resolver::name_server::TokioConnectionProvider::default(),
+                )
+                .build()
+            }
+        };
 
         Ok(Self {
             resolver,
@@ -51,8 +62,9 @@ impl DnsLookup {
         let hostname = match self.resolver.reverse_lookup(ip).await {
             Ok(lookup) => lookup.iter().next().map(|name| {
                 let s = name.to_string();
-                // Remove trailing dot
-                s.trim_end_matches('.').to_string()
+                // Remove trailing dot and sanitize for safe display
+                // (PTR records can contain malicious control sequences)
+                sanitize_display(s.trim_end_matches('.'))
             }),
             Err(_) => None,
         };
