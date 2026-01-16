@@ -19,14 +19,18 @@ Network diagnostic tool that goes beyond traceroute: MTU discovery, NAT detectio
 # Install (Linux/macOS)
 curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
 
+# Linux: Enable running without sudo (one-time setup)
+sudo setcap cap_net_raw+ep $(which ttl)
+
 # Basic usage
-sudo ttl 8.8.8.8
+ttl 8.8.8.8                          # Linux (after setcap)
+sudo ttl 8.8.8.8                     # macOS (always needs sudo)
 
 # Common options
-sudo ttl -p udp google.com           # UDP probes
-sudo ttl --flows 8 cloudflare.com    # ECMP path discovery
-sudo ttl --pmtud 1.1.1.1             # Path MTU discovery
-sudo ttl 8.8.8.8 1.1.1.1 9.9.9.9     # Multiple targets
+ttl -p udp google.com                # UDP probes
+ttl --flows 8 cloudflare.com         # ECMP path discovery
+ttl --pmtud 1.1.1.1                  # Path MTU discovery
+ttl 8.8.8.8 1.1.1.1 9.9.9.9          # Multiple targets
 ```
 
 Or with Rust (recommended for updates):
