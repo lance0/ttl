@@ -390,5 +390,4 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 Available targets:
 - `x86_64-unknown-linux-gnu` - Linux x86_64
 - `aarch64-unknown-linux-gnu` - Linux ARM64
-- `x86_64-apple-darwin` - macOS Intel
 - `aarch64-apple-darwin` - macOS Apple Silicon

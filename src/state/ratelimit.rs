@@ -9,6 +9,14 @@
 //!
 //! When rate limiting is detected, the TUI shows a warning to help users
 //! understand that the "loss" isn't real packet loss.
+//!
+//! ## Last-Hop Behavior
+//!
+//! The "isolated hop loss" heuristic (Check 1) requires a downstream hop for
+//! comparison. At the final hop (destination), there's no downstream to compare
+//! against, so this check won't trigger. This is intentional: high "loss" at
+//! the destination is often legitimate (destination may not respond to all
+//! probe types, firewall filtering, etc.) rather than rate limiting.
 
 use std::collections::VecDeque;
 use std::time::Duration;

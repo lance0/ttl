@@ -110,7 +110,12 @@ pub struct IxInfo {
     pub country: Option<String>,
 }
 
-/// Stats for a single responder at a given TTL
+/// Statistics for a single responder IP at a given TTL hop.
+///
+/// Each hop in the traceroute path may have multiple responders (ECMP load balancing),
+/// so `HopState` tracks one `ResponderStats` per unique IP address seen at that hop.
+/// Tracks latency metrics (min/avg/max/stddev), jitter (RFC 3550), loss rate, and
+/// enrichment data (hostname, ASN, geolocation, IX info, MPLS labels).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponderStats {
     pub ip: IpAddr,
@@ -643,7 +648,15 @@ impl TtlManipInfo {
     }
 }
 
-/// Rate limit detection info for a hop
+/// ICMP rate limit detection info for a hop.
+///
+/// Many routers rate-limit ICMP responses (Time Exceeded, Destination Unreachable),
+/// which causes misleading packet loss percentages in traceroute output. This struct
+/// detects rate limiting by comparing loss at this hop vs downstream hops: if this
+/// hop shows high loss but subsequent hops show low loss, the "loss" is likely just
+/// ICMP rate limiting, not actual packet drops.
+///
+/// The `[RL?]` indicator in the TUI warns users when rate limiting is suspected.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RateLimitInfo {
     /// Whether rate limiting is suspected
