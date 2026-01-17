@@ -75,13 +75,13 @@ Download from [GitHub Releases](https://github.com/lance0/ttl/releases):
 
 | Platform | Target |
 |----------|--------|
-| Linux x86_64 | `ttl-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux x86_64 | `ttl-x86_64-unknown-linux-musl.tar.gz` |
 | Linux ARM64 | `ttl-aarch64-unknown-linux-gnu.tar.gz` |
 | macOS Apple Silicon | `ttl-aarch64-apple-darwin.tar.gz` |
 
 ```bash
 # Download, verify, and install (Linux x86_64 example)
-curl -LO https://github.com/lance0/ttl/releases/latest/download/ttl-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/lance0/ttl/releases/latest/download/ttl-x86_64-unknown-linux-musl.tar.gz
 curl -LO https://github.com/lance0/ttl/releases/latest/download/SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing  # macOS: shasum -a 256 -c
 tar xzf ttl-*.tar.gz && sudo mv ttl /usr/local/bin/

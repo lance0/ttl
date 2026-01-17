@@ -432,7 +432,7 @@ Pre-built binaries are available from [GitHub Releases](https://github.com/lance
 ### Linux
 
 ```bash
-curl -LO https://github.com/lance0/ttl/releases/latest/download/ttl-x86_64-unknown-linux-gnu.tar.gz
+curl -LO https://github.com/lance0/ttl/releases/latest/download/ttl-x86_64-unknown-linux-musl.tar.gz
 curl -LO https://github.com/lance0/ttl/releases/latest/download/SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing
 ```
@@ -446,6 +446,6 @@ shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
 
 Available targets:
-- `x86_64-unknown-linux-gnu` - Linux x86_64
+- `x86_64-unknown-linux-musl` - Linux x86_64
 - `aarch64-unknown-linux-gnu` - Linux ARM64
 - `aarch64-apple-darwin` - macOS Apple Silicon
