@@ -1,6 +1,6 @@
 use pnet::packet::MutablePacket;
 use pnet::packet::icmp::echo_request::MutableEchoRequestPacket;
-use pnet::packet::icmp::{IcmpCode, IcmpTypes, checksum};
+use pnet::packet::icmp::{IcmpCode, IcmpType, IcmpTypes, checksum};
 
 /// ICMP header size (fixed)
 pub const ICMP_HEADER_SIZE: usize = 8;
@@ -16,19 +16,30 @@ pub fn get_identifier() -> u16 {
 
 /// Build an ICMP Echo Request packet with configurable payload size
 ///
+/// Set ipv6=true to build an ICMPv6 Echo Request.
+///
 /// Payload layout (for macOS DGRAM correlation fallback):
 /// - Bytes 0-1: identifier (backup for kernel override on macOS DGRAM sockets)
 /// - Bytes 2-3: sequence (backup for kernel override)
 /// - Bytes 4-7: timestamp (lower 32 bits)
 /// - Bytes 8+: pattern fill
-pub fn build_echo_request(identifier: u16, sequence: u16, payload_size: usize) -> Vec<u8> {
+pub fn build_echo_request(
+    identifier: u16,
+    sequence: u16,
+    payload_size: usize,
+    ipv6: bool,
+) -> Vec<u8> {
     let payload_size = payload_size.max(MIN_PAYLOAD_SIZE);
     let packet_size = ICMP_HEADER_SIZE + payload_size;
     let mut buffer = vec![0u8; packet_size];
 
     let mut packet = MutableEchoRequestPacket::new(&mut buffer).unwrap();
 
-    packet.set_icmp_type(IcmpTypes::EchoRequest);
+    if ipv6 {
+        packet.set_icmp_type(IcmpType::new(128));
+    } else {
+        packet.set_icmp_type(IcmpTypes::EchoRequest);
+    }
     packet.set_icmp_code(IcmpCode::new(0));
     packet.set_identifier(identifier);
     packet.set_sequence_number(sequence);
@@ -54,9 +65,11 @@ pub fn build_echo_request(identifier: u16, sequence: u16, payload_size: usize) -
     }
 
     // Calculate checksum
-    let cksum = checksum(&pnet::packet::icmp::IcmpPacket::new(&buffer).unwrap());
-    let mut packet = MutableEchoRequestPacket::new(&mut buffer).unwrap();
-    packet.set_checksum(cksum);
+    if !ipv6 {
+        let cksum = checksum(&pnet::packet::icmp::IcmpPacket::new(&buffer).unwrap());
+        let mut packet = MutableEchoRequestPacket::new(&mut buffer).unwrap();
+        packet.set_checksum(cksum);
+    }
 
     buffer
 }
@@ -67,20 +80,28 @@ mod tests {
 
     #[test]
     fn test_build_echo_request() {
-        let packet = build_echo_request(1234, 5678, DEFAULT_PAYLOAD_SIZE);
+        let packet = build_echo_request(1234, 5678, DEFAULT_PAYLOAD_SIZE, false);
         assert_eq!(packet.len(), ICMP_HEADER_SIZE + DEFAULT_PAYLOAD_SIZE);
         assert_eq!(packet[0], 8); // Echo Request type
         assert_eq!(packet[1], 0); // Code
     }
 
     #[test]
+    fn test_build_echo_request_ipv6() {
+        let packet = build_echo_request(1234, 5678, DEFAULT_PAYLOAD_SIZE, true);
+        assert_eq!(packet.len(), ICMP_HEADER_SIZE + DEFAULT_PAYLOAD_SIZE);
+        assert_eq!(packet[0], 128); // ICMPv6 Echo Request type
+        assert_eq!(packet[1], 0); // Code
+    }
+
+    #[test]
     fn test_build_echo_request_custom_size() {
         // Test larger payload
-        let packet = build_echo_request(1234, 5678, 1400);
+        let packet = build_echo_request(1234, 5678, 1400, false);
         assert_eq!(packet.len(), ICMP_HEADER_SIZE + 1400);
 
         // Test minimum payload
-        let packet = build_echo_request(1234, 5678, 0);
+        let packet = build_echo_request(1234, 5678, 0, false);
         assert_eq!(packet.len(), ICMP_HEADER_SIZE + MIN_PAYLOAD_SIZE);
     }
 }

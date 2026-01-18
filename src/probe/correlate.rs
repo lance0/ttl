@@ -179,14 +179,13 @@ pub fn parse_icmp_response(
         } else {
             parse_icmp_response_v6_dgram(data, responder, our_identifier)
         }
+    } else if responder.is_ipv6() {
+        // RAW IPv6 socket: Linux kernel strips IPv6 header, delivers ICMPv6 directly
+        // Use DGRAM parser which expects no IP header
+        parse_icmp_response_v6_dgram(data, responder, our_identifier)
     } else {
-        // RAW socket: has IP header, detect version from first nibble
-        let ip_version = (data[0] >> 4) & 0x0F;
-        match ip_version {
-            4 => parse_icmp_response_v4(data, responder, our_identifier),
-            6 => parse_icmp_response_v6(data, responder, our_identifier),
-            _ => None,
-        }
+        // RAW IPv4 socket: has IP header
+        parse_icmp_response_v4(data, responder, our_identifier)
     }
 }
 
@@ -289,15 +288,27 @@ fn parse_icmp_response_v4(
 }
 
 // IPv6 Next Header protocol numbers
+// Note: These are currently unused because Linux strips the IPv6 header from raw
+// ICMPv6 sockets before delivery. Kept for potential future use on other platforms.
+#[allow(dead_code)]
 const IPV6_NH_HOP_BY_HOP: u8 = 0;
+#[allow(dead_code)]
 const IPV6_NH_ROUTING: u8 = 43;
+#[allow(dead_code)]
 const IPV6_NH_FRAGMENT: u8 = 44;
+#[allow(dead_code)]
 const IPV6_NH_ICMPV6: u8 = 58;
+#[allow(dead_code)]
 const IPV6_NH_NO_NEXT: u8 = 59;
+#[allow(dead_code)]
 const IPV6_NH_DEST_OPTS: u8 = 60;
 
 /// Skip IPv6 extension headers and return offset to ICMPv6 payload
 /// Returns None if ICMPv6 is not the upper layer protocol
+///
+/// Note: Currently unused because Linux strips IPv6 headers from raw ICMPv6 sockets.
+/// Kept for potential future use on platforms that include the IPv6 header.
+#[allow(dead_code)]
 fn skip_ipv6_extension_headers(data: &[u8]) -> Option<usize> {
     const IPV6_HEADER_LEN: usize = 40;
 
@@ -353,6 +364,10 @@ fn skip_ipv6_extension_headers(data: &[u8]) -> Option<usize> {
 /// ICMPv6 checksums require the IPv6 pseudo-header (source/dest addresses,
 /// payload length, next header) which isn't available after extension header
 /// parsing. The kernel validates ICMPv6 checksums before delivery to raw sockets.
+///
+/// Currently unused because Linux strips IPv6 headers from raw ICMPv6 sockets.
+/// The DGRAM parser is used instead. Kept for potential future use.
+#[allow(dead_code)]
 fn parse_icmp_response_v6(
     data: &[u8],
     responder: IpAddr,
@@ -610,6 +625,10 @@ fn parse_icmp_error_payload_v4_with_mtu(
 /// Note: Assumes the embedded original IPv6 packet has no extension headers.
 /// This is valid for our use case since we send ICMPv6 Echo Requests and UDP directly
 /// (Next Header = 58 or 17) without any extension headers.
+///
+/// Currently unused because Linux strips IPv6 headers from raw ICMPv6 sockets.
+/// The DGRAM error parser is used instead. Kept for potential future use.
+#[allow(dead_code)]
 fn parse_icmp_error_payload_v6_with_mtu(
     icmp_data: &[u8],
     responder: IpAddr,
@@ -1412,26 +1431,22 @@ mod tests {
         ));
         let our_id = 0x1234;
 
-        // Build IPv6 + ICMPv6 Echo Reply packet
-        // IPv6 header (40 bytes) + ICMPv6 Echo Reply (8 bytes minimum)
-        let mut packet = vec![0u8; 48];
+        // Build ICMPv6 Echo Reply packet (no IPv6 header - kernel strips it on Linux)
+        // ICMPv6 Echo Reply: 8 bytes header + payload
+        let mut packet = vec![0u8; 12]; // 8 header + 4 payload for identifier backup
 
-        // IPv6 header
-        packet[0] = 0x60; // Version 6
-        packet[6] = 58; // Next Header: ICMPv6
-
-        // ICMPv6 Echo Reply at offset 40
-        packet[40] = 129; // Type: Echo Reply
-        packet[41] = 0; // Code: 0
-        // Checksum (skipped for ICMPv6 - kernel validates)
+        // ICMPv6 Echo Reply
+        packet[0] = 129; // Type: Echo Reply
+        packet[1] = 0; // Code: 0
+        // Checksum (bytes 2-3, kernel validates)
         // Identifier
-        packet[44] = 0x12;
-        packet[45] = 0x34;
+        packet[4] = 0x12;
+        packet[5] = 0x34;
         // Sequence (TTL=8, seq=4)
         let probe_id = ProbeId::new(8, 4);
         let seq = probe_id.to_sequence();
-        packet[46] = (seq >> 8) as u8;
-        packet[47] = (seq & 0xFF) as u8;
+        packet[6] = (seq >> 8) as u8;
+        packet[7] = (seq & 0xFF) as u8;
 
         let result = parse_icmp_response(&packet, responder, our_id, false);
         assert!(result.is_some());
@@ -1448,33 +1463,31 @@ mod tests {
         let responder = IpAddr::V6(std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
         let our_id = 0xABCD;
 
-        // Build IPv6 + ICMPv6 Time Exceeded packet
-        // Outer IPv6 (40) + ICMPv6 header (8) + Original IPv6 (40) + Original ICMPv6 (8) = 96 bytes
-        let mut packet = vec![0u8; 96];
+        // Build ICMPv6 Time Exceeded packet (no outer IPv6 header - kernel strips it)
+        // ICMPv6 header (8) + Original IPv6 (40) + Original ICMPv6 (8) = 56 bytes
+        let mut packet = vec![0u8; 56];
 
-        // Outer IPv6 header
-        packet[0] = 0x60;
-        packet[6] = 58; // ICMPv6
+        // ICMPv6 Time Exceeded
+        packet[0] = 3; // Type: Time Exceeded
+        packet[1] = 0; // Code: Hop limit exceeded
+        // Checksum (bytes 2-3)
+        // Unused (bytes 4-7)
 
-        // ICMPv6 Time Exceeded at offset 40
-        packet[40] = 3; // Type: Time Exceeded
-        packet[41] = 0; // Code: Hop limit exceeded
+        // Original IPv6 header (inside ICMPv6 payload at offset 8)
+        packet[8] = 0x60; // Version 6
+        packet[14] = 58; // Next Header: ICMPv6
 
-        // Original IPv6 header (inside ICMPv6 payload at offset 48)
-        packet[48] = 0x60; // Version 6
-        packet[54] = 58; // Next Header: ICMPv6
-
-        // Original ICMPv6 Echo Request (at offset 88)
-        packet[88] = 128; // Type: Echo Request
-        packet[89] = 0; // Code: 0
+        // Original ICMPv6 Echo Request (at offset 48 = 8 + 40)
+        packet[48] = 128; // Type: Echo Request
+        packet[49] = 0; // Code: 0
         // Identifier
-        packet[92] = 0xAB;
-        packet[93] = 0xCD;
+        packet[52] = 0xAB;
+        packet[53] = 0xCD;
         // Sequence (TTL=6, seq=2)
         let probe_id = ProbeId::new(6, 2);
         let seq = probe_id.to_sequence();
-        packet[94] = (seq >> 8) as u8;
-        packet[95] = (seq & 0xFF) as u8;
+        packet[54] = (seq >> 8) as u8;
+        packet[55] = (seq & 0xFF) as u8;
 
         let result = parse_icmp_response(&packet, responder, our_id, false);
         assert!(result.is_some());
@@ -1485,83 +1498,10 @@ mod tests {
         assert_eq!(parsed.response_type, IcmpResponseType::TimeExceeded(0));
     }
 
-    #[test]
-    fn test_ipv6_with_hop_by_hop_extension() {
-        let responder = IpAddr::V6(std::net::Ipv6Addr::new(
-            0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888,
-        ));
-        let our_id = 0x1234;
-
-        // Build IPv6 + Hop-by-Hop Options (8 bytes) + ICMPv6 Echo Reply
-        // IPv6 header (40 bytes) + Hop-by-Hop (8 bytes) + ICMPv6 (8 bytes) = 56 bytes
-        let mut packet = vec![0u8; 56];
-
-        // IPv6 header
-        packet[0] = 0x60; // Version 6
-        packet[6] = 0; // Next Header: Hop-by-Hop Options
-
-        // Hop-by-Hop Options header at offset 40
-        packet[40] = 58; // Next Header: ICMPv6
-        packet[41] = 0; // Length: 0 (means 8 bytes total)
-        // Padding bytes 42-47
-
-        // ICMPv6 Echo Reply at offset 48
-        packet[48] = 129; // Type: Echo Reply
-        packet[49] = 0; // Code: 0
-        // Identifier
-        packet[52] = 0x12;
-        packet[53] = 0x34;
-        // Sequence (TTL=5, seq=1)
-        let probe_id = ProbeId::new(5, 1);
-        let seq = probe_id.to_sequence();
-        packet[54] = (seq >> 8) as u8;
-        packet[55] = (seq & 0xFF) as u8;
-
-        let result = parse_icmp_response(&packet, responder, our_id, false);
-        assert!(result.is_some());
-
-        let parsed = result.unwrap();
-        assert_eq!(parsed.probe_id.ttl, 5);
-        assert_eq!(parsed.probe_id.seq, 1);
-    }
-
-    #[test]
-    fn test_ipv6_with_routing_extension() {
-        let responder = IpAddr::V6(std::net::Ipv6Addr::new(
-            0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888,
-        ));
-        let our_id = 0x5678;
-
-        // Build IPv6 + Routing Header (8 bytes) + ICMPv6 Echo Reply
-        let mut packet = vec![0u8; 56];
-
-        // IPv6 header
-        packet[0] = 0x60;
-        packet[6] = 43; // Next Header: Routing
-
-        // Routing header at offset 40
-        packet[40] = 58; // Next Header: ICMPv6
-        packet[41] = 0; // Length: 0 (8 bytes total)
-        packet[42] = 0; // Routing Type
-        packet[43] = 0; // Segments Left
-
-        // ICMPv6 Echo Reply at offset 48
-        packet[48] = 129;
-        packet[49] = 0;
-        packet[52] = 0x56;
-        packet[53] = 0x78;
-        let probe_id = ProbeId::new(3, 7);
-        let seq = probe_id.to_sequence();
-        packet[54] = (seq >> 8) as u8;
-        packet[55] = (seq & 0xFF) as u8;
-
-        let result = parse_icmp_response(&packet, responder, our_id, false);
-        assert!(result.is_some());
-
-        let parsed = result.unwrap();
-        assert_eq!(parsed.probe_id.ttl, 3);
-        assert_eq!(parsed.probe_id.seq, 7);
-    }
+    // Note: IPv6 extension header tests removed.
+    // Linux kernel strips outer IPv6 header before delivering to raw ICMPv6 sockets,
+    // so we never see extension headers in the outer packet. Extension header parsing
+    // code (parse_icmp_response_v6, skip_ipv6_extension_headers) is now unused.
 
     #[test]
     fn test_ipv6_fragment_header_rejected() {

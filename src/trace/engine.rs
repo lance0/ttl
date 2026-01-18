@@ -11,10 +11,11 @@ use crate::probe::{
     bind_to_source_ip, build_echo_request, build_tcp_syn_sized, build_udp_payload_sized,
     create_send_socket_with_interface, create_tcp_socket_with_interface, create_udp_dgram_socket,
     create_udp_dgram_socket_bound_full, create_udp_dgram_socket_bound_with_interface,
-    get_identifier, get_local_addr_with_interface, send_icmp, send_tcp_probe, send_udp_probe,
-    set_dont_fragment, set_dscp, set_ttl,
+    enable_recv_ttl, get_identifier, get_local_addr_with_interface, parse_icmp_response,
+    recv_icmp_with_ttl, send_icmp, send_tcp_probe, send_udp_probe, set_dont_fragment, set_dscp,
+    set_ttl,
 };
-use crate::state::{PmtudPhase, ProbeId, Session};
+use crate::state::{IcmpResponseType, PmtudPhase, ProbeId, Session};
 use crate::trace::pending::{PendingMap, PendingProbe};
 
 /// The probe engine sends ICMP probes at configured intervals
@@ -120,6 +121,14 @@ impl ProbeEngine {
         let ipv6 = self.target.is_ipv6();
         let socket_info = create_send_socket_with_interface(ipv6, self.interface.as_ref())?;
         let socket = socket_info.socket;
+        let is_dgram = socket_info.is_dgram;
+
+        // Linux-only: Enable hop limit reception on send socket for Echo Reply polling
+        // This allows asymmetry detection to work for the destination hop
+        #[cfg(target_os = "linux")]
+        if ipv6 {
+            let _ = enable_recv_ttl(&socket, true);
+        }
 
         // Bind to specific source IP if configured
         if let Some(source_ip) = self.config.source_ip {
@@ -182,7 +191,12 @@ impl ProbeEngine {
                         let payload_size = self.config.packet_size
                             .map(|s| (s as usize).saturating_sub(ip_header_size + ICMP_HEADER_SIZE))
                             .unwrap_or(DEFAULT_PAYLOAD_SIZE);
-                        let packet = build_echo_request(self.identifier, probe_id.to_sequence(), payload_size);
+                        let packet = build_echo_request(
+                            self.identifier,
+                            probe_id.to_sequence(),
+                            payload_size,
+                            self.target.is_ipv6(),
+                        );
 
                         // Set TTL before sending
                         if let Err(e) = set_ttl(&socket, ttl, self.target.is_ipv6()) {
@@ -242,6 +256,14 @@ impl ProbeEngine {
                     {
                         pmtud_seq = pmtud_seq.wrapping_add(1);
                         self.apply_rate_limit().await;
+                    }
+
+                    // Linux-only: Poll send socket for Echo Reply
+                    // Linux delivers ICMPv6 Echo Reply only to the socket that sent the request.
+                    // macOS delivers to any raw ICMPv6 socket, so the receiver handles it there.
+                    #[cfg(target_os = "linux")]
+                    if ipv6 {
+                        self.poll_ipv6_echo_reply(&socket, is_dgram);
                     }
 
                     seq = seq.wrapping_add(1);
@@ -602,7 +624,12 @@ impl ProbeEngine {
         let ip_header_size: usize = if self.target.is_ipv6() { 40 } else { 20 };
         let payload_size = (packet_size as usize).saturating_sub(ip_header_size + ICMP_HEADER_SIZE);
 
-        let packet = build_echo_request(self.identifier, probe_id.to_sequence(), payload_size);
+        let packet = build_echo_request(
+            self.identifier,
+            probe_id.to_sequence(),
+            payload_size,
+            self.target.is_ipv6(),
+        );
 
         // Set TTL
         if let Err(e) = set_ttl(socket, dest_ttl, self.target.is_ipv6()) {
@@ -684,6 +711,110 @@ impl ProbeEngine {
                 false
             }
         }
+    }
+
+    /// Poll the send socket for IPv6 Echo Reply responses (Linux-only)
+    ///
+    /// Linux delivers ICMPv6 Echo Reply ONLY to the socket that sent the request.
+    /// Since we use separate send/receive sockets, the receiver never gets Echo Reply.
+    /// This method polls the send socket after each round to catch Echo Reply responses.
+    ///
+    /// Time Exceeded (type 3) is delivered to any raw ICMPv6 socket, so the receiver
+    /// handles intermediate hops fine. Only Echo Reply needs this special handling.
+    ///
+    /// Note: macOS delivers Echo Reply to any raw ICMPv6 socket, so this is not needed there.
+    #[cfg(target_os = "linux")]
+    fn poll_ipv6_echo_reply(&self, socket: &socket2::Socket, is_dgram: bool) {
+        // Set socket to non-blocking for polling
+        let _ = socket.set_nonblocking(true);
+
+        let mut buffer = [0u8; 1500];
+
+        // Drain any pending Echo Reply responses
+        loop {
+            match recv_icmp_with_ttl(socket, &mut buffer, true) {
+                Ok(recv_result) => {
+                    // Parse the ICMP response
+                    // For IPv6 raw sockets, kernel strips the IPv6 header
+                    if let Some(parsed) = parse_icmp_response(
+                        &buffer[..recv_result.len],
+                        recv_result.source,
+                        self.identifier,
+                        is_dgram,
+                    ) {
+                        // Only handle Echo Reply here (type 129)
+                        // Time Exceeded is handled by the receiver
+                        if !matches!(parsed.response_type, IcmpResponseType::EchoReply) {
+                            continue;
+                        }
+
+                        // Look up pending probe
+                        let flow_id = 0u8; // ICMP uses single flow
+                        let probe_opt = {
+                            let mut pending = self.pending.write();
+                            // Try normal probe first
+                            pending
+                                .remove(&(parsed.probe_id, flow_id, self.target, false))
+                                .or_else(|| {
+                                    // Try PMTUD probe
+                                    pending.remove(&(parsed.probe_id, flow_id, self.target, true))
+                                })
+                        };
+
+                        if let Some(probe) = probe_opt {
+                            let rtt = Instant::now().duration_since(probe.sent_at);
+
+                            // Update state with parity to receiver behavior
+                            let mut state = self.state.write();
+                            if let Some(hop) = state.hop_mut(parsed.probe_id.ttl) {
+                                // Use flap-detecting record for single-flow mode (ICMP is always single-flow)
+                                hop.record_response_detecting_flaps(parsed.responder, rtt, None);
+                                hop.record_flow_response(flow_id, parsed.responder, rtt);
+                                // Record response TTL for asymmetry detection
+                                if let Some(response_ttl) = recv_result.response_ttl {
+                                    hop.record_response_ttl(response_ttl, true);
+                                }
+                            }
+
+                            // Mark trace as complete if this is the destination
+                            if parsed.responder == self.target {
+                                state.complete = true;
+                                let ttl = parsed.probe_id.ttl;
+                                if state.dest_ttl.is_none() || ttl < state.dest_ttl.unwrap() {
+                                    state.dest_ttl = Some(ttl);
+                                }
+                            }
+
+                            // Handle PMTUD probe success
+                            if let Some(probe_size) = probe.packet_size {
+                                if let Some(ref mut pmtud) = state.pmtud {
+                                    if pmtud.phase == PmtudPhase::Searching
+                                        && probe_size == pmtud.current_size
+                                    {
+                                        pmtud.record_success();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Only break on WouldBlock/TimedOut (socket drained)
+                    // Log other errors for debugging
+                    let is_timeout = e.downcast_ref::<std::io::Error>().is_some_and(|io| {
+                        io.kind() == std::io::ErrorKind::WouldBlock
+                            || io.kind() == std::io::ErrorKind::TimedOut
+                    });
+                    if !is_timeout {
+                        eprintln!("IPv6 Echo Reply poll error: {}", e);
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Restore blocking mode for sending
+        let _ = socket.set_nonblocking(false);
     }
 }
 

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **IPv6 ICMP traceroute**: Fix 100% packet loss on Linux for destination hop
+  - Linux delivers ICMPv6 Echo Reply only to the socket that sent the request
+  - Added send socket polling for Echo Reply in IPv6 ICMP mode (Linux-only)
+  - Intermediate hops (Time Exceeded) were unaffected; only destination detection was broken
+  - ICMPv6 Echo Request now uses correct type 128 (was incorrectly using type 8)
+
+### Changed
+- **Cargo.lock**: Now tracked in version control for reproducible builds
+  - Best practice for binary applications per Cargo documentation
+  - Enables deterministic builds for package managers (nixpkgs, etc.)
+
 ## [0.12.4] - 2026-01-17
 
 ### Fixed
