@@ -155,8 +155,11 @@ where
             }
 
             if ui_state.show_hop_detail {
-                if key.code == KeyCode::Esc {
-                    ui_state.show_hop_detail = false;
+                match key.code {
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
+                        ui_state.show_hop_detail = false;
+                    }
+                    _ => {}
                 }
                 continue;
             }
