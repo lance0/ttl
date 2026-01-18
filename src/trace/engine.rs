@@ -130,9 +130,28 @@ impl ProbeEngine {
             let _ = enable_recv_ttl(&socket, true);
         }
 
-        // Bind to specific source IP if configured
-        if let Some(source_ip) = self.config.source_ip {
-            bind_to_source_ip(&socket, source_ip)?;
+        // Determine source IP for socket binding and IPv6 checksum
+        // For IPv6, we MUST bind to ensure checksum matches the actual source
+        let src_ip = self
+            .config
+            .source_ip
+            .unwrap_or_else(|| get_local_addr_with_interface(self.target, self.interface.as_ref()));
+
+        // Bind to source IP if configured OR if IPv6 (required for checksum consistency)
+        // Skip binding if source is unspecified (:: or 0.0.0.0) - let kernel choose
+        if (self.config.source_ip.is_some() || ipv6) && !src_ip.is_unspecified() {
+            if let Err(e) = bind_to_source_ip(&socket, src_ip) {
+                if self.config.source_ip.is_some() {
+                    // User explicitly requested this source IP - hard fail
+                    return Err(e);
+                }
+                // Auto-detected source IP failed to bind (e.g., link-local scope mismatch)
+                // Warn and continue - kernel will choose source, checksum may be wrong
+                eprintln!(
+                    "Warning: Failed to bind to source IP {}: {}. IPv6 checksum may be incorrect.",
+                    src_ip, e
+                );
+            }
         }
 
         let mut seq: u8 = 0;
@@ -191,11 +210,19 @@ impl ProbeEngine {
                         let payload_size = self.config.packet_size
                             .map(|s| (s as usize).saturating_sub(ip_header_size + ICMP_HEADER_SIZE))
                             .unwrap_or(DEFAULT_PAYLOAD_SIZE);
+
+                        // For IPv6, pass addresses for checksum computation
+                        let ipv6_addrs = match (src_ip, self.target) {
+                            (IpAddr::V6(src), IpAddr::V6(dest)) => Some((src, dest)),
+                            _ => None,
+                        };
+
                         let packet = build_echo_request(
                             self.identifier,
                             probe_id.to_sequence(),
                             payload_size,
                             self.target.is_ipv6(),
+                            ipv6_addrs,
                         );
 
                         // Set TTL before sending
@@ -252,7 +279,7 @@ impl ProbeEngine {
                     // Uses separate pmtud_seq counter to avoid ProbeId collision with normal probes
                     if let Some(dest_ttl) = self.check_pmtud_ready()
                         && let Some(probe_size) = self.get_pmtud_probe_size()
-                        && self.send_pmtud_probe_icmp(&socket, dest_ttl, probe_size, pmtud_seq).await
+                        && self.send_pmtud_probe_icmp(&socket, dest_ttl, probe_size, pmtud_seq, src_ip).await
                     {
                         pmtud_seq = pmtud_seq.wrapping_add(1);
                         self.apply_rate_limit().await;
@@ -616,6 +643,7 @@ impl ProbeEngine {
         dest_ttl: u8,
         packet_size: u16,
         seq: u8,
+        src_ip: IpAddr,
     ) -> bool {
         let probe_id = ProbeId::new(dest_ttl, seq);
 
@@ -624,11 +652,18 @@ impl ProbeEngine {
         let ip_header_size: usize = if self.target.is_ipv6() { 40 } else { 20 };
         let payload_size = (packet_size as usize).saturating_sub(ip_header_size + ICMP_HEADER_SIZE);
 
+        // For IPv6, pass addresses for checksum computation
+        let ipv6_addrs = match (src_ip, self.target) {
+            (IpAddr::V6(src), IpAddr::V6(dest)) => Some((src, dest)),
+            _ => None,
+        };
+
         let packet = build_echo_request(
             self.identifier,
             probe_id.to_sequence(),
             payload_size,
             self.target.is_ipv6(),
+            ipv6_addrs,
         );
 
         // Set TTL
@@ -736,63 +771,65 @@ impl ProbeEngine {
                 Ok(recv_result) => {
                     // Parse the ICMP response
                     // For IPv6 raw sockets, kernel strips the IPv6 header
-                    if let Some(parsed) = parse_icmp_response(
+                    let Some(parsed) = parse_icmp_response(
                         &buffer[..recv_result.len],
                         recv_result.source,
                         self.identifier,
                         is_dgram,
-                    ) {
-                        // Only handle Echo Reply here (type 129)
-                        // Time Exceeded is handled by the receiver
-                        if !matches!(parsed.response_type, IcmpResponseType::EchoReply) {
-                            continue;
+                    ) else {
+                        continue;
+                    };
+
+                    // Only handle Echo Reply here (type 129)
+                    // Time Exceeded is handled by the receiver
+                    if !matches!(parsed.response_type, IcmpResponseType::EchoReply) {
+                        continue;
+                    }
+
+                    // Look up pending probe
+                    let flow_id = 0u8; // ICMP uses single flow
+                    let probe_opt = {
+                        let mut pending = self.pending.write();
+                        // Try normal probe first
+                        pending
+                            .remove(&(parsed.probe_id, flow_id, self.target, false))
+                            .or_else(|| {
+                                // Try PMTUD probe
+                                pending.remove(&(parsed.probe_id, flow_id, self.target, true))
+                            })
+                    };
+
+                    if let Some(probe) = probe_opt {
+                        let rtt = Instant::now().duration_since(probe.sent_at);
+
+                        // Update state with parity to receiver behavior
+                        let mut state = self.state.write();
+                        if let Some(hop) = state.hop_mut(parsed.probe_id.ttl) {
+                            // Use flap-detecting record for single-flow mode (ICMP is always single-flow)
+                            hop.record_response_detecting_flaps(parsed.responder, rtt, None);
+                            hop.record_flow_response(flow_id, parsed.responder, rtt);
+                            // Record response TTL for asymmetry detection
+                            if let Some(response_ttl) = recv_result.response_ttl {
+                                hop.record_response_ttl(response_ttl, true);
+                            }
                         }
 
-                        // Look up pending probe
-                        let flow_id = 0u8; // ICMP uses single flow
-                        let probe_opt = {
-                            let mut pending = self.pending.write();
-                            // Try normal probe first
-                            pending
-                                .remove(&(parsed.probe_id, flow_id, self.target, false))
-                                .or_else(|| {
-                                    // Try PMTUD probe
-                                    pending.remove(&(parsed.probe_id, flow_id, self.target, true))
-                                })
-                        };
-
-                        if let Some(probe) = probe_opt {
-                            let rtt = Instant::now().duration_since(probe.sent_at);
-
-                            // Update state with parity to receiver behavior
-                            let mut state = self.state.write();
-                            if let Some(hop) = state.hop_mut(parsed.probe_id.ttl) {
-                                // Use flap-detecting record for single-flow mode (ICMP is always single-flow)
-                                hop.record_response_detecting_flaps(parsed.responder, rtt, None);
-                                hop.record_flow_response(flow_id, parsed.responder, rtt);
-                                // Record response TTL for asymmetry detection
-                                if let Some(response_ttl) = recv_result.response_ttl {
-                                    hop.record_response_ttl(response_ttl, true);
-                                }
+                        // Mark trace as complete if this is the destination
+                        if parsed.responder == self.target {
+                            state.complete = true;
+                            let ttl = parsed.probe_id.ttl;
+                            if state.dest_ttl.is_none() || ttl < state.dest_ttl.unwrap() {
+                                state.dest_ttl = Some(ttl);
                             }
+                        }
 
-                            // Mark trace as complete if this is the destination
-                            if parsed.responder == self.target {
-                                state.complete = true;
-                                let ttl = parsed.probe_id.ttl;
-                                if state.dest_ttl.is_none() || ttl < state.dest_ttl.unwrap() {
-                                    state.dest_ttl = Some(ttl);
-                                }
-                            }
-
-                            // Handle PMTUD probe success
-                            if let Some(probe_size) = probe.packet_size {
-                                if let Some(ref mut pmtud) = state.pmtud {
-                                    if pmtud.phase == PmtudPhase::Searching
-                                        && probe_size == pmtud.current_size
-                                    {
-                                        pmtud.record_success();
-                                    }
+                        // Handle PMTUD probe success
+                        if let Some(probe_size) = probe.packet_size {
+                            if let Some(ref mut pmtud) = state.pmtud {
+                                if pmtud.phase == PmtudPhase::Searching
+                                    && probe_size == pmtud.current_size
+                                {
+                                    pmtud.record_success();
                                 }
                             }
                         }

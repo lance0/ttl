@@ -230,7 +230,9 @@ impl Widget for MainView<'_> {
                         format!(" {}", ind)
                     };
                     // Truncate to leave room for indicators
-                    let max_len = 28 - indicators.len();
+                    // IPv6 addresses need more space (up to 39 chars vs 15 for IPv4)
+                    let base_len: usize = if stats.ip.is_ipv6() { 42 } else { 28 };
+                    let max_len = base_len.saturating_sub(indicators.len());
                     let truncated = truncate_with_ellipsis(&display, max_len);
                     (format!("{}{}", truncated, indicators), asn)
                 } else if hop.received == 0 {

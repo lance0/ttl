@@ -22,10 +22,10 @@ pub fn generate_report<W: Write>(session: &Session, mut writer: W) -> std::io::R
     // Header
     writeln!(
         writer,
-        "{:>3}  {:<40} {:>6} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "{:>3}  {:<46} {:>6} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
         "#", "Host", "Loss%", "Sent", "Avg", "Min", "Max", "StdDev", "Jitter"
     )?;
-    writeln!(writer, "{}", "-".repeat(110))?;
+    writeln!(writer, "{}", "-".repeat(116))?;
 
     // Only show hops up to the destination
     let max_ttl = session.dest_ttl.unwrap_or(session.config.max_ttl);
@@ -64,7 +64,7 @@ pub fn generate_report<W: Write>(session: &Session, mut writer: W) -> std::io::R
 
         writeln!(
             writer,
-            "{:>3}  {:<40} {:>5.1}% {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
+            "{:>3}  {:<46} {:>5.1}% {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
             hop.ttl,
             host,
             hop.loss_pct(),
