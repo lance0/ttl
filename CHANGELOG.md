@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.6] - 2026-01-18
+
+### Fixed
+- **ICMPv6 checksum computation**: Fix IPv6 traceroute not detecting destinations
+  - ICMPv6 packets had checksum 0, relying on kernel to fill it in (it didn't)
+  - Destinations dropped packets with invalid checksums; intermediate hops worked
+  - Added manual ICMPv6 checksum computation with RFC 8200 pseudo-header
+  - Algorithm derived from trippy (BSD-licensed) with known-value test verification
+  - Socket now bound to source IP for IPv6 to ensure checksum consistency
+
+### Improved
+- **IPv6 address display**: Increased width for full IPv6 addresses
+  - TUI host column: 28 → 42 chars for IPv6 (prevents truncation)
+  - Text report host column: 40 → 46 chars
+
 ## [0.12.5] - 2026-01-18
 
 ### Fixed

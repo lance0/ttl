@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-## Current Status (v0.12.3)
+## Current Status (v0.12.6)
 
 ### Core Features
 - [x] ICMP Echo probing with TTL sweep
@@ -151,6 +151,21 @@
 ### v0.12.3 - Bug Fix (Released)
 - [x] Fixed hop detail view showing "Sent: 0" (was using wrong counter)
 - [x] Added "Hop totals" label for ECMP clarity
+
+### v0.12.4 - Linux Compatibility (Released)
+- [x] Switch Linux x86_64 builds to musl libc for glibc compatibility
+- [x] Pre-built binaries now work on Debian 11/12 and other older distros
+
+### v0.12.5 - IPv6 ICMP Fix Part 1 (Released)
+- [x] Fix IPv6 ICMP traceroute 100% packet loss on Linux destination hop
+- [x] Add send socket polling for Echo Reply in IPv6 ICMP mode
+- [x] Fix ICMPv6 Echo Request type (128, was incorrectly using type 8)
+
+### v0.12.6 - IPv6 ICMP Fix Part 2 (Released)
+- [x] Fix ICMPv6 checksum computation (was 0, destinations dropped packets)
+- [x] Add manual ICMPv6 checksum with RFC 8200 pseudo-header
+- [x] Bind IPv6 sockets to source IP for checksum consistency
+- [x] Increase IPv6 address display width in TUI and reports
 
 ### v1.0.0 - BGP & Routing Integration
 - [ ] Looking glass integration (query public route servers)
