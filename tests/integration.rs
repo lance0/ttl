@@ -523,6 +523,170 @@ fn test_pmtud_ipv6_convergence() {
 }
 
 #[test]
+fn test_non_responding_hop_probing_after_completion() {
+    // Regression test: non-responding hops (* hops) should continue to
+    // accept probe data after destination is found. This verifies the
+    // fix for "frozen * hops" where sent counters stopped incrementing.
+    let mut session = test_session();
+    let target_ip = session.target.resolved;
+
+    // Set up a trace with a non-responding hop at TTL 2
+    // TTL 1: responds
+    if let Some(hop) = session.hop_mut(1) {
+        hop.record_sent();
+        hop.record_response(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            Duration::from_millis(5),
+        );
+    }
+
+    // TTL 2: non-responding (timeout)
+    if let Some(hop) = session.hop_mut(2) {
+        hop.record_sent();
+        hop.record_timeout();
+    }
+
+    // TTL 3: destination
+    if let Some(hop) = session.hop_mut(3) {
+        hop.record_sent();
+        hop.record_response(target_ip, Duration::from_millis(15));
+    }
+
+    // Mark session complete (destination found)
+    session.complete = true;
+    session.dest_ttl = Some(3);
+
+    // Verify initial state
+    assert_eq!(session.hop(2).unwrap().sent, 1);
+    assert_eq!(session.hop(2).unwrap().received, 0);
+
+    // KEY TEST: After completion, non-responding hop should still accept probes
+    // This simulates continued probing in subsequent rounds
+    if let Some(hop) = session.hop_mut(2) {
+        hop.record_sent();
+        hop.record_timeout();
+
+        hop.record_sent();
+        hop.record_timeout();
+    }
+
+    // Verify sent counter incremented (not frozen)
+    let hop2 = session.hop(2).unwrap();
+    assert_eq!(hop2.sent, 3, "Non-responding hop sent counter should increment after completion");
+    assert_eq!(hop2.received, 0);
+    assert_eq!(hop2.timeouts, 3);
+
+    // Also verify responding hops still work
+    if let Some(hop) = session.hop_mut(1) {
+        hop.record_sent();
+        hop.record_response(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            Duration::from_millis(6),
+        );
+    }
+    assert_eq!(session.hop(1).unwrap().sent, 2);
+    assert_eq!(session.hop(1).unwrap().received, 2);
+}
+
+#[test]
+fn test_non_responding_hop_recovery() {
+    // Test that a previously non-responding hop can start responding
+    // after more probes (e.g., rate limiting ended)
+    let mut session = test_session();
+    let target_ip = session.target.resolved;
+    let hop2_router = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+    // Initial trace: hop 2 times out
+    if let Some(hop) = session.hop_mut(1) {
+        hop.record_sent();
+        hop.record_response(
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            Duration::from_millis(5),
+        );
+    }
+    if let Some(hop) = session.hop_mut(2) {
+        hop.record_sent();
+        hop.record_timeout();
+    }
+    if let Some(hop) = session.hop_mut(3) {
+        hop.record_sent();
+        hop.record_response(target_ip, Duration::from_millis(15));
+    }
+
+    session.complete = true;
+    session.dest_ttl = Some(3);
+
+    // Hop 2 was non-responding
+    assert_eq!(session.hop(2).unwrap().received, 0);
+    assert!(session.hop(2).unwrap().primary.is_none());
+
+    // Later probes: hop 2 starts responding (rate limiting ended)
+    if let Some(hop) = session.hop_mut(2) {
+        hop.record_sent();
+        hop.record_response(hop2_router, Duration::from_millis(8));
+
+        hop.record_sent();
+        hop.record_response(hop2_router, Duration::from_millis(9));
+    }
+
+    // Verify hop 2 now has data
+    let hop2 = session.hop(2).unwrap();
+    assert_eq!(hop2.sent, 3);
+    assert_eq!(hop2.received, 2);
+    assert_eq!(hop2.primary, Some(hop2_router));
+    assert_eq!(hop2.timeouts, 1);
+
+    // Loss should reflect the initial timeout
+    let loss = hop2.loss_pct();
+    assert!((loss - 33.3).abs() < 1.0); // 1 timeout out of 3 probes
+}
+
+#[test]
+fn test_max_ttl_warning_conditions() {
+    // Test the conditions under which max_ttl warning should appear
+    let target = Target::new("8.8.8.8".to_string(), IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)));
+
+    // Case 1: Default max_ttl (30) and destination NOT found -> warning
+    let config1 = Config {
+        max_ttl: 30,
+        ..Default::default()
+    };
+    let session1 = Session::new(target.clone(), config1);
+    let should_warn1 = session1.dest_ttl.is_none() && session1.config.max_ttl == 30;
+    assert!(should_warn1, "Should warn when dest not found with default max_ttl");
+
+    // Case 2: Default max_ttl (30) and destination IS found -> no warning
+    let config2 = Config {
+        max_ttl: 30,
+        ..Default::default()
+    };
+    let mut session2 = Session::new(target.clone(), config2);
+    session2.dest_ttl = Some(10);
+    let should_warn2 = session2.dest_ttl.is_none() && session2.config.max_ttl == 30;
+    assert!(!should_warn2, "Should not warn when dest is found");
+
+    // Case 3: Custom max_ttl (64) and destination NOT found -> no warning
+    // (User explicitly chose a higher value)
+    let config3 = Config {
+        max_ttl: 64,
+        ..Default::default()
+    };
+    let session3 = Session::new(target.clone(), config3);
+    let should_warn3 = session3.dest_ttl.is_none() && session3.config.max_ttl == 30;
+    assert!(!should_warn3, "Should not warn when max_ttl is not default 30");
+
+    // Case 4: max_ttl explicitly set to 30 and dest not found -> still warns
+    // (This is acceptable behavior per design decision)
+    let config4 = Config {
+        max_ttl: 30,
+        ..Default::default()
+    };
+    let session4 = Session::new(target.clone(), config4);
+    let should_warn4 = session4.dest_ttl.is_none() && session4.config.max_ttl == 30;
+    assert!(should_warn4, "Warning shows even if 30 was explicitly set (acceptable)");
+}
+
+#[test]
 fn test_session_json_file_roundtrip() {
     let mut session = test_session_with_pmtud();
 

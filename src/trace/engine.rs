@@ -192,15 +192,10 @@ impl ProbeEngine {
 
                     // Send probes for TTLs up to the destination
                     for ttl in 1..=max_probe_ttl {
-                        let should_probe = {
-                            let state = self.state.read();
-                            // Probe if we haven't completed, or if this TTL has responded before
-                            !state.complete || state.hop(ttl).is_some_and(|h| h.received > 0)
-                        };
-
-                        if !should_probe {
-                            continue;
-                        }
+                        // Always probe all TTLs up to destination (max_probe_ttl already limits range)
+                        // Previously we skipped non-responding hops after destination was found,
+                        // but this prevented detecting hops that recover from rate limiting
+                        // and caused sent counters to freeze on non-responding hops.
 
                         let probe_id = ProbeId::new(ttl, seq);
 
@@ -371,14 +366,7 @@ impl ProbeEngine {
                         let src_port = self.config.src_port_base + (flow_id as u16);
 
                         for ttl in 1..=max_probe_ttl {
-                            let should_probe = {
-                                let state = self.state.read();
-                                !state.complete || state.hop(ttl).is_some_and(|h| h.received > 0)
-                            };
-
-                            if !should_probe {
-                                continue;
-                            }
+                            // Always probe all TTLs up to destination (see ICMP loop comment)
 
                             let probe_id = ProbeId::new(ttl, seq);
 
@@ -515,14 +503,7 @@ impl ProbeEngine {
                         let src_port = self.config.src_port_base + (flow_id as u16);
 
                         for ttl in 1..=max_probe_ttl {
-                            let should_probe = {
-                                let state = self.state.read();
-                                !state.complete || state.hop(ttl).is_some_and(|h| h.received > 0)
-                            };
-
-                            if !should_probe {
-                                continue;
-                            }
+                            // Always probe all TTLs up to destination (see ICMP loop comment)
 
                             let probe_id = ProbeId::new(ttl, seq);
 

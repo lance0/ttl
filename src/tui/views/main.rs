@@ -87,6 +87,13 @@ impl Widget for MainView<'_> {
         let has_ttl_manip = self.session.hops.iter().any(|h| h.has_ttl_manip());
         let ttl_warn = if has_ttl_manip { " [TTL!]" } else { "" };
 
+        // Warning if destination not found and using default max_ttl=30
+        let max_ttl_warn = if self.session.dest_ttl.is_none() && self.session.config.max_ttl == 30 {
+            " [max_ttl=30]"
+        } else {
+            ""
+        };
+
         // PMTUD status indicator
         let pmtud_status = self
             .session
@@ -138,7 +145,7 @@ impl Widget for MainView<'_> {
         };
 
         let title = format!(
-            "ttl \u{2500}\u{2500} {}{}{} \u{2500}\u{2500} {} probes \u{2500}\u{2500} {}ms interval{}{}{}{}{}{}",
+            "ttl \u{2500}\u{2500} {}{}{} \u{2500}\u{2500} {} probes \u{2500}\u{2500} {}ms interval{}{}{}{}{}{}{}",
             target_indicator,
             target_str,
             routing_str,
@@ -149,6 +156,7 @@ impl Widget for MainView<'_> {
             rl_warn,
             asym_warn,
             ttl_warn,
+            max_ttl_warn,
             pmtud_status
         );
 

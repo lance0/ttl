@@ -315,7 +315,7 @@ High jitter indicates path instability from congestion, route changes, or load b
 
 | Key | Action |
 |-----|--------|
-| `q` | Quit |
+| `q` / `Ctrl+C` | Quit |
 | `p` | Pause/Resume probing |
 | `r` | Reset all statistics |
 | `t` | Cycle color theme |
@@ -394,7 +394,7 @@ Arguments:
 Options:
   -c, --count <N>        Number of probe rounds (0 = infinite, default)
   -i, --interval <S>     Probe interval in seconds (default: 1.0)
-  -m, --max-ttl <N>      Maximum TTL (default: 30)
+  -m, --max-ttl <N>      Maximum TTL (default: 30, increase for long paths)
   -p, --protocol <P>     Probe protocol: auto, icmp, udp, tcp
       --port <N>         Base port for UDP/TCP probes
       --fixed-port       Use fixed port (no per-TTL variation)

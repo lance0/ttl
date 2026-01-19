@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.7] - 2026-01-19
+
+### Fixed
+- **Non-responding hops frozen after destination found**: Hops showing `* * *` now continue
+  to be probed after destination is discovered, matching mtr/trippy behavior
+  - Previously, `Sent` counters froze on non-responding hops after completion
+  - Now probes all TTLs up to destination every round
+  - Allows detecting hops that recover from rate limiting
+
+### Added
+- **Ctrl+C to quit TUI**: Now handles Ctrl+C (and ETX) in addition to `q`
+- **`[max_ttl=30]` warning**: Title bar shows warning when destination not found
+  and using default max_ttl of 30; hints to try `--max-ttl 64` for long paths
+
+### Changed
+- More probes sent after destination found (all TTLs probed each round)
+  - Bounded by `dest_ttl`, not `max_ttl`
+  - Matches mtr/trippy probing behavior
+
 ## [0.12.6] - 2026-01-18
 
 ### Fixed

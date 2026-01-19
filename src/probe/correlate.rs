@@ -647,7 +647,15 @@ fn parse_icmp_error_payload_v6_with_mtu(
 
     const IPV6_HEADER_LEN: usize = 40;
 
+    // Require: 8 (ICMPv6 header) + 40 (IPv6 header) + 8 (original ICMP/UDP header) = 56 bytes
+    // Some routers send shorter payloads; log when this happens for debugging
     if icmp_data.len() < 8 + IPV6_HEADER_LEN + 8 {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "ICMPv6 error dropped: payload too short ({} bytes, need 56) from {:?}",
+            icmp_data.len(),
+            responder
+        );
         return None;
     }
 
@@ -1108,7 +1116,15 @@ fn parse_icmp_error_payload_v6_dgram(
 ) -> Option<ParsedResponse> {
     const IPV6_HEADER_LEN: usize = 40;
 
+    // Require: 8 (ICMPv6 header) + 40 (IPv6 header) + 8 (original ICMP/UDP header) = 56 bytes
+    // Some routers send shorter payloads; log when this happens for debugging
     if icmp_data.len() < 8 + IPV6_HEADER_LEN + 8 {
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "ICMPv6 error dropped (dgram): payload too short ({} bytes, need 56) from {:?}",
+            icmp_data.len(),
+            responder
+        );
         return None;
     }
 

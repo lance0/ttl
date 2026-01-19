@@ -1,6 +1,6 @@
 use anyhow::Result;
 use crossterm::ExecutableCommand;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -166,6 +166,15 @@ where
 
             match key.code {
                 KeyCode::Char('q') => {
+                    cancel.cancel();
+                    break;
+                }
+                // Ctrl+C also quits (some terminals send ETX '\x03' instead of Ctrl+C)
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    cancel.cancel();
+                    break;
+                }
+                KeyCode::Char('\x03') => {
                     cancel.cancel();
                     break;
                 }
