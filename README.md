@@ -13,14 +13,6 @@ Network diagnostic tool that goes beyond traceroute: MTU discovery, NAT detectio
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-tip-ff5e5b?logo=ko-fi)](https://ko-fi.com/lance0)
 
-## Quick Start
-
-```bash
-# Install (Linux/macOS)
-curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
-
-# Linux: Enable running without sudo (one-time setup)
-sudo setcap cap_net_raw+ep $(which ttl)
 
 # Basic usage
 ttl 8.8.8.8                          # Linux (after setcap)
@@ -31,12 +23,6 @@ ttl -p udp google.com                # UDP probes
 ttl --flows 8 cloudflare.com         # ECMP path discovery
 ttl --pmtud 1.1.1.1                  # Path MTU discovery
 ttl 8.8.8.8 1.1.1.1 9.9.9.9          # Multiple targets
-```
-
-Or with Rust (recommended for updates):
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh && cargo install ttl
 ```
 
 ## Features
@@ -54,17 +40,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh && cargo install 
 - **Scriptable** - JSON, CSV, and text report output
 
 See [docs/FEATURES.md](docs/FEATURES.md) for detailed documentation, including optional setup for [GeoIP](docs/FEATURES.md#geoip-location) and [IX detection](docs/FEATURES.md#ix-detection).
+```
 
 ## Installation
 
-### Quick Install (macOS/Linux)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
-```
-
 ### Homebrew
-
 ```bash
 brew install lance0/tap/ttl
 ```
@@ -105,6 +85,18 @@ cargo install ttl
 git clone https://github.com/lance0/ttl
 cd ttl && cargo build --release
 sudo cp target/release/ttl /usr/local/bin/
+```
+
+### Direct install from Github (macOS/Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
+```
+
+Or with Rust (recommended for updates):
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh && cargo install ttl
 ```
 
 ### Permissions (Linux)
