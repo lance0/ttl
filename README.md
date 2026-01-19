@@ -16,12 +16,6 @@ Network diagnostic tool that goes beyond traceroute: MTU discovery, NAT detectio
 ## Quick Start
 
 ```bash
-# Install (Linux/macOS)
-curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
-
-# Linux: Enable running without sudo (one-time setup)
-sudo setcap cap_net_raw+ep $(which ttl)
-
 # Basic usage
 ttl 8.8.8.8                          # Linux (after setcap)
 sudo ttl 8.8.8.8                     # macOS (always needs sudo)
@@ -33,11 +27,7 @@ ttl --pmtud 1.1.1.1                  # Path MTU discovery
 ttl 8.8.8.8 1.1.1.1 9.9.9.9          # Multiple targets
 ```
 
-Or with Rust (recommended for updates):
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh && cargo install ttl
-```
+See [Installation](#installation) below for setup instructions.
 
 ## Features
 
@@ -57,16 +47,18 @@ See [docs/FEATURES.md](docs/FEATURES.md) for detailed documentation, including o
 
 ## Installation
 
-### Quick Install (macOS/Linux)
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
-```
-
-### Homebrew
+### Homebrew (macOS/Linux)
 
 ```bash
 brew install lance0/tap/ttl
+```
+
+### From crates.io
+
+Requires [Rust](https://www.rust-lang.org/tools/install):
+
+```bash
+cargo install ttl
 ```
 
 ### Pre-built Binaries
@@ -87,24 +79,20 @@ sha256sum -c SHA256SUMS --ignore-missing  # macOS: shasum -a 256 -c
 tar xzf ttl-*.tar.gz && sudo mv ttl /usr/local/bin/
 ```
 
-### From crates.io
-
-Requires [Rust](https://www.rust-lang.org/tools/install):
-
-```bash
-# Install Rust (if not already installed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Install ttl
-cargo install ttl
-```
-
 ### From Source
 
 ```bash
 git clone https://github.com/lance0/ttl
 cd ttl && cargo build --release
 sudo cp target/release/ttl /usr/local/bin/
+```
+
+### Quick Install Script
+
+> **Note**: Piping scripts from the internet to sh is convenient but bypasses your ability to review the code first. Consider using one of the methods above, or [review the script](https://github.com/lance0/ttl/blob/master/install.sh) before running.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
 ```
 
 ### Permissions (Linux)
@@ -239,7 +227,7 @@ Trace multiple destinations at once. Press `Tab` to switch between them.
 
 | Key | Action |
 |-----|--------|
-| `q` | Quit |
+| `q` / `Ctrl+C` | Quit |
 | `p` | Pause/Resume |
 | `r` | Reset stats |
 | `t` | Cycle theme |
@@ -276,20 +264,18 @@ wsl --install                    # Install WSL if needed, then restart
 wsl                              # Open Ubuntu
 ```
 
-Then in Ubuntu, either use the install script (pre-built binary):
+Then in Ubuntu:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
-sudo ttl 8.8.8.8
-```
-
-Or build from source:
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh  # Install Rust
+# Option 1: Install via cargo (recommended)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 cargo install ttl
 sudo ~/.cargo/bin/ttl 8.8.8.8
+
+# Option 2: Pre-built binary via install script
+curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
+sudo ttl 8.8.8.8
 ```
 
 ## Known Issues
