@@ -1,6 +1,6 @@
 [package]
 name = "ttl"
-version = "0.12.7"
+version = "0.12.8"
 edition = "2024"
 rust-version = "1.85"
 description = "Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment"
