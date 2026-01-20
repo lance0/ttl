@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use parking_lot::RwLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -35,8 +35,7 @@ use state::{Session, Target, run_ratelimit_worker};
 use trace::engine::ProbeEngine;
 use trace::pending::new_pending_map;
 use trace::receiver::{ReceiverConfig, SessionMap, spawn_receiver};
-use tui::app::run_tui;
-use tui::theme::Theme;
+use tui::app::{ResolveInfo, run_tui};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -83,48 +82,89 @@ async fn main() -> Result<()> {
     let mut sessions_map: HashMap<IpAddr, Arc<RwLock<Session>>> = HashMap::new();
     let config = Config::from(&args);
 
-    for target_str in &args.targets {
-        let resolved_ip = resolve_target(target_str, args.ipv4, args.ipv6)
-            .with_context(|| format!("Failed to resolve target: {}", target_str))?;
+    // Resolve info for TUI status message
+    let resolve_info = if args.resolve_all {
+        // Use new resolve_targets function for --resolve-all mode
+        let result = resolve_targets(&args.targets, true, args.ipv4, args.ipv6)
+            .context("Failed to resolve targets")?;
 
-        // Skip duplicate targets
-        if sessions_map.contains_key(&resolved_ip) {
-            eprintln!(
-                "Warning: Duplicate target {} ({}), skipping",
-                target_str, resolved_ip
-            );
-            continue;
+        for (resolved_ip, primary, aliases) in result.targets {
+            let mut target = Target::new(primary, resolved_ip);
+            target.aliases = aliases;
+            let mut session = Session::new(target, config.clone());
+
+            // Set source IP and gateway for display in TUI
+            let ipv6 = resolved_ip.is_ipv6();
+            session.source_ip = config.source_ip.or_else(|| {
+                let addr = get_local_addr_with_interface(resolved_ip, interface_info.as_ref());
+                if addr.is_unspecified() {
+                    None
+                } else {
+                    Some(addr)
+                }
+            });
+            session.gateway = if let Some(ref info) = interface_info {
+                if ipv6 {
+                    info.gateway_ipv6.map(IpAddr::V6)
+                } else {
+                    info.gateway_ipv4.map(IpAddr::V4)
+                }
+            } else {
+                detect_default_gateway(ipv6)
+            };
+
+            sessions_map.insert(resolved_ip, Arc::new(RwLock::new(session)));
+            targets.push(resolved_ip);
         }
 
-        let target = Target::new(target_str.clone(), resolved_ip);
-        let mut session = Session::new(target, config.clone());
+        Some(ResolveInfo {
+            skipped_ipv4: result.skipped_ipv4,
+            skipped_ipv6: result.skipped_ipv6,
+        })
+    } else {
+        // Original behavior - resolve one IP per target
+        for target_str in &args.targets {
+            let resolved_ip = resolve_target(target_str, args.ipv4, args.ipv6)
+                .with_context(|| format!("Failed to resolve target: {}", target_str))?;
 
-        // Set source IP and gateway for display in TUI
-        let ipv6 = resolved_ip.is_ipv6();
-        session.source_ip = config.source_ip.or_else(|| {
-            let addr = get_local_addr_with_interface(resolved_ip, interface_info.as_ref());
-            // Filter out unspecified addresses (0.0.0.0 or ::)
-            if addr.is_unspecified() {
-                None
-            } else {
-                Some(addr)
+            // Skip duplicate targets
+            if sessions_map.contains_key(&resolved_ip) {
+                eprintln!(
+                    "Warning: Duplicate target {} ({}), skipping",
+                    target_str, resolved_ip
+                );
+                continue;
             }
-        });
-        session.gateway = if let Some(ref info) = interface_info {
-            // Use interface-specific gateway
-            if ipv6 {
-                info.gateway_ipv6.map(IpAddr::V6)
-            } else {
-                info.gateway_ipv4.map(IpAddr::V4)
-            }
-        } else {
-            // Detect default gateway for auto-selected interface
-            detect_default_gateway(ipv6)
-        };
 
-        sessions_map.insert(resolved_ip, Arc::new(RwLock::new(session)));
-        targets.push(resolved_ip);
-    }
+            let target = Target::new(target_str.clone(), resolved_ip);
+            let mut session = Session::new(target, config.clone());
+
+            // Set source IP and gateway for display in TUI
+            let ipv6 = resolved_ip.is_ipv6();
+            session.source_ip = config.source_ip.or_else(|| {
+                let addr = get_local_addr_with_interface(resolved_ip, interface_info.as_ref());
+                if addr.is_unspecified() {
+                    None
+                } else {
+                    Some(addr)
+                }
+            });
+            session.gateway = if let Some(ref info) = interface_info {
+                if ipv6 {
+                    info.gateway_ipv6.map(IpAddr::V6)
+                } else {
+                    info.gateway_ipv4.map(IpAddr::V4)
+                }
+            } else {
+                detect_default_gateway(ipv6)
+            };
+
+            sessions_map.insert(resolved_ip, Arc::new(RwLock::new(session)));
+            targets.push(resolved_ip);
+        }
+
+        None
+    };
 
     if targets.is_empty() {
         anyhow::bail!("No valid targets specified");
@@ -185,11 +225,38 @@ async fn main() -> Result<()> {
 
     // Run in appropriate mode
     if args.is_batch_mode() {
-        run_batch_mode(args, sessions, targets, config, cancel, interface_info).await
+        run_batch_mode(
+            args,
+            sessions,
+            targets,
+            config,
+            cancel,
+            interface_info,
+            resolve_info,
+        )
+        .await
     } else if args.no_tui {
-        run_streaming_mode(args, sessions, targets, config, cancel, interface_info).await
+        run_streaming_mode(
+            args,
+            sessions,
+            targets,
+            config,
+            cancel,
+            interface_info,
+            resolve_info,
+        )
+        .await
     } else {
-        run_interactive_mode(args, sessions, targets, config, cancel, interface_info).await
+        run_interactive_mode(
+            args,
+            sessions,
+            targets,
+            config,
+            cancel,
+            interface_info,
+            resolve_info,
+        )
+        .await
     }
 }
 
@@ -238,15 +305,15 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
         let targets = vec![target_ip];
 
         // Load saved preferences
-        let prefs = Prefs::load();
+        let mut prefs = Prefs::load();
 
-        // Determine theme: CLI override > saved preference > default
-        let theme_name = if args.theme != "default" {
-            &args.theme
-        } else {
-            prefs.theme.as_deref().unwrap_or("default")
-        };
-        let theme = Theme::by_name(theme_name);
+        // Apply CLI overrides
+        if args.theme != "default" {
+            prefs.theme = Some(args.theme.clone());
+        }
+        if args.wide {
+            prefs.wide_mode = Some(true);
+        }
 
         // Setup Ctrl+C handler
         let cancel_clone = cancel.clone();
@@ -255,15 +322,115 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
             cancel_clone.cancel();
         });
 
-        let final_theme = run_tui(sessions, targets, cancel, theme).await?;
+        let final_prefs = run_tui(sessions, targets, cancel, prefs, None, None).await?;
 
-        // Save theme preference (best effort, don't fail on save error)
-        let mut prefs = Prefs::load();
-        prefs.theme = Some(final_theme);
-        let _ = prefs.save();
+        // Save preferences (best effort, don't fail on save error)
+        let _ = final_prefs.save();
     }
 
     Ok(())
+}
+
+/// Result of resolving targets with --resolve-all
+struct ResolveResult {
+    /// (ip, primary_hostname, aliases) tuples
+    targets: Vec<(IpAddr, String, Vec<String>)>,
+    skipped_ipv4: usize,
+    skipped_ipv6: usize,
+}
+
+/// Resolve all IP addresses for a hostname
+fn resolve_all_ips(target: &str) -> Result<Vec<IpAddr>> {
+    // Try parsing as IP address first
+    if let Ok(ip) = target.parse::<IpAddr>() {
+        return Ok(vec![ip]);
+    }
+
+    // Resolve hostname - get all addresses
+    let addrs: Vec<_> = format!("{}:0", target)
+        .to_socket_addrs()?
+        .map(|s| s.ip())
+        .collect();
+
+    if addrs.is_empty() {
+        anyhow::bail!("No addresses found for hostname");
+    }
+
+    Ok(addrs)
+}
+
+/// Resolve targets with optional resolve-all mode
+fn resolve_targets(
+    target_strs: &[String],
+    resolve_all: bool,
+    force_ipv4: bool,
+    force_ipv6: bool,
+) -> Result<ResolveResult> {
+    // Track insertion order
+    let mut order: Vec<IpAddr> = Vec::new();
+    let mut seen: HashSet<IpAddr> = HashSet::new();
+    let mut ip_to_hostnames: HashMap<IpAddr, Vec<String>> = HashMap::new();
+
+    for target_str in target_strs {
+        let ips = if resolve_all {
+            resolve_all_ips(target_str)?
+        } else {
+            vec![resolve_target(target_str, force_ipv4, force_ipv6)?]
+        };
+
+        for ip in ips {
+            if seen.insert(ip) {
+                order.push(ip);
+            }
+            ip_to_hostnames
+                .entry(ip)
+                .or_default()
+                .push(target_str.clone());
+        }
+    }
+
+    // Filter by family: prefer IPv4, fall back to IPv6 if no IPv4
+    let has_ipv4 = order.iter().any(|ip| ip.is_ipv4());
+    let has_ipv6 = order.iter().any(|ip| ip.is_ipv6());
+
+    let use_ipv6 = if force_ipv6 {
+        true
+    } else if force_ipv4 {
+        false
+    } else {
+        // Prefer IPv4, fall back to IPv6
+        !has_ipv4 && has_ipv6
+    };
+
+    let mut targets = Vec::new();
+    let mut skipped_ipv4 = 0;
+    let mut skipped_ipv6 = 0;
+
+    for ip in order {
+        if ip.is_ipv6() == use_ipv6 {
+            let hostnames = ip_to_hostnames.remove(&ip).unwrap();
+            let primary = hostnames[0].clone();
+            let aliases: Vec<String> = hostnames.into_iter().skip(1).collect();
+            targets.push((ip, primary, aliases));
+        } else if ip.is_ipv6() {
+            skipped_ipv6 += 1;
+        } else {
+            skipped_ipv4 += 1;
+        }
+    }
+
+    if targets.is_empty() {
+        anyhow::bail!(
+            "No {} addresses found for targets",
+            if use_ipv6 { "IPv6" } else { "IPv4" }
+        );
+    }
+
+    Ok(ResolveResult {
+        targets,
+        skipped_ipv4,
+        skipped_ipv6,
+    })
 }
 
 fn resolve_target(target: &str, force_ipv4: bool, force_ipv6: bool) -> Result<IpAddr> {
@@ -319,6 +486,7 @@ async fn run_interactive_mode(
     config: Config,
     cancel: CancellationToken,
     interface: Option<InterfaceInfo>,
+    resolve_info: Option<ResolveInfo>,
 ) -> Result<()> {
     // Shared pending map for probe correlation (engine writes, receiver reads)
     let pending = new_pending_map();
@@ -413,14 +581,27 @@ async fn run_interactive_mode(
         None
     };
 
-    // Spawn IX worker (if enabled)
-    let ix_handle = if config.ix_enabled {
+    // Load saved preferences (before IX setup so we can use API key)
+    let mut prefs = Prefs::load();
+
+    // Apply CLI overrides
+    if args.theme != "default" {
+        prefs.theme = Some(args.theme.clone());
+    }
+    if args.wide {
+        prefs.wide_mode = Some(true);
+    }
+
+    // Spawn IX worker (if enabled) - keep Arc for TUI access
+    let ix_lookup: Option<Arc<IxLookup>> = if config.ix_enabled {
         match IxLookup::new() {
-            Ok(ix) => Some(tokio::spawn(run_ix_worker(
-                Arc::new(ix),
-                sessions.clone(),
-                cancel.clone(),
-            ))),
+            Ok(ix) => {
+                // Set API key from preferences (env var takes precedence in get_effective_api_key)
+                if let Some(ref key) = prefs.peeringdb_api_key {
+                    ix.set_api_key(Some(key.clone()));
+                }
+                Some(Arc::new(ix))
+            }
             Err(e) => {
                 eprintln!("Warning: Failed to initialize IX lookup: {}", e);
                 None
@@ -430,27 +611,30 @@ async fn run_interactive_mode(
         None
     };
 
+    let ix_handle = ix_lookup.as_ref().map(|ix| {
+        tokio::spawn(run_ix_worker(
+            Arc::clone(ix),
+            sessions.clone(),
+            cancel.clone(),
+        ))
+    });
+
     // Spawn rate limit detection worker (always enabled, lightweight analysis)
     let ratelimit_handle = tokio::spawn(run_ratelimit_worker(sessions.clone(), cancel.clone()));
 
-    // Load saved preferences
-    let prefs = Prefs::load();
-
-    // Determine theme: CLI override > saved preference > default
-    let theme_name = if args.theme != "default" {
-        &args.theme
-    } else {
-        prefs.theme.as_deref().unwrap_or("default")
-    };
-    let theme = Theme::by_name(theme_name);
-
     // Run TUI (with target list for cycling)
-    let final_theme = run_tui(sessions.clone(), targets.clone(), cancel.clone(), theme).await?;
+    let final_prefs = run_tui(
+        sessions.clone(),
+        targets.clone(),
+        cancel.clone(),
+        prefs,
+        resolve_info,
+        ix_lookup.clone(),
+    )
+    .await?;
 
-    // Save theme preference (best effort, don't fail on save error)
-    let mut prefs = Prefs::load();
-    prefs.theme = Some(final_theme);
-    let _ = prefs.save();
+    // Save preferences (best effort, don't fail on save error)
+    let _ = final_prefs.save();
 
     // Cleanup
     cancel.cancel();
@@ -491,7 +675,24 @@ async fn run_batch_mode(
     config: Config,
     cancel: CancellationToken,
     interface: Option<InterfaceInfo>,
+    resolve_info: Option<ResolveInfo>,
 ) -> Result<()> {
+    // Print skip warnings for non-TUI mode
+    if let Some(ref info) = resolve_info {
+        if info.skipped_ipv6 > 0 {
+            eprintln!(
+                "Note: {} IPv6 addresses skipped (using IPv4)",
+                info.skipped_ipv6
+            );
+        }
+        if info.skipped_ipv4 > 0 {
+            eprintln!(
+                "Note: {} IPv4 addresses skipped (using IPv6)",
+                info.skipped_ipv4
+            );
+        }
+    }
+
     // Shared pending map for probe correlation (engine writes, receiver reads)
     let pending = new_pending_map();
 
@@ -692,7 +893,24 @@ async fn run_streaming_mode(
     config: Config,
     cancel: CancellationToken,
     interface: Option<InterfaceInfo>,
+    resolve_info: Option<ResolveInfo>,
 ) -> Result<()> {
+    // Print skip warnings for non-TUI mode
+    if let Some(ref info) = resolve_info {
+        if info.skipped_ipv6 > 0 {
+            eprintln!(
+                "Note: {} IPv6 addresses skipped (using IPv4)",
+                info.skipped_ipv6
+            );
+        }
+        if info.skipped_ipv4 > 0 {
+            eprintln!(
+                "Note: {} IPv4 addresses skipped (using IPv6)",
+                info.skipped_ipv4
+            );
+        }
+    }
+
     // Shared pending map for probe correlation (engine writes, receiver reads)
     let pending = new_pending_map();
 

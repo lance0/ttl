@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-## Current Status (v0.12.6)
+## Current Status (v0.13.0)
 
 ### Core Features
 - [x] ICMP Echo probing with TTL sweep
@@ -44,9 +44,12 @@
 - [x] Hop detail modal view (with percentiles, jitter, MPLS)
 - [x] Loss-aware sparkline visualization
 - [x] Help overlay
+- [x] Settings modal (theme + wide mode)
+- [x] Target list overlay (multi-target mode)
 - [x] Status bar with keybind hints
 - [x] Theme support (11 built-in themes via --theme flag)
 - [x] Theme persistence (~/.config/ttl/config.toml)
+- [x] Wide mode persistence
 
 ### Platform Support
 - [x] Linux (raw sockets with CAP_NET_RAW or root)
@@ -166,6 +169,16 @@
 - [x] Add manual ICMPv6 checksum with RFC 8200 pseudo-header
 - [x] Bind IPv6 sockets to source IP for checksum consistency
 - [x] Increase IPv6 address display width in TUI and reports
+
+### v0.13.0 - Multi-IP Resolution & Settings (In Progress)
+- [x] Multi-IP resolution (`--resolve-all`) for round-robin DNS and dual-stack hosts
+- [x] Target list overlay (`l` key) showing all resolved targets with stats
+- [x] Settings modal (`s` key) for theme, wide mode, and PeeringDB configuration
+- [x] Wide mode CLI flag (`--wide`) and persistence
+- [x] Wide mode saved to config file
+- [x] PeeringDB API key configuration in settings modal
+- [x] PeeringDB cache status display (prefix count, age, expiry)
+- [x] Cache refresh from settings (`r` key in PeeringDB section)
 
 ### v1.0.0 - BGP & Routing Integration
 - [ ] Looking glass integration (query public route servers)

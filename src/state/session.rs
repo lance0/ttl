@@ -1138,6 +1138,9 @@ pub struct Target {
     pub original: String,
     pub resolved: IpAddr,
     pub hostname: Option<String>,
+    /// Other hostnames that resolved to the same IP (for deduping)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 }
 
 impl Target {
@@ -1146,6 +1149,16 @@ impl Target {
             original,
             resolved,
             hostname: None,
+            aliases: Vec::new(),
+        }
+    }
+
+    /// Display name: "hostname (+N more)" if aliases exist
+    pub fn display_name(&self) -> String {
+        if self.aliases.is_empty() {
+            self.original.clone()
+        } else {
+            format!("{} (+{} more)", self.original, self.aliases.len())
         }
     }
 }
@@ -2240,5 +2253,46 @@ mod tests {
         // Reset should clear
         session.reset_stats();
         assert!(session.hop(1).unwrap().ttl_manip.is_none());
+    }
+
+    #[test]
+    fn test_target_new() {
+        let ip = IpAddr::V4(std::net::Ipv4Addr::new(8, 8, 8, 8));
+        let target = Target::new("google.com".to_string(), ip);
+
+        assert_eq!(target.original, "google.com");
+        assert_eq!(target.resolved, ip);
+        assert!(target.hostname.is_none());
+        assert!(target.aliases.is_empty());
+    }
+
+    #[test]
+    fn test_target_display_name_no_aliases() {
+        let ip = IpAddr::V4(std::net::Ipv4Addr::new(8, 8, 8, 8));
+        let target = Target::new("google.com".to_string(), ip);
+
+        assert_eq!(target.display_name(), "google.com");
+    }
+
+    #[test]
+    fn test_target_display_name_with_aliases() {
+        let ip = IpAddr::V4(std::net::Ipv4Addr::new(142, 250, 80, 46));
+        let mut target = Target::new("google.com".to_string(), ip);
+        target.aliases = vec!["www.google.com".to_string()];
+
+        assert_eq!(target.display_name(), "google.com (+1 more)");
+    }
+
+    #[test]
+    fn test_target_display_name_multiple_aliases() {
+        let ip = IpAddr::V4(std::net::Ipv4Addr::new(142, 250, 80, 46));
+        let mut target = Target::new("google.com".to_string(), ip);
+        target.aliases = vec![
+            "www.google.com".to_string(),
+            "mail.google.com".to_string(),
+            "maps.google.com".to_string(),
+        ];
+
+        assert_eq!(target.display_name(), "google.com (+3 more)");
     }
 }

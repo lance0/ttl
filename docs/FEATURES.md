@@ -75,6 +75,40 @@ ttl automatically detects NAT devices that rewrite source ports:
 - Displays "NAT" indicator in hop details when mismatch detected
 - Useful for diagnosing carrier-grade NAT (CGNAT) or enterprise NAT
 
+## Multi-IP Resolution
+
+```bash
+ttl --resolve-all google.com
+ttl --resolve-all -6 cloudflare.com    # Force IPv6
+ttl --resolve-all example.com cdn.com  # Multiple hostnames
+```
+
+Trace all IP addresses that a hostname resolves to. Useful for:
+- **Round-robin DNS**: CDNs and load balancers often return multiple A records
+- **Dual-stack hosts**: Compare IPv4 vs IPv6 paths to the same destination
+- **Anycast investigation**: See if different IPs take different paths
+
+### How It Works
+
+1. Resolves all A/AAAA records for each hostname
+2. Deduplicates by IP (merges hostnames that resolve to the same IP)
+3. Filters by IP family (prefers IPv4, falls back to IPv6 if none)
+4. Shows skip count in status (e.g., "3 IPv6 skipped")
+
+### Display Format
+
+- Title bar shows `hostname -> IP` when tracing a resolved hostname
+- Multiple hostnames resolving to same IP shown as `hostname (+N more)`
+- Press `l` to see all resolved targets with their stats
+
+### Flags
+
+| Flag | Effect |
+|------|--------|
+| `--resolve-all` | Enable multi-IP resolution |
+| `-4` / `--ipv4` | Force IPv4 only (skip IPv6) |
+| `-6` / `--ipv6` | Force IPv6 only (skip IPv4) |
+
 ## Route Flap Detection
 
 ttl detects route instability when the primary responder IP changes at a hop:
@@ -271,20 +305,32 @@ Anonymous PeeringDB access has rate limits. For frequent use or scripting, set u
 
 4. Give it a name (e.g., "ttl") and copy the generated key
 
-5. Set the environment variable:
+5. Configure the API key (choose one method):
 
-   **One-time use:**
+   **Via Settings Modal (recommended):**
+   - Press `s` to open settings
+   - Tab to the PeeringDB section
+   - Type your API key and press `Esc` to save
+   - Key is saved to `~/.config/ttl/config.toml`
+
+   **Via environment variable:**
    ```bash
+   # One-time use
    PEERINGDB_API_KEY=your_key_here ttl 8.8.8.8
-   ```
 
-   **Persistent (add to your shell profile):**
-   ```bash
-   # ~/.bashrc or ~/.zshrc
+   # Persistent (add to ~/.bashrc or ~/.zshrc)
    export PEERINGDB_API_KEY="your_key_here"
    ```
 
-   Then reload your shell or run `source ~/.bashrc`.
+   Note: The environment variable takes precedence over the saved config.
+
+**Cache Status:**
+
+The settings modal shows PeeringDB cache status:
+- Number of IX prefixes loaded
+- Cache age (e.g., "3h ago")
+- Expiry indicator when cache is older than 24 hours
+- Press `r` in the PeeringDB section to refresh the cache
 
 **Note:** IX detection is optional. Without an API key, ttl uses anonymous access which works fine for occasional use. The API key just removes rate limiting for heavy usage.
 
@@ -319,14 +365,43 @@ High jitter indicates path instability from congestion, route changes, or load b
 | `p` | Pause/Resume probing |
 | `r` | Reset all statistics |
 | `t` | Cycle color theme |
+| `s` | Open settings modal |
 | `e` | Export current session to JSON |
 | `?` / `h` | Show help dialog |
 | `Tab` / `n` | Switch to next target |
 | `Shift-Tab` / `N` | Switch to previous target |
+| `l` | Open target list (multi-target mode) |
 | `Up` / `k` | Move selection up |
 | `Down` / `j` | Move selection down |
 | `Enter` | Expand selected hop details |
 | `Esc` | Close popup / Deselect |
+
+## Settings Modal
+
+Press `s` to open the settings modal. Configure:
+
+- **Theme**: Select from 11 built-in themes with live preview
+- **Wide Mode**: Expand columns for wider terminals
+- **PeeringDB**: Configure API key and view cache status (only shown when IX detection is enabled)
+
+### Navigation
+
+| Key | Action |
+|-----|--------|
+| `Tab` | Switch between sections |
+| `Up`/`Down` or `j`/`k` | Navigate within section |
+| `Enter` or `Space` | Toggle option (theme/wide mode) |
+| `r` | Refresh PeeringDB cache (in PeeringDB section) |
+| `Esc` | Close and save |
+
+### PeeringDB Section
+
+When in the PeeringDB section, you can:
+- Type your API key directly (text input with cursor support)
+- View cache status: prefix count, age, and expiry indicator
+- Press `r` to refresh the cache from PeeringDB
+
+Settings are saved to `~/.config/ttl/config.toml` when exiting the TUI.
 
 ## Themes
 
@@ -410,6 +485,8 @@ Options:
       --recv-any         Don't bind receiver (asymmetric routing)
   -4, --ipv4             Force IPv4
   -6, --ipv6             Force IPv6
+      --resolve-all      Trace all resolved IPs for hostnames
+      --wide             Wide mode (expand columns for wider terminals)
       --no-dns           Skip reverse DNS lookups
       --no-asn           Skip ASN enrichment
       --no-geo           Skip geolocation

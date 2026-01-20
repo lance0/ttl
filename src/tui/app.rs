@@ -12,14 +12,26 @@ use ratatui::widgets::Paragraph;
 use scopeguard::defer;
 use std::io::stdout;
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use crate::export::export_json_file;
+use crate::lookup::ix::IxLookup;
+use crate::prefs::Prefs;
 use crate::state::Session;
 use crate::trace::receiver::SessionMap;
 use crate::tui::theme::Theme;
-use crate::tui::views::{HelpView, HopDetailView, MainView};
+use crate::tui::views::{
+    HelpView, HopDetailView, MainView, SettingsState, SettingsView, TargetListView,
+};
+
+/// Information about skipped IPs during resolution
+#[derive(Clone, Default)]
+pub struct ResolveInfo {
+    pub skipped_ipv4: usize,
+    pub skipped_ipv6: usize,
+}
 
 /// UI state
 #[derive(Default)]
@@ -32,12 +44,22 @@ pub struct UiState {
     pub show_help: bool,
     /// Show expanded hop view
     pub show_hop_detail: bool,
+    /// Show settings modal
+    pub show_settings: bool,
+    /// Settings modal state
+    pub settings: SettingsState,
     /// Status message to display
     pub status_message: Option<(String, std::time::Instant)>,
     /// Current theme index
     pub theme_index: usize,
+    /// Wide mode expands columns on wide terminals
+    pub wide_mode: bool,
     /// Currently selected target index (for multi-target mode)
     pub selected_target: usize,
+    /// Show target list overlay
+    pub show_target_list: bool,
+    /// Selected index in target list overlay
+    pub target_list_index: usize,
 }
 
 impl UiState {
@@ -54,13 +76,15 @@ impl UiState {
     }
 }
 
-/// Run the TUI application. Returns the final theme name for persistence.
+/// Run the TUI application. Returns the final preferences for persistence.
 pub async fn run_tui(
     sessions: SessionMap,
     targets: Vec<IpAddr>,
     cancel: CancellationToken,
-    initial_theme: Theme,
-) -> Result<String> {
+    initial_prefs: Prefs,
+    resolve_info: Option<ResolveInfo>,
+    ix_lookup: Option<Arc<IxLookup>>,
+) -> Result<Prefs> {
     // Setup terminal
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -76,16 +100,40 @@ pub async fn run_tui(
 
     // Find initial theme index
     let theme_names = Theme::list();
+    let initial_theme = Theme::by_name(initial_prefs.theme.as_deref().unwrap_or("default"));
     let initial_index = theme_names
         .iter()
         .position(|&name| Theme::by_name(name).name() == initial_theme.name())
         .unwrap_or(0);
 
+    let wide_mode = initial_prefs.wide_mode.unwrap_or(false);
+    let api_key = initial_prefs.peeringdb_api_key.clone();
+
     let mut ui_state = UiState {
         theme_index: initial_index,
+        wide_mode,
+        settings: SettingsState::new(initial_index, wide_mode, api_key),
         ..Default::default()
     };
     let tick_rate = Duration::from_millis(100);
+
+    // Show initial status if resolve_info is present and multiple targets
+    if let Some(info) = resolve_info {
+        let skip_msg = if info.skipped_ipv6 > 0 {
+            format!(" ({} IPv6 skipped)", info.skipped_ipv6)
+        } else if info.skipped_ipv4 > 0 {
+            format!(" ({} IPv4 skipped)", info.skipped_ipv4)
+        } else {
+            String::new()
+        };
+        if targets.len() > 1 {
+            ui_state.set_status(format!(
+                "Resolved {} targets{}; press l to list",
+                targets.len(),
+                skip_msg
+            ));
+        }
+    }
 
     run_app(
         &mut terminal,
@@ -94,11 +142,22 @@ pub async fn run_tui(
         &mut ui_state,
         cancel.clone(),
         tick_rate,
+        ix_lookup.clone(),
     )
     .await?;
 
-    // Return final theme name for persistence
-    Ok(theme_names[ui_state.theme_index].to_string())
+    // Return final preferences for persistence
+    let final_api_key = if ui_state.settings.api_key.is_empty() {
+        None
+    } else {
+        Some(ui_state.settings.api_key.clone())
+    };
+
+    Ok(Prefs {
+        theme: Some(theme_names[ui_state.theme_index].to_string()),
+        wide_mode: Some(ui_state.wide_mode),
+        peeringdb_api_key: final_api_key,
+    })
 }
 
 async fn run_app<B>(
@@ -108,6 +167,7 @@ async fn run_app<B>(
     ui_state: &mut UiState,
     cancel: CancellationToken,
     tick_rate: Duration,
+    ix_lookup: Option<Arc<IxLookup>>,
 ) -> Result<()>
 where
     B: ratatui::backend::Backend,
@@ -115,6 +175,7 @@ where
 {
     let theme_names = Theme::list();
     let num_targets = targets.len();
+    let ix_enabled = ix_lookup.is_some();
 
     loop {
         // Check cancellation
@@ -131,12 +192,25 @@ where
         // Get current target's session
         let current_target = targets[ui_state.selected_target];
 
+        // Get cache status for settings modal
+        let cache_status = ix_lookup.as_ref().map(|ix| ix.get_cache_status());
+
         // Draw
         terminal.draw(|f| {
             let sessions_read = sessions.read();
             if let Some(state) = sessions_read.get(&current_target) {
                 let session = state.read();
-                draw_ui(f, &session, ui_state, &theme, num_targets);
+                draw_ui(
+                    f,
+                    &session,
+                    ui_state,
+                    &theme,
+                    num_targets,
+                    &sessions,
+                    &targets,
+                    cache_status.clone(),
+                    ix_enabled,
+                );
             }
         })?;
 
@@ -154,10 +228,139 @@ where
                 continue;
             }
 
+            if ui_state.show_settings {
+                // PeeringDB section (section 2) - handle text input
+                if ui_state.settings.selected_section == 2 && ix_enabled {
+                    match key.code {
+                        KeyCode::Esc => {
+                            // Close settings and apply changes
+                            ui_state.theme_index = ui_state.settings.theme_index;
+                            ui_state.wide_mode = ui_state.settings.wide_mode;
+                            // Update IxLookup with new API key if provided
+                            if let Some(ref ix) = ix_lookup {
+                                let key = if ui_state.settings.api_key.is_empty() {
+                                    None
+                                } else {
+                                    Some(ui_state.settings.api_key.clone())
+                                };
+                                ix.set_api_key(key);
+                            }
+                            ui_state.show_settings = false;
+                        }
+                        KeyCode::Tab => {
+                            ui_state.settings.next_section(ix_enabled);
+                        }
+                        KeyCode::Char('r') => {
+                            // Refresh PeeringDB cache
+                            if let Some(ref ix) = ix_lookup {
+                                ix.refresh_cache();
+                                ui_state.set_status("Refreshing PeeringDB cache...");
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            ui_state.settings.handle_backspace();
+                        }
+                        KeyCode::Delete => {
+                            ui_state.settings.handle_delete();
+                        }
+                        KeyCode::Left => {
+                            ui_state.settings.move_cursor_left();
+                        }
+                        KeyCode::Right => {
+                            ui_state.settings.move_cursor_right();
+                        }
+                        KeyCode::Char(c) => {
+                            // Insert character (except 'r' which is handled above)
+                            ui_state.settings.handle_char(c);
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
+                // Theme/Wide Mode sections - normal navigation
+                match key.code {
+                    KeyCode::Esc => {
+                        // Close settings and apply changes
+                        ui_state.theme_index = ui_state.settings.theme_index;
+                        ui_state.wide_mode = ui_state.settings.wide_mode;
+                        // Update IxLookup with new API key if provided
+                        if let Some(ref ix) = ix_lookup {
+                            let key = if ui_state.settings.api_key.is_empty() {
+                                None
+                            } else {
+                                Some(ui_state.settings.api_key.clone())
+                            };
+                            ix.set_api_key(key);
+                        }
+                        ui_state.show_settings = false;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        ui_state.settings.move_up(theme_names.len());
+                        // Live preview theme changes
+                        ui_state.theme_index = ui_state.settings.theme_index;
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        ui_state.settings.move_down(theme_names.len());
+                        // Live preview theme changes
+                        ui_state.theme_index = ui_state.settings.theme_index;
+                    }
+                    KeyCode::Tab => {
+                        ui_state.settings.next_section(ix_enabled);
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => {
+                        ui_state.settings.select();
+                        // Live preview wide mode changes
+                        ui_state.wide_mode = ui_state.settings.wide_mode;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
             if ui_state.show_hop_detail {
                 match key.code {
                     KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
                         ui_state.show_hop_detail = false;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            if ui_state.show_target_list {
+                match key.code {
+                    KeyCode::Esc => {
+                        ui_state.show_target_list = false;
+                    }
+                    KeyCode::Enter => {
+                        // Select target and close
+                        ui_state.selected_target = ui_state.target_list_index;
+                        ui_state.selected = None;
+                        ui_state.show_target_list = false;
+                        // Sync pause state with new target's session
+                        let target = targets[ui_state.selected_target];
+                        let sessions_read = sessions.read();
+                        if let Some(state) = sessions_read.get(&target) {
+                            ui_state.paused = state.read().paused;
+                        }
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if ui_state.target_list_index > 0 {
+                            ui_state.target_list_index -= 1;
+                        } else {
+                            ui_state.target_list_index = num_targets - 1;
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        ui_state.target_list_index = (ui_state.target_list_index + 1) % num_targets;
+                    }
+                    KeyCode::Char(c) if c.is_ascii_digit() => {
+                        // Jump to target by number (1-9)
+                        let num = c.to_digit(10).unwrap() as usize;
+                        if num >= 1 && num <= num_targets {
+                            ui_state.target_list_index = num - 1;
+                        }
                     }
                     _ => {}
                 }
@@ -244,8 +447,30 @@ where
                 KeyCode::Char('t') => {
                     // Cycle through themes
                     ui_state.theme_index = (ui_state.theme_index + 1) % theme_names.len();
+                    ui_state.settings.theme_index = ui_state.theme_index;
                     let new_theme = theme_names[ui_state.theme_index];
                     ui_state.set_status(format!("Theme: {}", new_theme));
+                }
+                KeyCode::Char('s') => {
+                    // Open settings modal - preserve existing API key
+                    let current_api_key = if ui_state.settings.api_key.is_empty() {
+                        None
+                    } else {
+                        Some(ui_state.settings.api_key.clone())
+                    };
+                    ui_state.settings = SettingsState::new(
+                        ui_state.theme_index,
+                        ui_state.wide_mode,
+                        current_api_key,
+                    );
+                    ui_state.show_settings = true;
+                }
+                KeyCode::Char('l') => {
+                    // Open target list overlay (only in multi-target mode)
+                    if num_targets > 1 {
+                        ui_state.target_list_index = ui_state.selected_target;
+                        ui_state.show_target_list = true;
+                    }
                 }
                 KeyCode::Char('e') => {
                     let sessions_read = sessions.read();
@@ -311,6 +536,10 @@ fn draw_ui(
     ui_state: &UiState,
     theme: &Theme,
     num_targets: usize,
+    sessions: &SessionMap,
+    targets: &[IpAddr],
+    cache_status: Option<crate::lookup::ix::CacheStatus>,
+    ix_enabled: bool,
 ) {
     let area = f.area();
 
@@ -320,19 +549,20 @@ fn draw_ui(
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(area);
 
-    // Main view (with target indicator)
+    // Main view (with target indicator and wide mode)
     let main_view = MainView::new(session, ui_state.selected, ui_state.paused, theme)
-        .with_target_info(ui_state.selected_target + 1, num_targets);
+        .with_target_info(ui_state.selected_target + 1, num_targets)
+        .with_wide_mode(ui_state.wide_mode);
     f.render_widget(main_view, chunks[0]);
 
     // Status bar
     let status_text = if let Some((ref msg, _)) = ui_state.status_message {
         msg.clone()
     } else if num_targets > 1 {
-        "q quit | Tab next target | p pause | r reset | t theme | e export | ? help".to_string()
-    } else {
-        "q quit | p pause | r reset | t theme | e export | ? help | \u{2191}\u{2193} select"
+        "q quit | Tab next | l list | p pause | r reset | t theme | s settings | e export | ? help"
             .to_string()
+    } else {
+        "q quit | p pause | r reset | t theme | s settings | e export | ? help".to_string()
     };
 
     let status_bar = Paragraph::new(status_text).style(Style::default().fg(theme.text_dim));
@@ -343,6 +573,20 @@ fn draw_ui(
         f.render_widget(HelpView::new(theme), area);
     }
 
+    if ui_state.show_settings {
+        let theme_names = Theme::list();
+        f.render_widget(
+            SettingsView::new(
+                theme,
+                &ui_state.settings,
+                theme_names,
+                cache_status,
+                ix_enabled,
+            ),
+            area,
+        );
+    }
+
     if ui_state.show_hop_detail
         && let Some(selected) = ui_state.selected
     {
@@ -350,5 +594,12 @@ fn draw_ui(
         if let Some(hop) = hops.get(selected) {
             f.render_widget(HopDetailView::new(hop, theme), area);
         }
+    }
+
+    if ui_state.show_target_list {
+        f.render_widget(
+            TargetListView::new(theme, sessions, targets, ui_state.target_list_index),
+            area,
+        );
     }
 }

@@ -29,6 +29,8 @@ pub struct MainView<'a> {
     target_index: Option<usize>,
     /// Total number of targets
     num_targets: usize,
+    /// Wide mode expands columns on wide terminals
+    wide_mode: bool,
 }
 
 impl<'a> MainView<'a> {
@@ -45,6 +47,7 @@ impl<'a> MainView<'a> {
             theme,
             target_index: None,
             num_targets: 1,
+            wide_mode: false,
         }
     }
 
@@ -56,15 +59,39 @@ impl<'a> MainView<'a> {
         }
         self
     }
+
+    /// Enable wide mode for expanded columns
+    pub fn with_wide_mode(mut self, wide_mode: bool) -> Self {
+        self.wide_mode = wide_mode;
+        self
+    }
 }
 
 impl Widget for MainView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Build title
-        let target_str = if let Some(ref hostname) = self.session.target.hostname {
-            format!("{} ({})", self.session.target.resolved, hostname)
+        // If original was a hostname (not an IP), show "hostname -> IP"
+        // If original was an IP, show "IP (hostname)" with reverse DNS
+        let target_str = if self
+            .session
+            .target
+            .original
+            .parse::<std::net::IpAddr>()
+            .is_err()
+        {
+            // Was a hostname, show hostname -> IP
+            format!(
+                "{} -> {}",
+                self.session.target.display_name(),
+                self.session.target.resolved
+            )
         } else {
-            self.session.target.resolved.to_string()
+            // Was an IP, show IP (hostname) as before
+            if let Some(ref hostname) = self.session.target.hostname {
+                format!("{} ({})", self.session.target.resolved, hostname)
+            } else {
+                self.session.target.resolved.to_string()
+            }
         };
 
         // Target indicator for multi-target mode
@@ -358,19 +385,34 @@ impl Widget for MainView<'_> {
             })
             .collect();
 
-        // Build column widths - conditional on multi-flow mode
-        let mut widths: Vec<Constraint> = vec![
-            Constraint::Length(3),  // #
-            Constraint::Min(16),    // Host
-            Constraint::Length(13), // ASN
-            Constraint::Length(7),  // Loss%
-            Constraint::Length(5),  // Sent
-            Constraint::Length(7),  // Avg
-            Constraint::Length(7),  // Min
-            Constraint::Length(7),  // Max
-            Constraint::Length(7),  // StdDev
-            Constraint::Length(7),  // Jitter
-        ];
+        // Build column widths - conditional on multi-flow mode and wide mode
+        let mut widths: Vec<Constraint> = if self.wide_mode {
+            vec![
+                Constraint::Length(3), // #
+                Constraint::Min(24),   // Host (expanded)
+                Constraint::Min(16),   // ASN (expanded)
+                Constraint::Length(7), // Loss%
+                Constraint::Length(5), // Sent
+                Constraint::Length(7), // Avg
+                Constraint::Length(7), // Min
+                Constraint::Length(7), // Max
+                Constraint::Length(7), // StdDev
+                Constraint::Length(7), // Jitter
+            ]
+        } else {
+            vec![
+                Constraint::Length(3),  // #
+                Constraint::Min(16),    // Host
+                Constraint::Length(13), // ASN
+                Constraint::Length(7),  // Loss%
+                Constraint::Length(5),  // Sent
+                Constraint::Length(7),  // Avg
+                Constraint::Length(7),  // Min
+                Constraint::Length(7),  // Max
+                Constraint::Length(7),  // StdDev
+                Constraint::Length(7),  // Jitter
+            ]
+        };
         if multi_flow {
             widths.push(Constraint::Length(4)); // NAT
             widths.push(Constraint::Length(6)); // Paths

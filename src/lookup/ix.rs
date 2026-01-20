@@ -12,7 +12,7 @@ use std::fs;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
@@ -94,6 +94,21 @@ struct PrefixEntry {
     info: IxInfo,
 }
 
+/// Status of the PeeringDB cache for display in settings
+#[derive(Debug, Clone)]
+pub struct CacheStatus {
+    /// Whether data has been successfully loaded
+    pub loaded: bool,
+    /// Number of IX prefixes in cache
+    pub prefix_count: usize,
+    /// Unix timestamp when cache was fetched (from disk or API)
+    pub fetched_at: Option<u64>,
+    /// Whether the cached data is past its TTL
+    pub expired: bool,
+    /// Whether a refresh operation is in progress
+    pub refreshing: bool,
+}
+
 /// IX lookup via PeeringDB prefix matching
 pub struct IxLookup {
     /// Parsed prefixes for lookup (populated from cache or API)
@@ -112,6 +127,12 @@ pub struct IxLookup {
     ip_cache_ttl: Duration,
     /// Timestamps for IP cache entries
     ip_cache_times: RwLock<HashMap<IpAddr, Instant>>,
+    /// Stored API key (env var takes precedence)
+    api_key: RwLock<Option<String>>,
+    /// Unix timestamp when cache was last fetched
+    cache_fetched_at: AtomicU64,
+    /// Whether a cache refresh is in progress
+    refreshing: AtomicBool,
 }
 
 /// Backoff period after load failure (5 minutes)
@@ -139,6 +160,9 @@ impl IxLookup {
             ip_cache: RwLock::new(HashMap::new()),
             ip_cache_ttl: Duration::from_secs(3600), // 1 hour for IP results
             ip_cache_times: RwLock::new(HashMap::new()),
+            api_key: RwLock::new(None),
+            cache_fetched_at: AtomicU64::new(0),
+            refreshing: AtomicBool::new(false),
         })
     }
 
@@ -220,6 +244,8 @@ impl IxLookup {
         if let Ok(cache) = self.load_cache()
             && !cache.is_expired()
         {
+            self.cache_fetched_at
+                .store(cache.fetched_at, Ordering::Relaxed);
             self.populate_from_cache(&cache)?;
             return Ok(());
         }
@@ -229,6 +255,8 @@ impl IxLookup {
             Ok(cache) => {
                 // Save to disk (ignore errors - cache is optional)
                 let _ = self.save_cache(&cache);
+                self.cache_fetched_at
+                    .store(cache.fetched_at, Ordering::Relaxed);
                 self.populate_from_cache(&cache)?;
                 Ok(())
             }
@@ -236,6 +264,8 @@ impl IxLookup {
                 // If API fails, try to use expired cache as fallback
                 if let Ok(cache) = self.load_cache() {
                     // Silently use expired cache - better than nothing
+                    self.cache_fetched_at
+                        .store(cache.fetched_at, Ordering::Relaxed);
                     self.populate_from_cache(&cache)?;
                     return Ok(());
                 }
@@ -299,7 +329,8 @@ impl IxLookup {
 
         // Add API key header if available (higher rate limits)
         // See: https://docs.peeringdb.com/howto/api_keys/
-        if let Ok(key) = std::env::var("PEERINGDB_API_KEY") {
+        // Priority: env var > stored key
+        if let Some(key) = self.get_effective_api_key() {
             let mut headers = reqwest::header::HeaderMap::new();
             if let Ok(value) = reqwest::header::HeaderValue::from_str(&format!("Api-Key {}", key)) {
                 headers.insert(reqwest::header::AUTHORIZATION, value);
@@ -393,6 +424,99 @@ impl IxLookup {
     #[allow(dead_code)]
     pub fn prefix_count(&self) -> usize {
         self.prefixes.read().len()
+    }
+
+    /// Set the API key for PeeringDB requests
+    ///
+    /// Note: Environment variable PEERINGDB_API_KEY takes precedence over this.
+    pub fn set_api_key(&self, key: Option<String>) {
+        *self.api_key.write() = key;
+    }
+
+    /// Get the effective API key (env var takes precedence)
+    fn get_effective_api_key(&self) -> Option<String> {
+        std::env::var("PEERINGDB_API_KEY")
+            .ok()
+            .or_else(|| self.api_key.read().clone())
+    }
+
+    /// Get the current cache status for display in settings
+    pub fn get_cache_status(&self) -> CacheStatus {
+        let prefix_count = self.prefixes.read().len();
+        let loaded = self.load_once.get().is_some();
+        let fetched_at = self.cache_fetched_at.load(Ordering::Relaxed);
+        let refreshing = self.refreshing.load(Ordering::Relaxed);
+
+        // Check if expired
+        let expired = if fetched_at > 0 {
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            now - fetched_at > IxCache::MAX_AGE_SECS
+        } else {
+            false
+        };
+
+        CacheStatus {
+            loaded,
+            prefix_count,
+            fetched_at: if fetched_at > 0 {
+                Some(fetched_at)
+            } else {
+                None
+            },
+            expired,
+            refreshing,
+        }
+    }
+
+    /// Force refresh the cache from the API
+    ///
+    /// This spawns a background task to fetch fresh data from PeeringDB.
+    /// The refreshing flag is set while the operation is in progress.
+    pub fn refresh_cache(self: &Arc<Self>) {
+        if self.refreshing.swap(true, Ordering::SeqCst) {
+            // Already refreshing
+            return;
+        }
+
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            let result = this.refresh_cache_inner().await;
+            this.refreshing.store(false, Ordering::SeqCst);
+            if let Err(_e) = result {
+                // Silent failure - IX detection is optional enrichment
+                // Store failure time for backoff
+                let now = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                this.last_failure.store(now, Ordering::Relaxed);
+            }
+        });
+    }
+
+    /// Inner refresh logic
+    async fn refresh_cache_inner(&self) -> Result<()> {
+        // Fetch fresh data from API
+        let cache = self.fetch_from_api().await?;
+
+        // Save to disk
+        let _ = self.save_cache(&cache);
+
+        // Populate prefixes
+        self.populate_from_cache(&cache)?;
+
+        // Update fetched_at timestamp
+        self.cache_fetched_at
+            .store(cache.fetched_at, Ordering::Relaxed);
+
+        // Clear IP cache so new lookups use fresh data
+        self.ip_cache.write().clear();
+        self.ip_cache_times.write().clear();
+
+        Ok(())
     }
 }
 
@@ -595,6 +719,9 @@ mod tests {
             ip_cache: RwLock::new(HashMap::new()),
             ip_cache_ttl: Duration::from_secs(3600),
             ip_cache_times: RwLock::new(HashMap::new()),
+            api_key: RwLock::new(None),
+            cache_fetched_at: AtomicU64::new(0),
+            refreshing: AtomicBool::new(false),
         };
 
         // Set last_failure to now (simulate recent failure)
@@ -631,6 +758,9 @@ mod tests {
             ip_cache: RwLock::new(HashMap::new()),
             ip_cache_ttl: Duration::from_secs(3600),
             ip_cache_times: RwLock::new(HashMap::new()),
+            api_key: RwLock::new(None),
+            cache_fetched_at: AtomicU64::new(0),
+            refreshing: AtomicBool::new(false),
         };
 
         // No cache exists, API will timeout/fail - OnceCell should stay empty
@@ -672,6 +802,9 @@ mod tests {
             ip_cache: RwLock::new(HashMap::new()),
             ip_cache_ttl: Duration::from_secs(3600),
             ip_cache_times: RwLock::new(HashMap::new()),
+            api_key: RwLock::new(None),
+            cache_fetched_at: AtomicU64::new(0),
+            refreshing: AtomicBool::new(false),
         };
 
         // Lookup should find the pre-loaded prefix
@@ -712,6 +845,9 @@ mod tests {
             ip_cache: RwLock::new(HashMap::new()),
             ip_cache_ttl: Duration::from_secs(3600),
             ip_cache_times: RwLock::new(HashMap::new()),
+            api_key: RwLock::new(None),
+            cache_fetched_at: AtomicU64::new(0),
+            refreshing: AtomicBool::new(false),
         };
 
         let ip = IpAddr::V4(Ipv4Addr::new(206, 223, 115, 50));

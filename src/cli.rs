@@ -87,6 +87,10 @@ pub struct Args {
     #[arg(short = '6', long = "ipv6")]
     pub ipv6: bool,
 
+    /// Trace all resolved IP addresses for hostnames (round-robin DNS, dual-stack)
+    #[arg(long = "resolve-all")]
+    pub resolve_all: bool,
+
     /// Skip reverse DNS lookups
     #[arg(long = "no-dns")]
     pub no_dns: bool,
@@ -130,6 +134,10 @@ pub struct Args {
     /// Color theme (default, kawaii, cyber, dracula, monochrome, matrix, nord, gruvbox, catppuccin, tokyo_night, solarized)
     #[arg(long = "theme", default_value = "default")]
     pub theme: String,
+
+    /// Wide mode: expand columns for wider terminals
+    #[arg(long = "wide")]
+    pub wide: bool,
 
     /// Bind probes to specific network interface (e.g., eth0, wlan0)
     #[arg(long = "interface")]
@@ -284,6 +292,7 @@ mod tests {
             timeout: 3.0,
             ipv4: false,
             ipv6: false,
+            resolve_all: false,
             no_dns: false,
             no_asn: false,
             no_geo: false,
@@ -295,6 +304,7 @@ mod tests {
             report: false,
             replay: None,
             theme: "default".to_string(),
+            wide: false,
             interface: None,
             recv_any: false,
             dscp: None,

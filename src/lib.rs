@@ -52,6 +52,8 @@ pub(crate) mod cli;
 #[allow(dead_code)]
 pub(crate) mod lookup;
 #[allow(dead_code)]
+pub(crate) mod prefs;
+#[allow(dead_code)]
 pub(crate) mod probe;
 #[allow(dead_code)]
 pub(crate) mod trace;

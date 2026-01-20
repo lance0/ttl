@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Multi-IP resolution** (`--resolve-all`): Trace all resolved IP addresses for hostnames
+  - Round-robin DNS (multiple A records) now traceable with single command
+  - Dual-stack hosts (A + AAAA) supported - compares IPv4 vs IPv6 paths
+  - Automatic deduplication by IP with hostname aliasing
+  - Prefers IPv4 by default, falls back to IPv6 if no IPv4 addresses
+  - Skip warnings show how many addresses were filtered (e.g., "3 IPv6 skipped")
+  - Title bar shows `hostname -> IP` format when tracing resolved hostnames
+- **Target list overlay** (`l` key): Overview of all resolved targets in multi-target mode
+  - Shows IP address, hostname, hop count, and loss percentage for each target
+  - Navigate with Up/Down or j/k, select with Enter, jump with 1-9
+  - Only available when multiple targets are being traced
+- **Settings modal** (`s` key): Configure theme, wide mode, and PeeringDB API key
+  - Live preview of theme changes
+  - Wide mode toggle for expanded columns on wide terminals
+  - PeeringDB API key input with text editing support
+  - Cache status display (prefix count, age, expiry indicator)
+  - Press `r` in PeeringDB section to refresh cache
+  - Settings persist to config file on exit
+- **PeeringDB API key persistence**: API key saved to `~/.config/ttl/config.toml`
+  - Environment variable `PEERINGDB_API_KEY` still takes precedence over saved key
+- **Wide mode CLI flag** (`--wide`): Start with wide mode enabled from command line
+- **Wide mode persistence**: Wide mode setting now saved to `~/.config/ttl/config.toml`
+
+### Changed
+- Status bar shows `l list` hint when multiple targets are available
+- Help overlay updated with `s` (Settings) and `l` (Target list) keybindings
+
 ## [0.12.8] - 2026-01-19
 
 ### Fixed

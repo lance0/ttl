@@ -25,6 +25,7 @@ ttl -p udp google.com                # UDP probes
 ttl --flows 8 cloudflare.com         # ECMP path discovery
 ttl --pmtud 1.1.1.1                  # Path MTU discovery
 ttl 8.8.8.8 1.1.1.1 9.9.9.9          # Multiple targets
+ttl --resolve-all google.com         # Trace all resolved IPs
 ```
 
 See [Installation](#installation) below for setup instructions.
@@ -154,6 +155,7 @@ ttl --flows 4 host             # ECMP path enumeration
 ttl --interface eth0 host      # Bind to interface
 ttl --size 1400 host           # Large packets for MTU testing
 ttl --dscp 46 host             # QoS marking (EF)
+ttl --wide host                # Wide mode for wider terminals
 ```
 
 See [docs/FEATURES.md](docs/FEATURES.md) for full CLI reference.
@@ -188,7 +190,7 @@ See exactly where your traffic peers with other networks:
 sudo ttl cloudflare.com
 ```
 
-TTL queries PeeringDB to identify IX points. The hop detail view shows IX name, city, and country. Works out of the box; optionally set `PEERINGDB_API_KEY` for higher rate limits. See [docs/FEATURES.md](docs/FEATURES.md#ix-detection) for setup details.
+TTL queries PeeringDB to identify IX points. The hop detail view shows IX name, city, and country. Works out of the box; optionally configure an API key via settings (`s` key) or `PEERINGDB_API_KEY` env var for higher rate limits. See [docs/FEATURES.md](docs/FEATURES.md#ix-detection) for setup details.
 
 ### Catch Flapping Routes
 
@@ -226,7 +228,15 @@ The `[RL?]` indicator and `50%RL` in the loss column tell you it's rate limiting
 sudo ttl 8.8.8.8 1.1.1.1 9.9.9.9
 ```
 
-Trace multiple destinations at once. Press `Tab` to switch between them.
+Trace multiple destinations at once. Press `Tab` to switch between them, or `l` to see a list of all targets.
+
+### Trace All Resolved IPs (Round-Robin DNS)
+
+```bash
+sudo ttl --resolve-all google.com
+```
+
+When a hostname resolves to multiple IPs (round-robin DNS, CDN load balancing), trace all of them to compare paths. Press `l` to see all resolved targets with their stats.
 
 ## Keybindings
 
@@ -236,9 +246,11 @@ Trace multiple destinations at once. Press `Tab` to switch between them.
 | `p` | Pause/Resume |
 | `r` | Reset stats |
 | `t` | Cycle theme |
+| `s` | Settings |
 | `e` | Export JSON |
 | `?` | Help |
 | `Tab` | Next target |
+| `l` | Target list |
 | `Enter` | Expand hop |
 
 ## Themes
