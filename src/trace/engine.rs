@@ -61,9 +61,21 @@ impl ProbeEngine {
     }
 
     /// Apply rate limiting delay if configured
+    ///
+    /// On macOS, a minimum delay is always applied even without --rate.
+    /// This is required because macOS batches rapid setsockopt(IP_TTL) calls,
+    /// causing packets to be sent with stale TTL values. A small delay ensures
+    /// each set_ttl() takes effect before the next send().
+    /// See: https://github.com/lance0/ttl/issues/12
     async fn apply_rate_limit(&self) {
         if let Some(delay) = self.rate_delay() {
             tokio::time::sleep(delay).await;
+        } else if cfg!(target_os = "macos") {
+            // macOS requires a minimum delay between probes to ensure
+            // setsockopt(IP_TTL) takes effect before each send().
+            // Without this, rapid probe bursts all get sent with the same TTL.
+            // 200µs is enough for the kernel to process the sockopt change.
+            tokio::time::sleep(Duration::from_micros(200)).await;
         }
     }
 

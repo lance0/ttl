@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Status bar shows `l list` hint when multiple targets are available
 - Help overlay updated with `s` (Settings) and `l` (Target list) keybindings
 
+### Fixed
+- **macOS: Probes sent with wrong TTL in initial burst** (#12)
+  - Rapid `setsockopt(IP_TTL)` calls were batched by macOS kernel
+  - First N probes sent with same TTL, causing only 1 hop to display
+  - Added 200µs minimum delay between probes on macOS to ensure TTL changes take effect
+  - Workaround: `--rate` flag also fixes this by adding delay between probes
+
 ## [0.12.8] - 2026-01-19
 
 ### Fixed
