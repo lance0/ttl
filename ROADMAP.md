@@ -179,6 +179,7 @@
 - [x] PeeringDB API key configuration in settings modal
 - [x] PeeringDB cache status display (prefix count, age, expiry)
 - [x] Cache refresh from settings (`r` key in PeeringDB section)
+- [x] Fix macOS probe TTL batching issue (#12) - add minimum inter-probe delay
 
 ### v1.0.0 - BGP & Routing Integration
 - [ ] Looking glass integration (query public route servers)
