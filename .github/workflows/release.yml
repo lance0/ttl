@@ -45,10 +45,13 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             cross: true
-          # macOS aarch64 (Apple Silicon) - Intel Macs no longer supported
-          # Binaries built on macos-latest; older macOS versions may need to compile from source
+          # macOS aarch64 (Apple Silicon)
           - target: aarch64-apple-darwin
             os: macos-latest
+            cross: false
+          # macOS x86_64 (Intel) - uses macos-15-intel runner (available until Aug 2027)
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
             cross: false
 
     steps:

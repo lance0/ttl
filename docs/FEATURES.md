@@ -539,3 +539,4 @@ Available targets:
 - `x86_64-unknown-linux-musl` - Linux x86_64
 - `aarch64-unknown-linux-gnu` - Linux ARM64
 - `aarch64-apple-darwin` - macOS Apple Silicon
+- `x86_64-apple-darwin` - macOS Intel

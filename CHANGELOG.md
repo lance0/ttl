@@ -43,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Status bar shows `w display` hint for cycling display modes
 - Help overlay updated with `s` (Settings), `l` (Target list), and `w` (Display mode) keybindings
 - Settings modal now shows "Display Mode" selector instead of "Wide Mode" toggle
+- **Intel Mac binaries restored**: Pre-built x86_64-apple-darwin binaries available again
+  - TTL batching bug (#12) was likely the cause of previous Intel Mac issues
+  - Uses new `macos-15-intel` GitHub Actions runner
 
 ### Fixed
 - **macOS: Probes sent with wrong TTL in initial burst** (#12)
