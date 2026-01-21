@@ -135,4 +135,83 @@ mod tests {
         assert_eq!(DisplayMode::Compact.label(), "compact");
         assert_eq!(DisplayMode::Wide.label(), "wide");
     }
+
+    #[test]
+    fn test_display_mode_default_is_auto() {
+        assert_eq!(DisplayMode::default(), DisplayMode::Auto);
+    }
+
+    #[test]
+    fn test_display_mode_full_cycle() {
+        // Verify cycling returns to start after 3 steps
+        let start = DisplayMode::Auto;
+        let after_one = start.next();
+        let after_two = after_one.next();
+        let after_three = after_two.next();
+        assert_eq!(after_three, start);
+    }
+
+    #[test]
+    fn test_display_mode_serialization_all_variants() {
+        // Test Auto
+        let prefs = Prefs {
+            theme: None,
+            display_mode: Some(DisplayMode::Auto),
+            peeringdb_api_key: None,
+        };
+        let toml_str = toml::to_string_pretty(&prefs).unwrap();
+        assert!(toml_str.contains("display_mode = \"auto\""));
+        let loaded: Prefs = toml::from_str(&toml_str).unwrap();
+        assert_eq!(loaded.display_mode, Some(DisplayMode::Auto));
+
+        // Test Compact
+        let prefs = Prefs {
+            theme: None,
+            display_mode: Some(DisplayMode::Compact),
+            peeringdb_api_key: None,
+        };
+        let toml_str = toml::to_string_pretty(&prefs).unwrap();
+        assert!(toml_str.contains("display_mode = \"compact\""));
+        let loaded: Prefs = toml::from_str(&toml_str).unwrap();
+        assert_eq!(loaded.display_mode, Some(DisplayMode::Compact));
+
+        // Test Wide
+        let prefs = Prefs {
+            theme: None,
+            display_mode: Some(DisplayMode::Wide),
+            peeringdb_api_key: None,
+        };
+        let toml_str = toml::to_string_pretty(&prefs).unwrap();
+        assert!(toml_str.contains("display_mode = \"wide\""));
+        let loaded: Prefs = toml::from_str(&toml_str).unwrap();
+        assert_eq!(loaded.display_mode, Some(DisplayMode::Wide));
+    }
+
+    #[test]
+    fn test_display_mode_equality() {
+        assert_eq!(DisplayMode::Auto, DisplayMode::Auto);
+        assert_eq!(DisplayMode::Compact, DisplayMode::Compact);
+        assert_eq!(DisplayMode::Wide, DisplayMode::Wide);
+        assert_ne!(DisplayMode::Auto, DisplayMode::Compact);
+        assert_ne!(DisplayMode::Auto, DisplayMode::Wide);
+        assert_ne!(DisplayMode::Compact, DisplayMode::Wide);
+    }
+
+    #[test]
+    fn test_display_mode_copy() {
+        let mode = DisplayMode::Auto;
+        let copied = mode; // Copy
+        assert_eq!(mode, copied); // Original still usable (Copy trait)
+    }
+
+    #[test]
+    fn test_prefs_missing_display_mode_defaults_to_none() {
+        // Simulate old config without display_mode field
+        let toml_str = r#"
+            theme = "default"
+        "#;
+        let loaded: Prefs = toml::from_str(toml_str).unwrap();
+        assert_eq!(loaded.theme, Some("default".to_string()));
+        assert!(loaded.display_mode.is_none());
+    }
 }

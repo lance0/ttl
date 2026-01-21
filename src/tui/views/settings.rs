@@ -389,3 +389,168 @@ impl Widget for SettingsView<'_> {
         paragraph.render(inner, buf);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settings_state_new() {
+        let state = SettingsState::new(2, DisplayMode::Auto, Some("test_key".to_string()));
+        assert_eq!(state.theme_index, 2);
+        assert_eq!(state.display_mode, DisplayMode::Auto);
+        assert_eq!(state.api_key, "test_key");
+        assert_eq!(state.api_key_cursor, 8); // "test_key".len()
+        assert_eq!(state.selected_section, 0);
+        assert_eq!(state.theme_scroll, 0);
+    }
+
+    #[test]
+    fn test_settings_state_new_no_api_key() {
+        let state = SettingsState::new(0, DisplayMode::Wide, None);
+        assert_eq!(state.theme_index, 0);
+        assert_eq!(state.display_mode, DisplayMode::Wide);
+        assert_eq!(state.api_key, "");
+        assert_eq!(state.api_key_cursor, 0);
+    }
+
+    #[test]
+    fn test_settings_state_select_cycles_display_mode() {
+        let mut state = SettingsState::new(0, DisplayMode::Auto, None);
+
+        // Section 0 (theme) - select does nothing to display_mode
+        state.selected_section = 0;
+        state.select();
+        assert_eq!(state.display_mode, DisplayMode::Auto);
+
+        // Section 1 (display mode) - select cycles
+        state.selected_section = 1;
+        state.select();
+        assert_eq!(state.display_mode, DisplayMode::Compact);
+
+        state.select();
+        assert_eq!(state.display_mode, DisplayMode::Wide);
+
+        state.select();
+        assert_eq!(state.display_mode, DisplayMode::Auto);
+    }
+
+    #[test]
+    fn test_settings_state_next_section() {
+        let mut state = SettingsState::new(0, DisplayMode::Auto, None);
+
+        // Without IX enabled (2 sections)
+        assert_eq!(state.selected_section, 0);
+        state.next_section(false);
+        assert_eq!(state.selected_section, 1);
+        state.next_section(false);
+        assert_eq!(state.selected_section, 0); // Wraps
+
+        // With IX enabled (3 sections)
+        state.selected_section = 0;
+        state.next_section(true);
+        assert_eq!(state.selected_section, 1);
+        state.next_section(true);
+        assert_eq!(state.selected_section, 2);
+        state.next_section(true);
+        assert_eq!(state.selected_section, 0); // Wraps
+    }
+
+    #[test]
+    fn test_settings_state_theme_navigation() {
+        let mut state = SettingsState::new(5, DisplayMode::Auto, None);
+        state.selected_section = 0;
+
+        // Move up
+        state.move_up(11);
+        assert_eq!(state.theme_index, 4);
+
+        // Move up at 0 stays at 0
+        state.theme_index = 0;
+        state.move_up(11);
+        assert_eq!(state.theme_index, 0);
+
+        // Move down
+        state.theme_index = 5;
+        state.move_down(11);
+        assert_eq!(state.theme_index, 6);
+
+        // Move down at max stays at max
+        state.theme_index = 10;
+        state.move_down(11);
+        assert_eq!(state.theme_index, 10);
+    }
+
+    #[test]
+    fn test_settings_state_api_key_input() {
+        let mut state = SettingsState::new(0, DisplayMode::Auto, None);
+
+        // Type characters
+        state.handle_char('a');
+        state.handle_char('b');
+        state.handle_char('c');
+        assert_eq!(state.api_key, "abc");
+        assert_eq!(state.api_key_cursor, 3);
+
+        // Backspace
+        state.handle_backspace();
+        assert_eq!(state.api_key, "ab");
+        assert_eq!(state.api_key_cursor, 2);
+
+        // Backspace at empty string
+        state.api_key = String::new();
+        state.api_key_cursor = 0;
+        state.handle_backspace();
+        assert_eq!(state.api_key, "");
+        assert_eq!(state.api_key_cursor, 0);
+    }
+
+    #[test]
+    fn test_settings_state_cursor_movement() {
+        let mut state = SettingsState::new(0, DisplayMode::Auto, Some("hello".to_string()));
+        assert_eq!(state.api_key_cursor, 5);
+
+        // Move left
+        state.move_cursor_left();
+        assert_eq!(state.api_key_cursor, 4);
+
+        // Move left to beginning
+        state.api_key_cursor = 0;
+        state.move_cursor_left();
+        assert_eq!(state.api_key_cursor, 0); // Stays at 0
+
+        // Move right
+        state.api_key_cursor = 2;
+        state.move_cursor_right();
+        assert_eq!(state.api_key_cursor, 3);
+
+        // Move right at end
+        state.api_key_cursor = 5;
+        state.move_cursor_right();
+        assert_eq!(state.api_key_cursor, 5); // Stays at end
+    }
+
+    #[test]
+    fn test_settings_state_handle_delete() {
+        let mut state = SettingsState::new(0, DisplayMode::Auto, Some("hello".to_string()));
+        state.api_key_cursor = 2; // Position at 'l'
+
+        state.handle_delete();
+        assert_eq!(state.api_key, "helo"); // Deleted 'l' at position 2
+        assert_eq!(state.api_key_cursor, 2); // Cursor stays
+
+        // Delete at end does nothing
+        state.api_key_cursor = 4;
+        state.handle_delete();
+        assert_eq!(state.api_key, "helo");
+    }
+
+    #[test]
+    fn test_settings_state_default() {
+        let state = SettingsState::default();
+        assert_eq!(state.theme_index, 0);
+        assert_eq!(state.display_mode, DisplayMode::Auto);
+        assert_eq!(state.api_key, "");
+        assert_eq!(state.selected_section, 0);
+    }
+}
