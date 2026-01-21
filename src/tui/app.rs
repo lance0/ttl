@@ -250,8 +250,10 @@ where
                         KeyCode::Tab => {
                             ui_state.settings.next_section(ix_enabled);
                         }
-                        KeyCode::Char('r') => {
-                            // Refresh PeeringDB cache
+                        KeyCode::Char('r')
+                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            // Ctrl+R: Refresh PeeringDB cache
                             if let Some(ref ix) = ix_lookup {
                                 ix.refresh_cache();
                                 ui_state.set_status("Refreshing PeeringDB cache...");

@@ -352,7 +352,7 @@ impl Widget for SettingsView<'_> {
                 // Refresh hint when in PeeringDB section
                 if self.state.selected_section == 2 && !status.refreshing {
                     lines.push(Line::from(vec![Span::styled(
-                        "    Press 'r' to refresh cache",
+                        "    Press Ctrl+R to refresh cache",
                         Style::default().fg(self.theme.text_dim),
                     )]));
                 } else {

@@ -237,7 +237,9 @@ impl Widget for MainView<'_> {
                         stats.ip.to_string()
                     };
                     let asn = if let Some(ref asn_info) = stats.asn {
-                        truncate_with_ellipsis(&asn_info.name, 12)
+                        // Wide mode allows longer ASN names (column is Min(16) vs Length(13))
+                        let asn_max_len = if self.wide_mode { 22 } else { 12 };
+                        truncate_with_ellipsis(&asn_info.name, asn_max_len)
                     } else {
                         String::new()
                     };
@@ -266,7 +268,13 @@ impl Widget for MainView<'_> {
                     };
                     // Truncate to leave room for indicators
                     // IPv6 addresses need more space (up to 39 chars vs 15 for IPv4)
-                    let base_len: usize = if stats.ip.is_ipv6() { 42 } else { 28 };
+                    // Wide mode allows longer hostnames (column is Min(24) vs Min(16))
+                    let base_len: usize = match (self.wide_mode, stats.ip.is_ipv6()) {
+                        (true, true) => 50,
+                        (true, false) => 36,
+                        (false, true) => 42,
+                        (false, false) => 28,
+                    };
                     let max_len = base_len.saturating_sub(indicators.len());
                     let truncated = truncate_with_ellipsis(&display, max_len);
                     (format!("{}{}", truncated, indicators), asn)
