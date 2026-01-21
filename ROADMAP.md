@@ -186,6 +186,16 @@
 - [x] Cache refresh from settings (`r` key in PeeringDB section)
 - [x] Fix macOS probe TTL batching issue (#12) - add minimum inter-probe delay
 
+### v0.14.0 - Interactive Target Selection (Planned)
+- [ ] `ttl` with no args enters interactive mode
+- [ ] Press `o` to open target input modal
+- [ ] Text input with hostname/IP validation
+- [ ] DNS resolution with loading state
+- [ ] First target determines IPv4/IPv6 family for session
+- [ ] Add additional targets mid-session (same family only)
+- [ ] Empty state UI: "Press 'o' to add target"
+- [ ] Deferred receiver/probe engine creation until first target
+
 ### v1.0.0 - BGP & Routing Integration
 - [ ] Looking glass integration (query public route servers)
 - [ ] BGP community display (show communities on path if available)
