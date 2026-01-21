@@ -26,7 +26,7 @@ use lookup::asn::{AsnLookup, run_asn_worker};
 use lookup::geo::{GeoLookup, run_geo_worker};
 use lookup::ix::{IxLookup, run_ix_worker};
 use lookup::rdns::{DnsLookup, run_dns_worker};
-use prefs::Prefs;
+use prefs::{DisplayMode, Prefs};
 use probe::{
     InterfaceInfo, check_permissions, detect_default_gateway, get_local_addr_with_interface,
     validate_interface,
@@ -312,7 +312,7 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
             prefs.theme = Some(args.theme.clone());
         }
         if args.wide {
-            prefs.wide_mode = Some(true);
+            prefs.display_mode = Some(DisplayMode::Wide);
         }
 
         // Setup Ctrl+C handler
@@ -589,7 +589,7 @@ async fn run_interactive_mode(
         prefs.theme = Some(args.theme.clone());
     }
     if args.wide {
-        prefs.wide_mode = Some(true);
+        prefs.display_mode = Some(DisplayMode::Wide);
     }
 
     // Spawn IX worker (if enabled) - keep Arc for TUI access

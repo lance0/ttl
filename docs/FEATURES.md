@@ -365,6 +365,7 @@ High jitter indicates path instability from congestion, route changes, or load b
 | `p` | Pause/Resume probing |
 | `r` | Reset all statistics |
 | `t` | Cycle color theme |
+| `w` | Cycle display mode (auto/compact/wide) |
 | `s` | Open settings modal |
 | `e` | Export current session to JSON |
 | `?` / `h` | Show help dialog |
@@ -381,7 +382,7 @@ High jitter indicates path instability from congestion, route changes, or load b
 Press `s` to open the settings modal. Configure:
 
 - **Theme**: Select from 11 built-in themes with live preview
-- **Wide Mode**: Expand columns for wider terminals
+- **Display Mode**: Control column widths (auto/compact/wide)
 - **PeeringDB**: Configure API key and view cache status (only shown when IX detection is enabled)
 
 ### Navigation
@@ -390,9 +391,21 @@ Press `s` to open the settings modal. Configure:
 |-----|--------|
 | `Tab` | Switch between sections |
 | `Up`/`Down` or `j`/`k` | Navigate within section |
-| `Enter` or `Space` | Toggle option (theme/wide mode) |
+| `Enter` or `Space` | Cycle option (theme/display mode) |
 | `r` | Refresh PeeringDB cache (in PeeringDB section) |
 | `Esc` | Close and save |
+
+### Display Mode
+
+The display mode controls Host and ASN column widths:
+
+| Mode | Description | Host Width | ASN Width |
+|------|-------------|------------|-----------|
+| **Auto** (default) | Fits to content | 12-60 chars | 8-30 chars |
+| **Compact** | Minimal widths | 20 chars | 12 chars |
+| **Wide** | Generous widths | 45 chars | 24 chars |
+
+Press `w` in the main view (or `Enter` in the Display Mode settings section) to cycle through modes. Auto mode is recommended for most use cases - it adapts to your content while respecting maximum caps to prevent layout issues.
 
 ### PeeringDB Section
 

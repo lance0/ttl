@@ -246,6 +246,7 @@ When a hostname resolves to multiple IPs (round-robin DNS, CDN load balancing), 
 | `p` | Pause/Resume |
 | `r` | Reset stats |
 | `t` | Cycle theme |
+| `w` | Cycle display mode |
 | `s` | Settings |
 | `e` | Export JSON |
 | `?` | Help |

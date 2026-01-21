@@ -21,7 +21,7 @@ impl Widget for HelpView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Calculate centered popup area
         let popup_width = 50.min(area.width.saturating_sub(4));
-        let popup_height = 20.min(area.height.saturating_sub(4));
+        let popup_height = 21.min(area.height.saturating_sub(4));
         let popup_x = (area.width - popup_width) / 2 + area.x;
         let popup_y = (area.height - popup_height) / 2 + area.y;
         let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
@@ -54,6 +54,10 @@ impl Widget for HelpView<'_> {
             Line::from(vec![
                 Span::styled("  t       ", Style::default().fg(self.theme.shortcut)),
                 Span::raw("Cycle theme"),
+            ]),
+            Line::from(vec![
+                Span::styled("  w       ", Style::default().fg(self.theme.shortcut)),
+                Span::raw("Cycle display mode"),
             ]),
             Line::from(vec![
                 Span::styled("  s       ", Style::default().fg(self.theme.shortcut)),

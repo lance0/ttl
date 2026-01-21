@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::export::export_json_file;
 use crate::lookup::ix::IxLookup;
-use crate::prefs::Prefs;
+use crate::prefs::{DisplayMode, Prefs};
 use crate::state::Session;
 use crate::trace::receiver::SessionMap;
 use crate::tui::theme::Theme;
@@ -52,8 +52,8 @@ pub struct UiState {
     pub status_message: Option<(String, std::time::Instant)>,
     /// Current theme index
     pub theme_index: usize,
-    /// Wide mode expands columns on wide terminals
-    pub wide_mode: bool,
+    /// Display mode for column widths (auto/compact/wide)
+    pub display_mode: DisplayMode,
     /// Currently selected target index (for multi-target mode)
     pub selected_target: usize,
     /// Show target list overlay
@@ -106,13 +106,13 @@ pub async fn run_tui(
         .position(|&name| Theme::by_name(name).name() == initial_theme.name())
         .unwrap_or(0);
 
-    let wide_mode = initial_prefs.wide_mode.unwrap_or(false);
+    let display_mode = initial_prefs.display_mode.unwrap_or_default();
     let api_key = initial_prefs.peeringdb_api_key.clone();
 
     let mut ui_state = UiState {
         theme_index: initial_index,
-        wide_mode,
-        settings: SettingsState::new(initial_index, wide_mode, api_key),
+        display_mode,
+        settings: SettingsState::new(initial_index, display_mode, api_key),
         ..Default::default()
     };
     let tick_rate = Duration::from_millis(100);
@@ -155,7 +155,7 @@ pub async fn run_tui(
 
     Ok(Prefs {
         theme: Some(theme_names[ui_state.theme_index].to_string()),
-        wide_mode: Some(ui_state.wide_mode),
+        display_mode: Some(ui_state.display_mode),
         peeringdb_api_key: final_api_key,
     })
 }
@@ -235,7 +235,7 @@ where
                         KeyCode::Esc => {
                             // Close settings and apply changes
                             ui_state.theme_index = ui_state.settings.theme_index;
-                            ui_state.wide_mode = ui_state.settings.wide_mode;
+                            ui_state.display_mode = ui_state.settings.display_mode;
                             // Update IxLookup with new API key if provided
                             if let Some(ref ix) = ix_lookup {
                                 let key = if ui_state.settings.api_key.is_empty() {
@@ -250,9 +250,7 @@ where
                         KeyCode::Tab => {
                             ui_state.settings.next_section(ix_enabled);
                         }
-                        KeyCode::Char('r')
-                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                        {
+                        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             // Ctrl+R: Refresh PeeringDB cache
                             if let Some(ref ix) = ix_lookup {
                                 ix.refresh_cache();
@@ -280,12 +278,12 @@ where
                     continue;
                 }
 
-                // Theme/Wide Mode sections - normal navigation
+                // Theme/Display Mode sections - normal navigation
                 match key.code {
                     KeyCode::Esc => {
                         // Close settings and apply changes
                         ui_state.theme_index = ui_state.settings.theme_index;
-                        ui_state.wide_mode = ui_state.settings.wide_mode;
+                        ui_state.display_mode = ui_state.settings.display_mode;
                         // Update IxLookup with new API key if provided
                         if let Some(ref ix) = ix_lookup {
                             let key = if ui_state.settings.api_key.is_empty() {
@@ -312,8 +310,8 @@ where
                     }
                     KeyCode::Enter | KeyCode::Char(' ') => {
                         ui_state.settings.select();
-                        // Live preview wide mode changes
-                        ui_state.wide_mode = ui_state.settings.wide_mode;
+                        // Live preview display mode changes
+                        ui_state.display_mode = ui_state.settings.display_mode;
                     }
                     _ => {}
                 }
@@ -453,6 +451,12 @@ where
                     let new_theme = theme_names[ui_state.theme_index];
                     ui_state.set_status(format!("Theme: {}", new_theme));
                 }
+                KeyCode::Char('w') => {
+                    // Cycle through display modes (auto -> compact -> wide -> auto)
+                    ui_state.display_mode = ui_state.display_mode.next();
+                    ui_state.settings.display_mode = ui_state.display_mode;
+                    ui_state.set_status(format!("Display: {}", ui_state.display_mode.label()));
+                }
                 KeyCode::Char('s') => {
                     // Open settings modal - preserve existing API key
                     let current_api_key = if ui_state.settings.api_key.is_empty() {
@@ -462,7 +466,7 @@ where
                     };
                     ui_state.settings = SettingsState::new(
                         ui_state.theme_index,
-                        ui_state.wide_mode,
+                        ui_state.display_mode,
                         current_api_key,
                     );
                     ui_state.show_settings = true;
@@ -552,20 +556,21 @@ fn draw_ui(
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(area);
 
-    // Main view (with target indicator and wide mode)
+    // Main view (with target indicator and display mode)
     let main_view = MainView::new(session, ui_state.selected, ui_state.paused, theme)
         .with_target_info(ui_state.selected_target + 1, num_targets)
-        .with_wide_mode(ui_state.wide_mode);
+        .with_display_mode(ui_state.display_mode);
     f.render_widget(main_view, chunks[0]);
 
     // Status bar
     let status_text = if let Some((ref msg, _)) = ui_state.status_message {
         msg.clone()
     } else if num_targets > 1 {
-        "q quit | Tab next | l list | p pause | r reset | t theme | s settings | e export | ? help"
+        "q quit | Tab next | l list | p pause | r reset | t theme | w display | s settings | e export | ? help"
             .to_string()
     } else {
-        "q quit | p pause | r reset | t theme | s settings | e export | ? help".to_string()
+        "q quit | p pause | r reset | t theme | w display | s settings | e export | ? help"
+            .to_string()
     };
 
     let status_bar = Paragraph::new(status_text).style(Style::default().fg(theme.text_dim));

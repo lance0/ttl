@@ -5,19 +5,20 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
 use crate::lookup::ix::CacheStatus;
+use crate::prefs::DisplayMode;
 use crate::tui::theme::Theme;
 
 /// Settings state for the modal
 #[derive(Default, Clone)]
 pub struct SettingsState {
-    /// 0 = theme section, 1 = wide mode section, 2 = PeeringDB section
+    /// 0 = theme section, 1 = display mode section, 2 = PeeringDB section
     pub selected_section: usize,
     /// Scroll offset for theme list
     pub theme_scroll: usize,
     /// Selected theme index
     pub theme_index: usize,
-    /// Wide mode toggle value
-    pub wide_mode: bool,
+    /// Display mode for column widths (auto/compact/wide)
+    pub display_mode: DisplayMode,
     /// PeeringDB API key input value
     pub api_key: String,
     /// Cursor position in API key input
@@ -25,14 +26,14 @@ pub struct SettingsState {
 }
 
 impl SettingsState {
-    pub fn new(theme_index: usize, wide_mode: bool, api_key: Option<String>) -> Self {
+    pub fn new(theme_index: usize, display_mode: DisplayMode, api_key: Option<String>) -> Self {
         let api_key = api_key.unwrap_or_default();
         let cursor = api_key.len();
         Self {
             selected_section: 0,
             theme_scroll: 0,
             theme_index,
-            wide_mode,
+            display_mode,
             api_key,
             api_key_cursor: cursor,
         }
@@ -85,7 +86,7 @@ impl SettingsState {
                 }
             }
         }
-        // Wide mode section has no up/down navigation
+        // Display mode section has no up/down navigation
     }
 
     /// Move selection down within current section
@@ -101,19 +102,19 @@ impl SettingsState {
                 }
             }
         }
-        // Wide mode section has no up/down navigation
+        // Display mode section has no up/down navigation
     }
 
-    /// Switch between sections (0=Theme, 1=Wide Mode, 2=PeeringDB)
+    /// Switch between sections (0=Theme, 1=Display Mode, 2=PeeringDB)
     pub fn next_section(&mut self, ix_enabled: bool) {
         let num_sections = if ix_enabled { 3 } else { 2 };
         self.selected_section = (self.selected_section + 1) % num_sections;
     }
 
-    /// Select current theme (when in theme section) or toggle wide mode
+    /// Select current theme (when in theme section) or cycle display mode
     pub fn select(&mut self) {
         if self.selected_section == 1 {
-            self.wide_mode = !self.wide_mode;
+            self.display_mode = self.display_mode.next();
         }
         // Theme is already selected by navigation
     }
@@ -170,7 +171,7 @@ impl Widget for SettingsView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Calculate centered popup area (taller if IX is enabled)
         let popup_width = 44.min(area.width.saturating_sub(4));
-        let base_height = if self.ix_enabled { 22 } else { 16 };
+        let base_height = if self.ix_enabled { 23 } else { 17 };
         let popup_height = base_height.min(area.height.saturating_sub(4));
         let popup_x = (area.width - popup_width) / 2 + area.x;
         let popup_y = (area.height - popup_height) / 2 + area.y;
@@ -249,8 +250,8 @@ impl Widget for SettingsView<'_> {
 
         lines.push(Line::from(""));
 
-        // Wide mode section header
-        let wide_header_style = if self.state.selected_section == 1 {
+        // Display mode section header
+        let display_header_style = if self.state.selected_section == 1 {
             Style::default()
                 .fg(self.theme.header)
                 .add_modifier(Modifier::BOLD)
@@ -258,22 +259,33 @@ impl Widget for SettingsView<'_> {
             Style::default().fg(self.theme.text_dim)
         };
         lines.push(Line::from(vec![Span::styled(
-            "  Wide Mode",
-            wide_header_style,
+            "  Display Mode",
+            display_header_style,
         )]));
 
-        // Wide mode toggle
-        let checkbox = if self.state.wide_mode { "[x]" } else { "[ ]" };
-        let toggle_style = if self.state.selected_section == 1 {
+        // Display mode selector
+        let mode_text = format!(
+            "    [{}]  (Enter to cycle)",
+            self.state.display_mode.label()
+        );
+        let mode_style = if self.state.selected_section == 1 {
             Style::default()
                 .fg(self.theme.shortcut)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(self.theme.text_dim)
         };
+        lines.push(Line::from(vec![Span::styled(mode_text, mode_style)]));
+
+        // Mode description
+        let desc = match self.state.display_mode {
+            DisplayMode::Auto => "fit columns to content",
+            DisplayMode::Compact => "minimal column widths",
+            DisplayMode::Wide => "generous column widths",
+        };
         lines.push(Line::from(vec![Span::styled(
-            format!("    {} Expand columns", checkbox),
-            toggle_style,
+            format!("    {}", desc),
+            Style::default().fg(self.theme.text_dim),
         )]));
 
         // PeeringDB section (only if IX detection is enabled)

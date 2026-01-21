@@ -44,12 +44,13 @@
 - [x] Hop detail modal view (with percentiles, jitter, MPLS)
 - [x] Loss-aware sparkline visualization
 - [x] Help overlay
-- [x] Settings modal (theme + wide mode)
+- [x] Settings modal (theme + display mode + PeeringDB)
 - [x] Target list overlay (multi-target mode)
 - [x] Status bar with keybind hints
 - [x] Theme support (11 built-in themes via --theme flag)
 - [x] Theme persistence (~/.config/ttl/config.toml)
-- [x] Wide mode persistence
+- [x] Display mode (auto/compact/wide) with `w` key cycling
+- [x] Autosize columns in auto mode (fit to content, capped)
 
 ### Platform Support
 - [x] Linux (raw sockets with CAP_NET_RAW or root)
@@ -173,9 +174,13 @@
 ### v0.13.0 - Multi-IP Resolution & Settings (In Progress)
 - [x] Multi-IP resolution (`--resolve-all`) for round-robin DNS and dual-stack hosts
 - [x] Target list overlay (`l` key) showing all resolved targets with stats
-- [x] Settings modal (`s` key) for theme, wide mode, and PeeringDB configuration
+- [x] Settings modal (`s` key) for theme, display mode, and PeeringDB configuration
 - [x] Wide mode CLI flag (`--wide`) and persistence
-- [x] Wide mode saved to config file
+- [x] Autosize columns (`w` key): auto/compact/wide display modes
+  - Auto mode: columns fit to longest content (capped at 60/30 chars)
+  - Compact mode: minimal widths (host: 20, ASN: 12)
+  - Wide mode: generous widths (host: 45, ASN: 24)
+- [x] Display mode saved to config file as `display_mode`
 - [x] PeeringDB API key configuration in settings modal
 - [x] PeeringDB cache status display (prefix count, age, expiry)
 - [x] Cache refresh from settings (`r` key in PeeringDB section)

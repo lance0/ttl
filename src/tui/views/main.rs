@@ -3,9 +3,26 @@ use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, Borders, Cell, Row, Table, Widget};
 
+use crate::prefs::DisplayMode;
 use crate::state::{PmtudPhase, Session};
 use crate::tui::theme::Theme;
 use crate::tui::widgets::loss_sparkline_string;
+
+/// Column width limits for autosize mode
+const MAX_HOST_WIDTH: u16 = 60;
+const MAX_ASN_WIDTH: u16 = 30;
+const COMPACT_HOST: u16 = 20;
+const COMPACT_ASN: u16 = 12;
+const WIDE_HOST: u16 = 45;
+const WIDE_ASN: u16 = 24;
+const MIN_HOST: u16 = 12;
+const MIN_ASN: u16 = 8;
+
+/// Computed column widths for rendering
+struct ColumnWidths {
+    host: u16,
+    asn: u16,
+}
 
 /// Truncate a string to max_len characters, adding ellipsis if truncated
 fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
@@ -29,8 +46,8 @@ pub struct MainView<'a> {
     target_index: Option<usize>,
     /// Total number of targets
     num_targets: usize,
-    /// Wide mode expands columns on wide terminals
-    wide_mode: bool,
+    /// Display mode for column widths (auto/compact/wide)
+    display_mode: DisplayMode,
 }
 
 impl<'a> MainView<'a> {
@@ -47,7 +64,7 @@ impl<'a> MainView<'a> {
             theme,
             target_index: None,
             num_targets: 1,
-            wide_mode: false,
+            display_mode: DisplayMode::Auto,
         }
     }
 
@@ -60,10 +77,56 @@ impl<'a> MainView<'a> {
         self
     }
 
-    /// Enable wide mode for expanded columns
-    pub fn with_wide_mode(mut self, wide_mode: bool) -> Self {
-        self.wide_mode = wide_mode;
+    /// Set display mode for column widths
+    pub fn with_display_mode(mut self, display_mode: DisplayMode) -> Self {
+        self.display_mode = display_mode;
         self
+    }
+
+    /// Compute column widths based on display mode and content
+    fn compute_column_widths(&self, max_display_ttl: u8) -> ColumnWidths {
+        match self.display_mode {
+            DisplayMode::Compact => ColumnWidths {
+                host: COMPACT_HOST,
+                asn: COMPACT_ASN,
+            },
+            DisplayMode::Wide => ColumnWidths {
+                host: WIDE_HOST,
+                asn: WIDE_ASN,
+            },
+            DisplayMode::Auto => {
+                let mut max_host: usize = MIN_HOST as usize;
+                let mut max_asn: usize = MIN_ASN as usize;
+
+                for hop in self
+                    .session
+                    .hops
+                    .iter()
+                    .filter(|h| h.sent > 0 && h.ttl <= max_display_ttl)
+                {
+                    if let Some(stats) = hop.primary_stats() {
+                        // Host length + room for indicators
+                        let host_len = stats
+                            .hostname
+                            .as_ref()
+                            .map(|h| h.chars().count())
+                            .unwrap_or_else(|| stats.ip.to_string().len())
+                            + 4; // space for " !~^"
+                        max_host = max_host.max(host_len);
+
+                        // ASN name length
+                        if let Some(ref asn) = stats.asn {
+                            max_asn = max_asn.max(asn.name.chars().count());
+                        }
+                    }
+                }
+
+                ColumnWidths {
+                    host: (max_host as u16).clamp(MIN_HOST, MAX_HOST_WIDTH),
+                    asn: (max_asn as u16).clamp(MIN_ASN, MAX_ASN_WIDTH),
+                }
+            }
+        }
     }
 }
 
@@ -221,6 +284,7 @@ impl Widget for MainView<'_> {
 
         // Build rows - only show hops up to the destination
         let max_display_ttl = self.session.dest_ttl.unwrap_or(self.session.config.max_ttl);
+        let col_widths = self.compute_column_widths(max_display_ttl);
         let rows: Vec<Row> = self
             .session
             .hops
@@ -237,8 +301,8 @@ impl Widget for MainView<'_> {
                         stats.ip.to_string()
                     };
                     let asn = if let Some(ref asn_info) = stats.asn {
-                        // Wide mode allows longer ASN names (column is Min(16) vs Length(13))
-                        let asn_max_len = if self.wide_mode { 22 } else { 12 };
+                        // Use computed ASN width (minus 1 for padding)
+                        let asn_max_len = (col_widths.asn as usize).saturating_sub(1);
                         truncate_with_ellipsis(&asn_info.name, asn_max_len)
                     } else {
                         String::new()
@@ -266,16 +330,8 @@ impl Widget for MainView<'_> {
                     } else {
                         format!(" {}", ind)
                     };
-                    // Truncate to leave room for indicators
-                    // IPv6 addresses need more space (up to 39 chars vs 15 for IPv4)
-                    // Wide mode allows longer hostnames (column is Min(24) vs Min(16))
-                    let base_len: usize = match (self.wide_mode, stats.ip.is_ipv6()) {
-                        (true, true) => 50,
-                        (true, false) => 36,
-                        (false, true) => 42,
-                        (false, false) => 28,
-                    };
-                    let max_len = base_len.saturating_sub(indicators.len());
+                    // Use computed host width for truncation
+                    let max_len = (col_widths.host as usize).saturating_sub(indicators.len());
                     let truncated = truncate_with_ellipsis(&display, max_len);
                     (format!("{}{}", truncated, indicators), asn)
                 } else if hop.received == 0 {
@@ -393,34 +449,19 @@ impl Widget for MainView<'_> {
             })
             .collect();
 
-        // Build column widths - conditional on multi-flow mode and wide mode
-        let mut widths: Vec<Constraint> = if self.wide_mode {
-            vec![
-                Constraint::Length(3), // #
-                Constraint::Min(24),   // Host (expanded)
-                Constraint::Min(16),   // ASN (expanded)
-                Constraint::Length(7), // Loss%
-                Constraint::Length(5), // Sent
-                Constraint::Length(7), // Avg
-                Constraint::Length(7), // Min
-                Constraint::Length(7), // Max
-                Constraint::Length(7), // StdDev
-                Constraint::Length(7), // Jitter
-            ]
-        } else {
-            vec![
-                Constraint::Length(3),  // #
-                Constraint::Min(16),    // Host
-                Constraint::Length(13), // ASN
-                Constraint::Length(7),  // Loss%
-                Constraint::Length(5),  // Sent
-                Constraint::Length(7),  // Avg
-                Constraint::Length(7),  // Min
-                Constraint::Length(7),  // Max
-                Constraint::Length(7),  // StdDev
-                Constraint::Length(7),  // Jitter
-            ]
-        };
+        // Build column widths - use computed widths from display mode
+        let mut widths: Vec<Constraint> = vec![
+            Constraint::Length(3),                  // #
+            Constraint::Min(col_widths.host),       // Host (dynamic)
+            Constraint::Length(col_widths.asn + 1), // ASN (dynamic, +1 for padding)
+            Constraint::Length(7),                  // Loss%
+            Constraint::Length(5),                  // Sent
+            Constraint::Length(7),                  // Avg
+            Constraint::Length(7),                  // Min
+            Constraint::Length(7),                  // Max
+            Constraint::Length(7),                  // StdDev
+            Constraint::Length(7),                  // Jitter
+        ];
         if multi_flow {
             widths.push(Constraint::Length(4)); // NAT
             widths.push(Constraint::Length(6)); // Paths

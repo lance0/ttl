@@ -19,21 +19,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Shows IP address, hostname, hop count, and loss percentage for each target
   - Navigate with Up/Down or j/k, select with Enter, jump with 1-9
   - Only available when multiple targets are being traced
-- **Settings modal** (`s` key): Configure theme, wide mode, and PeeringDB API key
+- **Settings modal** (`s` key): Configure theme, display mode, and PeeringDB API key
   - Live preview of theme changes
-  - Wide mode toggle for expanded columns on wide terminals
+  - Display mode selector (auto/compact/wide) for column widths
   - PeeringDB API key input with text editing support
   - Cache status display (prefix count, age, expiry indicator)
   - Press `r` in PeeringDB section to refresh cache
   - Settings persist to config file on exit
 - **PeeringDB API key persistence**: API key saved to `~/.config/ttl/config.toml`
   - Environment variable `PEERINGDB_API_KEY` still takes precedence over saved key
-- **Wide mode CLI flag** (`--wide`): Start with wide mode enabled from command line
-- **Wide mode persistence**: Wide mode setting now saved to `~/.config/ttl/config.toml`
+- **Wide mode CLI flag** (`--wide`): Start with wide (generous column widths) mode
+- **Autosize columns** (`w` key): Intelligent column width control
+  - **Auto mode** (default): Columns auto-fit to longest hostname/ASN content
+  - **Compact mode**: Minimal column widths (host: 20, ASN: 12)
+  - **Wide mode**: Generous column widths (host: 45, ASN: 24)
+  - Press `w` to cycle: auto → compact → wide → auto
+  - Long hostnames like `po-300-xar01.alexandria.va.bad.comcast.net` display fully in auto mode
+  - Maximum caps prevent layout blowout (host: 60 chars, ASN: 30 chars)
+  - Display mode persisted to `~/.config/ttl/config.toml`
 
 ### Changed
 - Status bar shows `l list` hint when multiple targets are available
-- Help overlay updated with `s` (Settings) and `l` (Target list) keybindings
+- Status bar shows `w display` hint for cycling display modes
+- Help overlay updated with `s` (Settings), `l` (Target list), and `w` (Display mode) keybindings
+- Settings modal now shows "Display Mode" selector instead of "Wide Mode" toggle
 
 ### Fixed
 - **macOS: Probes sent with wrong TTL in initial burst** (#12)
