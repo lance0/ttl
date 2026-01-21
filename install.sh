@@ -24,7 +24,7 @@ case "$OS" in
     case "$ARCH" in
       arm64)   TARGET="aarch64-apple-darwin" ;;
       aarch64) TARGET="aarch64-apple-darwin" ;;
-      x86_64)  echo "Intel Mac not supported. Use: cargo install ttl"; exit 1 ;;
+      x86_64)  TARGET="x86_64-apple-darwin" ;;
       *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
     esac
     ;;
