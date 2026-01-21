@@ -532,6 +532,7 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_ui(
     f: &mut ratatui::Frame,
     session: &Session,
