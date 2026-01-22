@@ -74,8 +74,8 @@ impl ProbeEngine {
             // macOS requires a minimum delay between probes to ensure
             // setsockopt(IP_TTL) takes effect before each send().
             // Without this, rapid probe bursts all get sent with the same TTL.
-            // 200µs is enough for the kernel to process the sockopt change.
-            tokio::time::sleep(Duration::from_micros(200)).await;
+            // 500µs provides sufficient margin for the kernel to process the sockopt change.
+            tokio::time::sleep(Duration::from_micros(500)).await;
         }
     }
 
