@@ -43,26 +43,27 @@ pub fn analyze_rate_limiting(session: &mut Session) {
             if let Some(new_info) = info {
                 // Detection matched: reset negative checks and update info
                 hop.rate_limit = Some(new_info);
-            } else if hop.rate_limit.is_some() {
-                // Heuristics didn't match - increment negative check counter
+            } else {
+                // Heuristics didn't match - increment negative check counter if RL was detected
                 // Calculate values before mutable borrow
                 let completed = hop.received + hop.timeouts;
                 let hop_loss = hop.loss_pct();
-                let downstream_high = downstream_loss.map(|dl| dl >= 10.0).unwrap_or(false);
+                let downstream_high = downstream_loss.is_some_and(|dl| dl >= 10.0);
 
-                let existing = hop.rate_limit.as_mut().unwrap();
-                existing.negative_checks = existing.negative_checks.saturating_add(1);
+                if let Some(existing) = &mut hop.rate_limit {
+                    existing.negative_checks = existing.negative_checks.saturating_add(1);
 
-                // Clear RL when:
-                // 1. After 2 negatives AND (loss < 5% OR downstream >= 10%), OR
-                // 2. After 5 negatives regardless (signal is gone if heuristics stop matching)
-                let quick_clear = existing.negative_checks >= 2
-                    && completed > 20
-                    && (hop_loss < 5.0 || downstream_high);
-                let force_clear = existing.negative_checks >= 5 && completed > 20;
+                    // Clear RL when:
+                    // 1. After 2 negatives AND (loss < 5% OR downstream >= 10%), OR
+                    // 2. After 5 negatives regardless (signal is gone if heuristics stop matching)
+                    let quick_clear = existing.negative_checks >= 2
+                        && completed > 20
+                        && (hop_loss < 5.0 || downstream_high);
+                    let force_clear = existing.negative_checks >= 5 && completed > 20;
 
-                if quick_clear || force_clear {
-                    hop.rate_limit = None;
+                    if quick_clear || force_clear {
+                        hop.rate_limit = None;
+                    }
                 }
             }
         }
