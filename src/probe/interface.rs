@@ -8,6 +8,51 @@ use anyhow::{Result, anyhow};
 use pnet::datalink;
 use socket2::Socket;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::process::Command;
+use std::time::Duration;
+
+/// Run a command with a timeout, returning None if it times out or fails.
+/// This prevents hangs on systems with very large routing tables (e.g., DFZ routers).
+fn run_command_with_timeout(mut cmd: Command, timeout: Duration) -> Option<String> {
+    use std::time::Instant;
+
+    let mut child = cmd.stdout(std::process::Stdio::piped()).spawn().ok()?;
+    let deadline = Instant::now() + timeout;
+
+    // Poll with try_wait until complete or timeout
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // Process finished
+                if status.success() {
+                    let output = child.stdout.take()?;
+                    use std::io::Read;
+                    let mut buf = String::new();
+                    std::io::BufReader::new(output)
+                        .read_to_string(&mut buf)
+                        .ok()?;
+                    return Some(buf);
+                }
+                return None;
+            }
+            Ok(None) => {
+                // Still running - check timeout
+                if Instant::now() >= deadline {
+                    // Timeout - kill the process
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                // Sleep briefly before polling again
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Timeout for route detection commands (2 seconds)
+const ROUTE_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Check if an IPv6 address is link-local (fe80::/10)
 ///
@@ -44,12 +89,9 @@ fn detect_gateway_ipv4(interface: &str) -> Option<Ipv4Addr> {
     {
         // Parse output of: ip route show default dev <interface>
         // Format: "default via 192.168.1.1 dev eth0 ..."
-        let output = std::process::Command::new("ip")
-            .args(["route", "show", "default", "dev", interface])
-            .output()
-            .ok()?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut cmd = Command::new("ip");
+        cmd.args(["route", "show", "default", "dev", interface]);
+        let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
         parse_linux_route_gateway(&stdout)
     }
 
@@ -57,12 +99,9 @@ fn detect_gateway_ipv4(interface: &str) -> Option<Ipv4Addr> {
     {
         // Parse output of: route -n get default
         // Then filter by interface
-        let output = std::process::Command::new("route")
-            .args(["-n", "get", "default"])
-            .output()
-            .ok()?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut cmd = Command::new("route");
+        cmd.args(["-n", "get", "default"]);
+        let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
         parse_macos_route_gateway(&stdout, interface)
     }
 
@@ -79,24 +118,18 @@ fn detect_gateway_ipv6(interface: &str) -> Option<Ipv6Addr> {
     {
         // Parse output of: ip -6 route show default dev <interface>
         // Format: "default via fe80::1 dev eth0 ..."
-        let output = std::process::Command::new("ip")
-            .args(["-6", "route", "show", "default", "dev", interface])
-            .output()
-            .ok()?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut cmd = Command::new("ip");
+        cmd.args(["-6", "route", "show", "default", "dev", interface]);
+        let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
         parse_linux_route_gateway_v6(&stdout)
     }
 
     #[cfg(target_os = "macos")]
     {
         // Parse output of: route -n get -inet6 default
-        let output = std::process::Command::new("route")
-            .args(["-n", "get", "-inet6", "default"])
-            .output()
-            .ok()?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut cmd = Command::new("route");
+        cmd.args(["-n", "get", "-inet6", "default"]);
+        let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
         parse_macos_route_gateway_v6(&stdout, interface)
     }
 
@@ -203,18 +236,14 @@ pub fn detect_default_gateway(ipv6: bool) -> Option<IpAddr> {
     #[cfg(target_os = "linux")]
     {
         if ipv6 {
-            let output = std::process::Command::new("ip")
-                .args(["-6", "route", "show", "default"])
-                .output()
-                .ok()?;
-            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut cmd = Command::new("ip");
+            cmd.args(["-6", "route", "show", "default"]);
+            let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
             parse_linux_route_gateway_v6(&stdout).map(IpAddr::V6)
         } else {
-            let output = std::process::Command::new("ip")
-                .args(["route", "show", "default"])
-                .output()
-                .ok()?;
-            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut cmd = Command::new("ip");
+            cmd.args(["route", "show", "default"]);
+            let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
             parse_linux_route_gateway(&stdout).map(IpAddr::V4)
         }
     }
@@ -222,11 +251,9 @@ pub fn detect_default_gateway(ipv6: bool) -> Option<IpAddr> {
     #[cfg(target_os = "macos")]
     {
         if ipv6 {
-            let output = std::process::Command::new("route")
-                .args(["-n", "get", "-inet6", "default"])
-                .output()
-                .ok()?;
-            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut cmd = Command::new("route");
+            cmd.args(["-n", "get", "-inet6", "default"]);
+            let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
             // For default gateway without interface filter, just extract gateway
             for line in stdout.lines() {
                 let line = line.trim();
@@ -239,11 +266,9 @@ pub fn detect_default_gateway(ipv6: bool) -> Option<IpAddr> {
             }
             None
         } else {
-            let output = std::process::Command::new("route")
-                .args(["-n", "get", "default"])
-                .output()
-                .ok()?;
-            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut cmd = Command::new("route");
+            cmd.args(["-n", "get", "default"]);
+            let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
             for line in stdout.lines() {
                 let line = line.trim();
                 if let Some(rest) = line.strip_prefix("gateway:") {

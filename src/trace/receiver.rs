@@ -273,40 +273,49 @@ impl Receiver {
                     // Look up the session for this target
                     if let Some(session) = sessions.get(&resp.target) {
                         let mut state = session.write();
-                        if let Some(hop) = state.hop_mut(resp.probe_id.ttl) {
-                            // Record aggregate stats with optional flap detection
-                            // Only detect flaps in single-flow mode (multi-flow expects path changes)
-                            if self.config.num_flows == 1 {
-                                hop.record_response_detecting_flaps(
-                                    resp.responder,
-                                    resp.rtt,
-                                    resp.mpls_labels,
-                                );
-                            } else {
-                                hop.record_response_with_mpls(
-                                    resp.responder,
-                                    resp.rtt,
-                                    resp.mpls_labels,
-                                );
-                            }
-                            // Record per-flow stats for Paris/Dublin traceroute ECMP detection
-                            hop.record_flow_response(resp.flow_id, resp.responder, resp.rtt);
-                            // Record NAT detection result (compare sent vs returned source port)
-                            hop.record_nat_check(resp.original_src_port, resp.returned_src_port);
-                            // Asymmetric routing detection (single-flow mode only, like flap detection)
-                            if self.config.num_flows == 1
-                                && let Some(ttl) = resp.response_ttl
-                            {
-                                hop.record_response_ttl(ttl, self.config.ipv6);
-                            }
+                        let is_pmtud_probe = resp.packet_size.is_some();
 
-                            // TTL manipulation detection (TimeExceeded code 0 only, all flow modes)
-                            // Code 0 = TTL exceeded in transit, Code 1 = fragment reassembly exceeded
-                            // Only code 0 is relevant for TTL manipulation - code 1 can have quoted TTL > 1
-                            if matches!(resp.response_type, IcmpResponseType::TimeExceeded(0))
-                                && let Some(quoted) = resp.quoted_ttl
-                            {
-                                hop.record_ttl_manip_check(quoted);
+                        // Only record hop stats for normal probes, not PMTUD probes
+                        // PMTUD probes are for MTU discovery, not traceroute measurements
+                        if !is_pmtud_probe {
+                            if let Some(hop) = state.hop_mut(resp.probe_id.ttl) {
+                                // Record aggregate stats with optional flap detection
+                                // Only detect flaps in single-flow mode (multi-flow expects path changes)
+                                if self.config.num_flows == 1 {
+                                    hop.record_response_detecting_flaps(
+                                        resp.responder,
+                                        resp.rtt,
+                                        resp.mpls_labels.clone(),
+                                    );
+                                } else {
+                                    hop.record_response_with_mpls(
+                                        resp.responder,
+                                        resp.rtt,
+                                        resp.mpls_labels.clone(),
+                                    );
+                                }
+                                // Record per-flow stats for Paris/Dublin traceroute ECMP detection
+                                hop.record_flow_response(resp.flow_id, resp.responder, resp.rtt);
+                                // Record NAT detection result (compare sent vs returned source port)
+                                hop.record_nat_check(
+                                    resp.original_src_port,
+                                    resp.returned_src_port,
+                                );
+                                // Asymmetric routing detection (single-flow mode only, like flap detection)
+                                if self.config.num_flows == 1
+                                    && let Some(ttl) = resp.response_ttl
+                                {
+                                    hop.record_response_ttl(ttl, self.config.ipv6);
+                                }
+
+                                // TTL manipulation detection (TimeExceeded code 0 only, all flow modes)
+                                // Code 0 = TTL exceeded in transit, Code 1 = fragment reassembly exceeded
+                                // Only code 0 is relevant for TTL manipulation - code 1 can have quoted TTL > 1
+                                if matches!(resp.response_type, IcmpResponseType::TimeExceeded(0))
+                                    && let Some(quoted) = resp.quoted_ttl
+                                {
+                                    hop.record_ttl_manip_check(quoted);
+                                }
                             }
                         }
 
@@ -363,12 +372,17 @@ impl Receiver {
                 // Key is (ProbeId, flow_id, target, is_pmtud) tuple
                 pending.retain(|(probe_id, _flow_id, target, _is_pmtud), probe| {
                     if now.duration_since(probe.sent_at) > timeout {
-                        // Record timeout (both hop-level and flow-level)
+                        let is_pmtud_probe = probe.packet_size.is_some();
+
                         if let Some(session) = sessions.get(target) {
                             let mut state = session.write();
-                            if let Some(hop) = state.hop_mut(probe_id.ttl) {
-                                hop.record_timeout();
-                                hop.record_flow_timeout(probe.flow_id);
+
+                            // Only record hop timeouts for normal probes, not PMTUD probes
+                            if !is_pmtud_probe {
+                                if let Some(hop) = state.hop_mut(probe_id.ttl) {
+                                    hop.record_timeout();
+                                    hop.record_flow_timeout(probe.flow_id);
+                                }
                             }
 
                             // PMTUD: Record failure for timed out PMTUD probes

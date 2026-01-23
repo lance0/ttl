@@ -33,6 +33,14 @@ impl<'a> TargetListView<'a> {
     }
 }
 
+/// Pre-extracted target info to avoid holding locks during render
+struct TargetInfo {
+    ip: IpAddr,
+    hostname: String,
+    hops_str: String,
+    loss_str: String,
+}
+
 impl Widget for TargetListView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Calculate centered popup area
@@ -54,56 +62,71 @@ impl Widget for TargetListView<'_> {
         let inner = block.inner(popup_area);
         block.render(popup_area, buf);
 
-        let sessions_read = self.sessions.read();
+        // Extract all target info while holding the lock briefly, then release
+        let target_infos: Vec<TargetInfo> = {
+            let sessions_read = self.sessions.read();
+            self.targets
+                .iter()
+                .map(|target_ip| {
+                    let (hostname, hops_str, loss_str) =
+                        if let Some(state) = sessions_read.get(target_ip) {
+                            let session = state.read();
 
+                            // Get display name (hostname or original input)
+                            let display_name = session.target.display_name();
+                            let hostname = if display_name.parse::<IpAddr>().is_ok() {
+                                // Original was an IP, use reverse DNS hostname if available
+                                session.target.hostname.clone().unwrap_or_default()
+                            } else {
+                                display_name
+                            };
+
+                            // Get hop count (dest_ttl if known)
+                            let hops = if let Some(dest_ttl) = session.dest_ttl {
+                                format!("{} hops", dest_ttl)
+                            } else {
+                                "--".to_string()
+                            };
+
+                            // Get loss % at destination
+                            let loss = if let Some(dest_ttl) = session.dest_ttl {
+                                if let Some(hop) = session.hops.get(dest_ttl as usize - 1) {
+                                    format!("{:.1}%", hop.loss_pct())
+                                } else {
+                                    "--".to_string()
+                                }
+                            } else {
+                                "--".to_string()
+                            };
+
+                            (hostname, hops, loss)
+                        } else {
+                            (String::new(), "--".to_string(), "--".to_string())
+                        };
+
+                    TargetInfo {
+                        ip: *target_ip,
+                        hostname,
+                        hops_str,
+                        loss_str,
+                    }
+                })
+                .collect()
+        }; // Lock released here
+
+        // Now render with owned data - no locks held
         let mut lines = Vec::new();
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
-            format!("  Resolved {} addresses:", self.targets.len()),
+            format!("  Resolved {} addresses:", target_infos.len()),
             Style::default().fg(self.theme.header),
         )]));
         lines.push(Line::from(""));
 
-        // Build target list
-        for (i, target_ip) in self.targets.iter().enumerate() {
+        // Build target list from pre-extracted data
+        for (i, info) in target_infos.iter().enumerate() {
             let is_selected = i == self.selected_index;
             let marker = if is_selected { ">" } else { " " };
-
-            // Get session stats
-            let (hostname, hops_str, loss_str) = if let Some(state) = sessions_read.get(target_ip) {
-                let session = state.read();
-
-                // Get display name (hostname or original input)
-                let display_name = session.target.display_name();
-                let hostname = if display_name.parse::<IpAddr>().is_ok() {
-                    // Original was an IP, use reverse DNS hostname if available
-                    session.target.hostname.clone().unwrap_or_default()
-                } else {
-                    display_name
-                };
-
-                // Get hop count (dest_ttl if known)
-                let hops = if let Some(dest_ttl) = session.dest_ttl {
-                    format!("{} hops", dest_ttl)
-                } else {
-                    "--".to_string()
-                };
-
-                // Get loss % at destination
-                let loss = if let Some(dest_ttl) = session.dest_ttl {
-                    if let Some(hop) = session.hops.get(dest_ttl as usize - 1) {
-                        format!("{:.1}%", hop.loss_pct())
-                    } else {
-                        "--".to_string()
-                    }
-                } else {
-                    "--".to_string()
-                };
-
-                (hostname, hops, loss)
-            } else {
-                (String::new(), "--".to_string(), "--".to_string())
-            };
 
             let style = if is_selected {
                 Style::default()
@@ -114,10 +137,10 @@ impl Widget for TargetListView<'_> {
             };
 
             // Truncate hostname to fit
-            let hostname_display = if hostname.len() > 18 {
-                format!("{}...", &hostname[..15])
+            let hostname_display = if info.hostname.len() > 18 {
+                format!("{}...", &info.hostname[..15])
             } else {
-                hostname
+                info.hostname.clone()
             };
 
             lines.push(Line::from(vec![Span::styled(
@@ -125,10 +148,10 @@ impl Widget for TargetListView<'_> {
                     "  {} {:2}. {:17} {:18} {:8} {:>5}",
                     marker,
                     i + 1,
-                    target_ip,
+                    info.ip,
                     hostname_display,
-                    hops_str,
-                    loss_str
+                    info.hops_str,
+                    info.loss_str
                 ),
                 style,
             )]));

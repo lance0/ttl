@@ -700,11 +700,9 @@ impl ProbeEngine {
         // Send the probe
         match send_icmp(socket, &packet, self.target) {
             Ok(_) => {
-                // Record probe sent
+                // Don't increment hop.sent for PMTUD probes - they're for MTU discovery,
+                // not traceroute measurements. Only increment total_sent for diagnostics.
                 let mut state = self.state.write();
-                if let Some(hop) = state.hop_mut(dest_ttl) {
-                    hop.record_sent();
-                }
                 state.total_sent += 1;
                 true
             }
@@ -794,16 +792,21 @@ impl ProbeEngine {
 
                     if let Some(probe) = probe_opt {
                         let rtt = Instant::now().duration_since(probe.sent_at);
+                        let is_pmtud_probe = probe.packet_size.is_some();
 
                         // Update state with parity to receiver behavior
                         let mut state = self.state.write();
-                        if let Some(hop) = state.hop_mut(parsed.probe_id.ttl) {
-                            // Use flap-detecting record for single-flow mode (ICMP is always single-flow)
-                            hop.record_response_detecting_flaps(parsed.responder, rtt, None);
-                            hop.record_flow_response(flow_id, parsed.responder, rtt);
-                            // Record response TTL for asymmetry detection
-                            if let Some(response_ttl) = recv_result.response_ttl {
-                                hop.record_response_ttl(response_ttl, true);
+
+                        // Only record hop stats for normal probes, not PMTUD probes
+                        if !is_pmtud_probe {
+                            if let Some(hop) = state.hop_mut(parsed.probe_id.ttl) {
+                                // Use flap-detecting record for single-flow mode (ICMP is always single-flow)
+                                hop.record_response_detecting_flaps(parsed.responder, rtt, None);
+                                hop.record_flow_response(flow_id, parsed.responder, rtt);
+                                // Record response TTL for asymmetry detection
+                                if let Some(response_ttl) = recv_result.response_ttl {
+                                    hop.record_response_ttl(response_ttl, true);
+                                }
                             }
                         }
 
