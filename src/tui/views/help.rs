@@ -30,7 +30,7 @@ impl Widget for HelpView<'_> {
         Clear.render(popup_area, buf);
 
         let block = Block::default()
-            .title(" Help ")
+            .title(format!(" Help — ttl {} ", env!("CARGO_PKG_VERSION")))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(self.theme.border));
 

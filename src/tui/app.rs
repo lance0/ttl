@@ -319,7 +319,34 @@ where
             }
 
             if ui_state.show_hop_detail {
+                // Get hop count for bounds checking
+                let hop_count = {
+                    let sessions_read = sessions.read();
+                    let current_target = targets[ui_state.selected_target];
+                    sessions_read
+                        .get(&current_target)
+                        .map(|state| {
+                            let session = state.read();
+                            session.hops.iter().filter(|h| h.sent > 0).count()
+                        })
+                        .unwrap_or(0)
+                };
+
                 match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if let Some(sel) = ui_state.selected {
+                            ui_state.selected = Some(sel.saturating_sub(1));
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if let Some(sel) = ui_state.selected {
+                            ui_state.selected = Some((sel + 1).min(hop_count.saturating_sub(1)));
+                        }
+                    }
+                    KeyCode::Char(c @ '1'..='9') => {
+                        let idx = (c as usize - '1' as usize).min(hop_count.saturating_sub(1));
+                        ui_state.selected = Some(idx);
+                    }
                     KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
                         ui_state.show_hop_detail = false;
                     }

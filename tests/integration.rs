@@ -372,7 +372,7 @@ fn test_pmtud_ipv6_min_size() {
 
 #[test]
 fn test_pmtud_frag_needed_below_min() {
-    // Test that record_frag_needed clamps to reported MTU even if below typical min
+    // Test that record_frag_needed trusts ICMP-reported MTU per RFC 1191
     let mut pmtud = PmtudState::new(false); // IPv4
     pmtud.start_search();
 
@@ -382,12 +382,9 @@ fn test_pmtud_frag_needed_below_min() {
     // max_size should be clamped to 576
     assert_eq!(pmtud.max_size, 576);
 
-    // min_size stays at 68 (IPv4 absolute minimum)
-    assert_eq!(pmtud.min_size, 68);
-
-    // Binary search should continue in valid range
-    assert!(pmtud.current_size <= 576);
-    assert!(pmtud.current_size >= 68);
+    // Per RFC 1191, router-reported MTU is trusted directly - complete immediately
+    assert_eq!(pmtud.phase, PmtudPhase::Complete);
+    assert_eq!(pmtud.discovered_mtu, Some(576));
 }
 
 #[test]
@@ -768,10 +765,11 @@ fn test_session_json_file_roundtrip() {
     assert_eq!(loaded.hop(2).unwrap().timeouts, 1);
     assert_eq!(loaded.hop(3).unwrap().primary, Some(target));
 
-    // Verify PMTUD state
+    // Verify PMTUD state - with RFC 1191 behavior, record_frag_needed completes immediately
     assert!(loaded.pmtud.is_some());
     let pmtud = loaded.pmtud.as_ref().unwrap();
-    assert_eq!(pmtud.phase, PmtudPhase::Searching);
+    assert_eq!(pmtud.phase, PmtudPhase::Complete);
+    assert_eq!(pmtud.discovered_mtu, Some(1400));
     assert!(pmtud.max_size <= 1400);
 
     // Cleanup

@@ -548,7 +548,7 @@ impl Widget for HopDetailView<'_> {
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
-            "  [Esc/Enter/q] back",
+            "  [↑/↓] navigate  [1-9] jump  [Esc/q] back",
             Style::default().fg(self.theme.text_dim),
         )]));
 

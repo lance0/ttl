@@ -782,13 +782,23 @@ impl PmtudState {
     }
 
     /// Record ICMP Fragmentation Needed with reported MTU
-    /// Immediately clamps max_size to the reported MTU
+    /// Per RFC 1191, the router explicitly tells us the path MTU
     pub fn record_frag_needed(&mut self, reported_mtu: u16) {
-        // Clamp immediately - no need for multiple confirmations
-        self.max_size = self.max_size.min(reported_mtu);
-        self.successes = 0;
-        self.failures = 0;
-        self.advance();
+        if reported_mtu < self.max_size {
+            // Router is telling us a lower MTU than we knew - trust it directly
+            // This is the path MTU, complete immediately
+            self.discovered_mtu = Some(reported_mtu);
+            self.phase = PmtudPhase::Complete;
+            self.max_size = reported_mtu;
+            self.min_size = self.min_size.min(reported_mtu);
+        } else {
+            // Reported MTU >= our current max (e.g., 9000 jumbo on a 1500 link)
+            // Can't trust it, continue binary search with current bounds
+            self.max_size = self.max_size.min(reported_mtu);
+            self.successes = 0;
+            self.failures = 0;
+            self.advance();
+        }
     }
 
     /// Advance to next probe size or complete if converged
