@@ -1,0 +1,95 @@
+//! Update notification support
+//!
+//! Checks GitHub releases for new versions (cached, 24h interval).
+//! Detects install method and shows appropriate update command.
+
+use update_informer::{Check, registry::GitHub};
+
+/// How ttl was installed (best guess based on binary path)
+#[derive(Debug, Clone, Copy)]
+pub enum InstallMethod {
+    Homebrew,
+    Cargo,
+    Binary, // GitHub release or unknown
+}
+
+impl InstallMethod {
+    /// Detect install method from executable path
+    pub fn detect() -> Self {
+        let exe_path = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.canonicalize().ok());
+
+        let Some(path) = exe_path else {
+            return Self::Binary;
+        };
+
+        let path_str = path.to_string_lossy();
+
+        if path_str.contains("homebrew") || path_str.contains("Cellar") {
+            Self::Homebrew
+        } else if path_str.contains(".cargo/bin") {
+            Self::Cargo
+        } else {
+            Self::Binary
+        }
+    }
+
+    /// Get the appropriate update command for this install method
+    pub fn update_command(&self) -> &'static str {
+        match self {
+            Self::Homebrew => "brew upgrade ttl",
+            Self::Cargo => "cargo install ttl",
+            Self::Binary => "download from https://github.com/lance0/ttl/releases",
+        }
+    }
+}
+
+/// Check GitHub for a newer version (cached, checks at most once per 24h)
+///
+/// Returns Some(new_version) if an update is available and the cache has expired.
+/// Returns None if no update available, check failed, or within cache interval.
+pub fn check_for_update() -> Option<String> {
+    let informer = update_informer::new(GitHub, "lance0/ttl", env!("CARGO_PKG_VERSION"));
+
+    // Returns Some(new_version) if update available and cache expired
+    informer.check_version().ok().flatten().map(|v| v.to_string())
+}
+
+/// Print update notification to stderr
+pub fn print_update_notice(new_version: &str) {
+    let method = InstallMethod::detect();
+    let current = env!("CARGO_PKG_VERSION");
+    let command = method.update_command();
+
+    // Calculate box width based on content
+    let version_line = format!(" Update available: {} → {} ", current, new_version);
+    let command_line = format!(" Run: {}", command);
+    let width = version_line.len().max(command_line.len()) + 2;
+
+    eprintln!();
+    eprintln!("\x1b[33m╭{}╮\x1b[0m", "─".repeat(width));
+    eprintln!(
+        "\x1b[33m│\x1b[0m{:^width$}\x1b[33m│\x1b[0m",
+        version_line,
+        width = width
+    );
+    eprintln!(
+        "\x1b[33m│\x1b[0m {:width$}\x1b[33m│\x1b[0m",
+        command_line,
+        width = width - 1
+    );
+    eprintln!("\x1b[33m╰{}╯\x1b[0m", "─".repeat(width));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_install_method_commands() {
+        assert_eq!(InstallMethod::Homebrew.update_command(), "brew upgrade ttl");
+        assert_eq!(InstallMethod::Cargo.update_command(), "cargo install ttl");
+        assert!(InstallMethod::Binary.update_command().contains("github.com"));
+    }
+}

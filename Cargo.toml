@@ -58,6 +58,12 @@ scopeguard = "1"
 # Config directories
 dirs = "6.0"
 
+# Update notifications
+update-informer = { version = "1", default-features = false, features = ["github", "ureq"] }
+
+# TTY detection
+is-terminal = "0.4"
+
 [dev-dependencies]
 tokio-test = "0.4"
 proptest = "1.4"

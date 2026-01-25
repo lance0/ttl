@@ -18,6 +18,7 @@ mod probe;
 mod state;
 mod trace;
 mod tui;
+mod update;
 
 use cli::Args;
 use config::Config;
@@ -40,6 +41,9 @@ use tui::app::{ResolveInfo, run_tui};
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Spawn background update check (non-blocking)
+    let update_check = std::thread::spawn(update::check_for_update);
 
     // Handle shell completion generation (before validation, doesn't need targets)
     if let Some(ref shell) = args.completions {
@@ -224,7 +228,7 @@ async fn main() -> Result<()> {
     }
 
     // Run in appropriate mode
-    if args.is_batch_mode() {
+    let result = if args.is_batch_mode() {
         run_batch_mode(
             args,
             sessions,
@@ -257,7 +261,16 @@ async fn main() -> Result<()> {
             resolve_info,
         )
         .await
+    };
+
+    // Check for update notification (only if stderr is a TTY)
+    if is_terminal::is_terminal(&std::io::stderr()) {
+        if let Ok(Some(new_version)) = update_check.join() {
+            update::print_update_notice(&new_version);
+        }
     }
+
+    result
 }
 
 /// Load a session from a JSON file
