@@ -408,17 +408,17 @@ fn resolve_targets(
         }
     }
 
-    // Filter by family: prefer IPv4, fall back to IPv6 if no IPv4
-    let has_ipv4 = order.iter().any(|ip| ip.is_ipv4());
-    let has_ipv6 = order.iter().any(|ip| ip.is_ipv6());
+    if order.is_empty() {
+        anyhow::bail!("No addresses found for hostnames");
+    }
 
     let use_ipv6 = if force_ipv6 {
         true
     } else if force_ipv4 {
         false
     } else {
-        // Prefer IPv4, fall back to IPv6
-        !has_ipv4 && has_ipv6
+        // Use IPv6, if first resolved address is IPv6
+        order[0].is_ipv6()
     };
 
     let mut targets = Vec::new();
@@ -488,11 +488,6 @@ fn resolve_target(target: &str, force_ipv4: bool, force_ipv6: bool) -> Result<Ip
             "No {} addresses found",
             if force_ipv4 { "IPv4" } else { "IPv6" }
         );
-    }
-
-    // Prefer IPv4 by default if no preference
-    if !force_ipv6 && let Some(ipv4) = filtered.iter().find(|ip| ip.is_ipv4()) {
-        return Ok(*ipv4);
     }
 
     Ok(filtered[0])
