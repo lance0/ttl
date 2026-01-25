@@ -8,51 +8,6 @@ use anyhow::{Result, anyhow};
 use pnet::datalink;
 use socket2::Socket;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::process::Command;
-use std::time::Duration;
-
-/// Run a command with a timeout, returning None if it times out or fails.
-/// This prevents hangs on systems with very large routing tables (e.g., DFZ routers).
-fn run_command_with_timeout(mut cmd: Command, timeout: Duration) -> Option<String> {
-    use std::time::Instant;
-
-    let mut child = cmd.stdout(std::process::Stdio::piped()).spawn().ok()?;
-    let deadline = Instant::now() + timeout;
-
-    // Poll with try_wait until complete or timeout
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                // Process finished
-                if status.success() {
-                    let output = child.stdout.take()?;
-                    use std::io::Read;
-                    let mut buf = String::new();
-                    std::io::BufReader::new(output)
-                        .read_to_string(&mut buf)
-                        .ok()?;
-                    return Some(buf);
-                }
-                return None;
-            }
-            Ok(None) => {
-                // Still running - check timeout
-                if Instant::now() >= deadline {
-                    // Timeout - kill the process
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                // Sleep briefly before polling again
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(_) => return None,
-        }
-    }
-}
-
-/// Timeout for route detection commands (2 seconds)
-const ROUTE_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Check if an IPv6 address is link-local (fe80::/10)
 ///
@@ -81,151 +36,31 @@ pub struct InterfaceInfo {
     pub gateway_ipv6: Option<Ipv6Addr>,
 }
 
-/// Detect the default IPv4 gateway for an interface from the routing table
+/// Detect the default IPv4 gateway for an interface using kernel APIs
 ///
-/// Returns None if gateway cannot be determined (command fails, no default route, etc.)
+/// Uses getifs which queries netlink (Linux) or sysctl (macOS) directly,
+/// avoiding subprocess calls that can hang on systems with large routing tables.
 fn detect_gateway_ipv4(interface: &str) -> Option<Ipv4Addr> {
-    #[cfg(target_os = "linux")]
-    {
-        // Parse output of: ip route show default dev <interface>
-        // Format: "default via 192.168.1.1 dev eth0 ..."
-        let mut cmd = Command::new("ip");
-        cmd.args(["route", "show", "default", "dev", interface]);
-        let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
-        parse_linux_route_gateway(&stdout)
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        // Parse output of: route -n get default
-        // Then filter by interface
-        let mut cmd = Command::new("route");
-        cmd.args(["-n", "get", "default"]);
-        let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
-        parse_macos_route_gateway(&stdout, interface)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = interface;
-        None
-    }
+    getifs::gateway_addrs()
+        .ok()?
+        .into_iter()
+        .find(|gw| gw.name().ok().as_deref() == Some(interface))
+        .and_then(|gw| match gw.addr() {
+            IpAddr::V4(v4) => Some(v4),
+            _ => None,
+        })
 }
 
-/// Detect the default IPv6 gateway for an interface from the routing table
+/// Detect the default IPv6 gateway for an interface using kernel APIs
 fn detect_gateway_ipv6(interface: &str) -> Option<Ipv6Addr> {
-    #[cfg(target_os = "linux")]
-    {
-        // Parse output of: ip -6 route show default dev <interface>
-        // Format: "default via fe80::1 dev eth0 ..."
-        let mut cmd = Command::new("ip");
-        cmd.args(["-6", "route", "show", "default", "dev", interface]);
-        let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
-        parse_linux_route_gateway_v6(&stdout)
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        // Parse output of: route -n get -inet6 default
-        let mut cmd = Command::new("route");
-        cmd.args(["-n", "get", "-inet6", "default"]);
-        let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
-        parse_macos_route_gateway_v6(&stdout, interface)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = interface;
-        None
-    }
-}
-
-/// Parse Linux `ip route show` output for gateway address
-/// Example: "default via 192.168.1.1 dev eth0 proto dhcp metric 100"
-#[cfg(target_os = "linux")]
-fn parse_linux_route_gateway(output: &str) -> Option<Ipv4Addr> {
-    for line in output.lines() {
-        if line.starts_with("default") {
-            // Look for "via <ip>" pattern
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if let Some(pos) = parts.iter().position(|&p| p == "via")
-                && let Some(ip_str) = parts.get(pos + 1)
-            {
-                return ip_str.parse().ok();
-            }
-        }
-    }
-    None
-}
-
-/// Parse Linux `ip -6 route show` output for gateway address
-#[cfg(target_os = "linux")]
-fn parse_linux_route_gateway_v6(output: &str) -> Option<Ipv6Addr> {
-    for line in output.lines() {
-        if line.starts_with("default") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if let Some(pos) = parts.iter().position(|&p| p == "via")
-                && let Some(ip_str) = parts.get(pos + 1)
-            {
-                // IPv6 gateway might have %interface suffix, strip it
-                let clean = ip_str.split('%').next().unwrap_or(ip_str);
-                return clean.parse().ok();
-            }
-        }
-    }
-    None
-}
-
-/// Parse macOS `route -n get default` output for gateway address
-/// Example output:
-///    route to: default
-/// destination: default
-///        mask: default
-///     gateway: 192.168.1.1
-///   interface: en0
-#[cfg(target_os = "macos")]
-fn parse_macos_route_gateway(output: &str, expected_interface: &str) -> Option<Ipv4Addr> {
-    let mut gateway: Option<Ipv4Addr> = None;
-    let mut interface: Option<&str> = None;
-
-    for line in output.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("gateway:") {
-            gateway = rest.trim().parse().ok();
-        } else if let Some(rest) = line.strip_prefix("interface:") {
-            interface = Some(rest.trim());
-        }
-    }
-
-    // Only return gateway if it's for the expected interface
-    if interface == Some(expected_interface) {
-        gateway
-    } else {
-        None
-    }
-}
-
-/// Parse macOS `route -n get -inet6 default` output for IPv6 gateway
-#[cfg(target_os = "macos")]
-fn parse_macos_route_gateway_v6(output: &str, expected_interface: &str) -> Option<Ipv6Addr> {
-    let mut gateway: Option<Ipv6Addr> = None;
-    let mut interface: Option<&str> = None;
-
-    for line in output.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("gateway:") {
-            let clean = rest.trim().split('%').next().unwrap_or(rest.trim());
-            gateway = clean.parse().ok();
-        } else if let Some(rest) = line.strip_prefix("interface:") {
-            interface = Some(rest.trim());
-        }
-    }
-
-    if interface == Some(expected_interface) {
-        gateway
-    } else {
-        None
-    }
+    getifs::gateway_addrs()
+        .ok()?
+        .into_iter()
+        .find(|gw| gw.name().ok().as_deref() == Some(interface))
+        .and_then(|gw| match gw.addr() {
+            IpAddr::V6(v6) => Some(v6),
+            _ => None,
+        })
 }
 
 /// Detect default gateway without specifying an interface
@@ -233,58 +68,18 @@ fn parse_macos_route_gateway_v6(output: &str, expected_interface: &str) -> Optio
 /// Useful when no --interface flag is provided but we still want to show
 /// which gateway will be used.
 pub fn detect_default_gateway(ipv6: bool) -> Option<IpAddr> {
-    #[cfg(target_os = "linux")]
-    {
-        if ipv6 {
-            let mut cmd = Command::new("ip");
-            cmd.args(["-6", "route", "show", "default"]);
-            let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
-            parse_linux_route_gateway_v6(&stdout).map(IpAddr::V6)
-        } else {
-            let mut cmd = Command::new("ip");
-            cmd.args(["route", "show", "default"]);
-            let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
-            parse_linux_route_gateway(&stdout).map(IpAddr::V4)
-        }
-    }
+    let gateways = getifs::gateway_addrs().ok()?;
 
-    #[cfg(target_os = "macos")]
-    {
-        if ipv6 {
-            let mut cmd = Command::new("route");
-            cmd.args(["-n", "get", "-inet6", "default"]);
-            let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
-            // For default gateway without interface filter, just extract gateway
-            for line in stdout.lines() {
-                let line = line.trim();
-                if let Some(rest) = line.strip_prefix("gateway:") {
-                    let clean = rest.trim().split('%').next().unwrap_or(rest.trim());
-                    if let Ok(addr) = clean.parse::<Ipv6Addr>() {
-                        return Some(IpAddr::V6(addr));
-                    }
-                }
-            }
-            None
-        } else {
-            let mut cmd = Command::new("route");
-            cmd.args(["-n", "get", "default"]);
-            let stdout = run_command_with_timeout(cmd, ROUTE_COMMAND_TIMEOUT)?;
-            for line in stdout.lines() {
-                let line = line.trim();
-                if let Some(rest) = line.strip_prefix("gateway:") {
-                    if let Ok(addr) = rest.trim().parse::<Ipv4Addr>() {
-                        return Some(IpAddr::V4(addr));
-                    }
-                }
-            }
-            None
-        }
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = ipv6;
-        None
+    if ipv6 {
+        gateways
+            .into_iter()
+            .find(|gw| gw.addr().is_ipv6())
+            .map(|gw| gw.addr())
+    } else {
+        gateways
+            .into_iter()
+            .find(|gw| gw.addr().is_ipv4())
+            .map(|gw| gw.addr())
     }
 }
 
@@ -508,59 +303,5 @@ mod tests {
 
         let above_range: Ipv6Addr = "fec0::1".parse().unwrap();
         assert!(!is_link_local_ipv6(&above_range));
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn test_parse_linux_route_gateway_ipv4() {
-        // Standard DHCP route
-        let output = "default via 192.168.1.1 dev eth0 proto dhcp src 192.168.1.100 metric 100";
-        assert_eq!(
-            parse_linux_route_gateway(output),
-            Some("192.168.1.1".parse().unwrap())
-        );
-
-        // Minimal route
-        let output = "default via 10.0.0.1 dev wlan0";
-        assert_eq!(
-            parse_linux_route_gateway(output),
-            Some("10.0.0.1".parse().unwrap())
-        );
-
-        // No default route
-        let output = "192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.100";
-        assert_eq!(parse_linux_route_gateway(output), None);
-
-        // Empty output
-        assert_eq!(parse_linux_route_gateway(""), None);
-
-        // Default without via (directly connected)
-        let output = "default dev ppp0 scope link";
-        assert_eq!(parse_linux_route_gateway(output), None);
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn test_parse_linux_route_gateway_ipv6() {
-        // Standard IPv6 default route
-        let output = "default via fe80::1 dev eth0 proto ra metric 100 pref medium";
-        assert_eq!(
-            parse_linux_route_gateway_v6(output),
-            Some("fe80::1".parse().unwrap())
-        );
-
-        // Full link-local gateway address
-        let output = "default via fe80::fe3d:73ff:fe5d:7fd2 dev eno1 proto ra metric 100";
-        assert_eq!(
-            parse_linux_route_gateway_v6(output),
-            Some("fe80::fe3d:73ff:fe5d:7fd2".parse().unwrap())
-        );
-
-        // No default route
-        let output = "2001:db8::/32 dev eth0 proto kernel metric 256";
-        assert_eq!(parse_linux_route_gateway_v6(output), None);
-
-        // Empty output
-        assert_eq!(parse_linux_route_gateway_v6(""), None);
     }
 }
