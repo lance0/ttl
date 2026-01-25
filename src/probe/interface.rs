@@ -8,6 +8,8 @@ use anyhow::{Result, anyhow};
 use pnet::datalink;
 use socket2::Socket;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::sync::OnceLock;
+use std::time::Duration;
 
 /// Check if an IPv6 address is link-local (fe80::/10)
 ///
@@ -36,29 +38,65 @@ pub struct InterfaceInfo {
     pub gateway_ipv6: Option<Ipv6Addr>,
 }
 
+/// Timeout for gateway detection (protects against large routing tables)
+const GATEWAY_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Cached gateway addresses (fetched once, reused for all targets)
+static GATEWAY_CACHE: OnceLock<Option<Vec<(u32, IpAddr, String)>>> = OnceLock::new();
+
+/// Fetch gateway addresses with timeout protection and caching
+///
+/// On systems with very large routing tables (e.g., DFZ routers with millions of routes),
+/// gateway detection could be slow. This wrapper ensures we don't hang.
+/// Gateway info is nice-to-have for display, not critical for operation.
+///
+/// Results are cached so multi-target runs only pay the cost once.
+fn fetch_gateways_with_timeout() -> Option<&'static Vec<(u32, IpAddr, String)>> {
+    GATEWAY_CACHE
+        .get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel();
+
+            std::thread::spawn(move || {
+                let result = getifs::gateway_addrs().ok().map(|gws| {
+                    gws.into_iter()
+                        .filter_map(|gw| {
+                            let name = gw.name().ok()?;
+                            Some((gw.index(), gw.addr(), name.to_string()))
+                        })
+                        .collect::<Vec<_>>()
+                });
+                // Ignore send error if receiver timed out
+                let _ = tx.send(result);
+            });
+
+            // Wait with timeout - if it takes too long, gateway info is unavailable
+            rx.recv_timeout(GATEWAY_TIMEOUT).ok().flatten()
+        })
+        .as_ref()
+}
+
 /// Detect the default IPv4 gateway for an interface using kernel APIs
 ///
 /// Uses getifs which queries netlink (Linux) or sysctl (macOS) directly,
 /// avoiding subprocess calls that can hang on systems with large routing tables.
 fn detect_gateway_ipv4(interface: &str) -> Option<Ipv4Addr> {
-    getifs::gateway_addrs()
-        .ok()?
-        .into_iter()
-        .find(|gw| gw.name().ok().as_deref() == Some(interface))
-        .and_then(|gw| match gw.addr() {
-            IpAddr::V4(v4) => Some(v4),
+    // Use cached gateway fetch
+    fetch_gateways_with_timeout()?
+        .iter()
+        .find(|(_, _, name)| name == interface)
+        .and_then(|(_, addr, _)| match addr {
+            IpAddr::V4(v4) => Some(*v4),
             _ => None,
         })
 }
 
 /// Detect the default IPv6 gateway for an interface using kernel APIs
 fn detect_gateway_ipv6(interface: &str) -> Option<Ipv6Addr> {
-    getifs::gateway_addrs()
-        .ok()?
-        .into_iter()
-        .find(|gw| gw.name().ok().as_deref() == Some(interface))
-        .and_then(|gw| match gw.addr() {
-            IpAddr::V6(v6) => Some(v6),
+    fetch_gateways_with_timeout()?
+        .iter()
+        .find(|(_, _, name)| name == interface)
+        .and_then(|(_, addr, _)| match addr {
+            IpAddr::V6(v6) => Some(*v6),
             _ => None,
         })
 }
@@ -68,18 +106,18 @@ fn detect_gateway_ipv6(interface: &str) -> Option<Ipv6Addr> {
 /// Useful when no --interface flag is provided but we still want to show
 /// which gateway will be used.
 pub fn detect_default_gateway(ipv6: bool) -> Option<IpAddr> {
-    let gateways = getifs::gateway_addrs().ok()?;
+    let gateways = fetch_gateways_with_timeout()?;
 
     if ipv6 {
         gateways
-            .into_iter()
-            .find(|gw| gw.addr().is_ipv6())
-            .map(|gw| gw.addr())
+            .iter()
+            .find(|(_, addr, _)| addr.is_ipv6())
+            .map(|(_, addr, _)| *addr)
     } else {
         gateways
-            .into_iter()
-            .find(|gw| gw.addr().is_ipv4())
-            .map(|gw| gw.addr())
+            .iter()
+            .find(|(_, addr, _)| addr.is_ipv4())
+            .map(|(_, addr, _)| *addr)
     }
 }
 

@@ -42,24 +42,29 @@ use tui::app::{ResolveInfo, run_tui};
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Spawn background update check (non-blocking)
-    let update_check = std::thread::spawn(update::check_for_update);
-
-    // Handle shell completion generation (before validation, doesn't need targets)
+    // Handle shell completion generation (instant, no update check needed)
     if let Some(ref shell) = args.completions {
         generate_completions(shell);
         return Ok(());
     }
 
+    // Handle replay mode (quick viewing operation, no update check)
+    if let Some(ref replay_path) = args.replay {
+        return run_replay_mode(&args, replay_path).await;
+    }
+
+    // Spawn background update check after early exits
+    // Uses channel for non-blocking result retrieval at exit
+    let (update_tx, update_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = update::check_for_update();
+        let _ = update_tx.send(result); // Ignore if receiver dropped
+    });
+
     // Validate arguments
     if let Err(e) = args.validate() {
         eprintln!("Error: {}", e);
         std::process::exit(1);
-    }
-
-    // Handle replay mode (doesn't need permissions or target resolution)
-    if let Some(ref replay_path) = args.replay {
-        return run_replay_mode(&args, replay_path).await;
     }
 
     // Check permissions early
@@ -264,8 +269,9 @@ async fn main() -> Result<()> {
     };
 
     // Check for update notification (only if stderr is a TTY)
-    if is_terminal::is_terminal(&std::io::stderr()) {
-        if let Ok(Some(new_version)) = update_check.join() {
+    // Use short timeout so we don't delay exit if check is slow
+    if is_terminal::is_terminal(std::io::stderr()) {
+        if let Ok(Some(new_version)) = update_rx.recv_timeout(Duration::from_millis(100)) {
             update::print_update_notice(&new_version);
         }
     }

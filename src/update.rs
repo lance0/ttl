@@ -53,7 +53,11 @@ pub fn check_for_update() -> Option<String> {
     let informer = update_informer::new(GitHub, "lance0/ttl", env!("CARGO_PKG_VERSION"));
 
     // Returns Some(new_version) if update available and cache expired
-    informer.check_version().ok().flatten().map(|v| v.to_string())
+    informer
+        .check_version()
+        .ok()
+        .flatten()
+        .map(|v| v.to_string())
 }
 
 /// Print update notification to stderr
@@ -62,24 +66,25 @@ pub fn print_update_notice(new_version: &str) {
     let current = env!("CARGO_PKG_VERSION");
     let command = method.update_command();
 
-    // Calculate box width based on content
-    let version_line = format!(" Update available: {} → {} ", current, new_version);
-    let command_line = format!(" Run: {}", command);
-    let width = version_line.len().max(command_line.len()) + 2;
+    // Use ASCII box drawing for reliable terminal alignment
+    // Unicode arrows and box characters have variable widths across terminals
+    let version_line = format!("Update available: {} -> {}", current, new_version);
+    let command_line = format!("Run: {}", command);
+    let width = version_line.len().max(command_line.len()) + 4;
 
     eprintln!();
-    eprintln!("\x1b[33m╭{}╮\x1b[0m", "─".repeat(width));
+    eprintln!("\x1b[33m+{}+\x1b[0m", "-".repeat(width));
     eprintln!(
-        "\x1b[33m│\x1b[0m{:^width$}\x1b[33m│\x1b[0m",
+        "\x1b[33m|\x1b[0m  {:<width$}\x1b[33m|\x1b[0m",
         version_line,
-        width = width
+        width = width - 2
     );
     eprintln!(
-        "\x1b[33m│\x1b[0m {:width$}\x1b[33m│\x1b[0m",
+        "\x1b[33m|\x1b[0m  {:<width$}\x1b[33m|\x1b[0m",
         command_line,
-        width = width - 1
+        width = width - 2
     );
-    eprintln!("\x1b[33m╰{}╯\x1b[0m", "─".repeat(width));
+    eprintln!("\x1b[33m+{}+\x1b[0m", "-".repeat(width));
 }
 
 #[cfg(test)]
@@ -90,6 +95,10 @@ mod tests {
     fn test_install_method_commands() {
         assert_eq!(InstallMethod::Homebrew.update_command(), "brew upgrade ttl");
         assert_eq!(InstallMethod::Cargo.update_command(), "cargo install ttl");
-        assert!(InstallMethod::Binary.update_command().contains("github.com"));
+        assert!(
+            InstallMethod::Binary
+                .update_command()
+                .contains("github.com")
+        );
     }
 }
