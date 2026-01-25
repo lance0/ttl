@@ -92,7 +92,7 @@ Trace all IP addresses that a hostname resolves to. Useful for:
 
 1. Resolves all A/AAAA records for each hostname
 2. Deduplicates by IP (merges hostnames that resolve to the same IP)
-3. Filters by IP family (prefers IPv4, falls back to IPv6 if none)
+3. Filters by IP family (uses IP family of the first resolved address)
 4. Shows skip count in status (e.g., "3 IPv6 skipped")
 
 ### Display Format
