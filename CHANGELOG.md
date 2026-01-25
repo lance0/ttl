@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-01-25
+
+### Added
+- **Update notifications**: Checks GitHub releases for new versions (daily, cached). Shows install-method-aware update command on exit when a new version is available. Only displays on TTY.
+
+### Changed
+- **Gateway detection via kernel APIs**: Replaced subprocess-based route detection with direct kernel API calls (netlink on Linux, sysctl on macOS). Instant startup even on DFZ routers with millions of routes (#16)
+
+### Fixed
+- **DFZ router startup hang**: Gateway detection no longer shells out to `ip route` which could hang on systems with large routing tables (#16)
+
 ## [0.13.4] - 2026-01-24
 
 ### Added
