@@ -462,6 +462,35 @@ pub struct RouteChange {
     pub at_seq: u64,
 }
 
+/// A recorded probe event for replay animation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeEvent {
+    /// Milliseconds since session start
+    pub offset_ms: u64,
+    /// TTL of the probe
+    pub ttl: u8,
+    /// Probe outcome
+    #[serde(flatten)]
+    pub outcome: ProbeOutcome,
+}
+
+/// Outcome of a probe (reply or timeout)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ProbeOutcome {
+    /// Received a reply from a hop
+    #[serde(rename = "reply")]
+    Reply {
+        /// IP address of the responder
+        addr: IpAddr,
+        /// Round-trip time in microseconds
+        rtt_us: u64,
+    },
+    /// Probe timed out with no response
+    #[serde(rename = "timeout")]
+    Timeout,
+}
+
 /// Asymmetric routing detection information for a hop
 ///
 /// Detects when the return path (from router back to us) differs from the
@@ -1194,6 +1223,9 @@ pub struct Session {
     /// Default gateway IP (for display in TUI)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<IpAddr>,
+    /// Recorded probe events for animated replay
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<ProbeEvent>,
 }
 
 impl Session {
@@ -1223,6 +1255,7 @@ impl Session {
             pmtud,
             source_ip: None,
             gateway: None,
+            events: Vec::new(),
         }
     }
 
@@ -1268,6 +1301,9 @@ impl Session {
             self.pmtud = Some(PmtudState::new(self.target.resolved.is_ipv6()));
         }
 
+        // Clear recorded events
+        self.events.clear();
+
         for hop in &mut self.hops {
             hop.sent = 0;
             hop.received = 0;
@@ -1294,6 +1330,11 @@ impl Session {
     #[allow(dead_code)]
     pub fn first_nat_hop(&self) -> Option<u8> {
         self.hops.iter().find(|h| h.has_nat()).map(|h| h.ttl)
+    }
+
+    /// Record a probe event for animated replay
+    pub fn record_event(&mut self, event: ProbeEvent) {
+        self.events.push(event);
     }
 }
 

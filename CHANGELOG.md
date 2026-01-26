@@ -7,10 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Animated replay mode**: `--replay <file> --animate` replays saved sessions showing probe-by-probe discovery instead of final state (#9)
+- **Probe event recording**: Sessions now record per-probe events (TTL, responder, RTT) for replay animation
+- **Replay controls**: Press Space to pause/resume animated replay
+
 ### Fixed
 - **FreeBSD build failure**: Fix `cargo install ttl` on FreeBSD by making `getifs` dependency conditional. Gateway detection unavailable on FreeBSD (uses macOS-specific APIs).
 
 ### Changed
+- **TUI refresh rate**: Increased from 10fps to 60fps for more responsive per-probe updates (#17)
 - **CI**: Added FreeBSD 14.2 build testing via vmactions/freebsd-vm
 
 ## [0.14.2] - 2026-01-26

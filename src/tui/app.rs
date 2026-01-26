@@ -20,12 +20,41 @@ use tokio_util::sync::CancellationToken;
 use crate::export::export_json_file;
 use crate::lookup::ix::IxLookup;
 use crate::prefs::{DisplayMode, Prefs};
-use crate::state::Session;
+use crate::state::{ProbeEvent, ProbeOutcome, Session};
 use crate::trace::receiver::SessionMap;
 use crate::tui::theme::Theme;
 use crate::tui::views::{
     HelpView, HopDetailView, MainView, SettingsState, SettingsView, TargetListView,
 };
+
+/// State for animated replay playback
+pub struct ReplayState {
+    /// All events to replay
+    pub events: Vec<ProbeEvent>,
+    /// Current event index
+    pub current_index: usize,
+    /// Last event time for pacing
+    pub last_event_time: std::time::Instant,
+    /// Delay between events (ms)
+    pub event_delay_ms: u64,
+    /// Whether replay is paused
+    pub paused: bool,
+    /// Whether replay is complete
+    pub finished: bool,
+}
+
+impl ReplayState {
+    pub fn new(events: Vec<ProbeEvent>, delay_ms: u64) -> Self {
+        Self {
+            events,
+            current_index: 0,
+            last_event_time: std::time::Instant::now(),
+            event_delay_ms: delay_ms,
+            paused: false,
+            finished: false,
+        }
+    }
+}
 
 /// Information about skipped IPs during resolution
 #[derive(Clone, Default)]
@@ -63,6 +92,8 @@ pub struct UiState {
     pub target_list_index: usize,
     /// Update available notification (version string)
     pub update_available: Option<String>,
+    /// Replay animation state (None = live mode or static replay)
+    pub replay_state: Option<ReplayState>,
 }
 
 impl UiState {
@@ -88,6 +119,7 @@ pub async fn run_tui(
     resolve_info: Option<ResolveInfo>,
     ix_lookup: Option<Arc<IxLookup>>,
     update_available: Option<String>,
+    replay_state: Option<ReplayState>,
 ) -> Result<Prefs> {
     // Setup terminal
     enable_raw_mode()?;
@@ -118,9 +150,10 @@ pub async fn run_tui(
         display_mode,
         settings: SettingsState::new(initial_index, display_mode, api_key),
         update_available,
+        replay_state,
         ..Default::default()
     };
-    let tick_rate = Duration::from_millis(100);
+    let tick_rate = Duration::from_millis(16); // ~60fps for responsive per-probe updates
 
     // Show initial status if resolve_info is present and multiple targets
     if let Some(info) = resolve_info {
@@ -165,6 +198,25 @@ pub async fn run_tui(
     })
 }
 
+/// Apply a replay event to the session state
+fn apply_replay_event(session: &mut Session, event: &ProbeEvent) {
+    match &event.outcome {
+        ProbeOutcome::Reply { addr, rtt_us } => {
+            let rtt = Duration::from_micros(*rtt_us);
+            if let Some(hop) = session.hop_mut(event.ttl) {
+                hop.record_response_detecting_flaps(*addr, rtt, None);
+            }
+            session.total_sent += 1;
+        }
+        ProbeOutcome::Timeout => {
+            if let Some(hop) = session.hop_mut(event.ttl) {
+                hop.record_timeout();
+            }
+            session.total_sent += 1;
+        }
+    }
+}
+
 async fn run_app<B>(
     terminal: &mut Terminal<B>,
     sessions: SessionMap,
@@ -190,6 +242,29 @@ where
 
         // Clear old status messages
         ui_state.clear_old_status();
+
+        // Process replay animation tick
+        if let Some(ref mut replay) = ui_state.replay_state {
+            if !replay.paused && !replay.finished {
+                let now = std::time::Instant::now();
+                if now.duration_since(replay.last_event_time).as_millis() >= replay.event_delay_ms as u128 {
+                    // Apply next event
+                    if replay.current_index < replay.events.len() {
+                        let event = replay.events[replay.current_index].clone();
+                        let sessions_read = sessions.read();
+                        if let Some(session_lock) = sessions_read.get(&targets[ui_state.selected_target]) {
+                            let mut session = session_lock.write();
+                            apply_replay_event(&mut session, &event);
+                        }
+                        replay.current_index += 1;
+                        replay.last_event_time = now;
+                    } else {
+                        replay.finished = true;
+                        ui_state.set_status("Replay complete");
+                    }
+                }
+            }
+        }
 
         // Get current theme
         let theme = Theme::by_name(theme_names[ui_state.theme_index]);
@@ -560,6 +635,17 @@ where
                             Err(e) => {
                                 ui_state.set_status(format!("Export failed: {}", e));
                             }
+                        }
+                    }
+                }
+                KeyCode::Char(' ') => {
+                    // Space to pause/resume replay animation
+                    if let Some(ref mut replay) = ui_state.replay_state {
+                        replay.paused = !replay.paused;
+                        if replay.paused {
+                            ui_state.set_status("Replay paused - press Space to resume");
+                        } else {
+                            ui_state.set_status("Replay resumed");
                         }
                     }
                 }

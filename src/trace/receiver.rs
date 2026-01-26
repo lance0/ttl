@@ -10,7 +10,8 @@ use crate::probe::{
     InterfaceInfo, create_recv_socket_with_interface, get_identifier, parse_icmp_response,
     recv_icmp_with_ttl,
 };
-use crate::state::{IcmpResponseType, MplsLabel, PmtudPhase, ProbeId, Session};
+use crate::state::{IcmpResponseType, MplsLabel, PmtudPhase, ProbeEvent, ProbeId, ProbeOutcome, Session};
+use chrono::Utc;
 use crate::trace::pending::PendingMap;
 
 /// Map of target IP to session, shared across multiple engines and the receiver
@@ -317,6 +318,20 @@ impl Receiver {
                                     hop.record_ttl_manip_check(quoted);
                                 }
                             }
+
+                            // Record event for animated replay
+                            let offset_ms = Utc::now()
+                                .signed_duration_since(state.started_at)
+                                .num_milliseconds()
+                                .unsigned_abs();
+                            state.record_event(ProbeEvent {
+                                offset_ms,
+                                ttl: resp.probe_id.ttl,
+                                outcome: ProbeOutcome::Reply {
+                                    addr: resp.responder,
+                                    rtt_us: resp.rtt.as_micros() as u64,
+                                },
+                            });
                         }
 
                         // Check if we reached the destination
@@ -383,6 +398,17 @@ impl Receiver {
                                     hop.record_timeout();
                                     hop.record_flow_timeout(probe.flow_id);
                                 }
+
+                                // Record event for animated replay
+                                let offset_ms = Utc::now()
+                                    .signed_duration_since(state.started_at)
+                                    .num_milliseconds()
+                                    .unsigned_abs();
+                                state.record_event(ProbeEvent {
+                                    offset_ms,
+                                    ttl: probe_id.ttl,
+                                    outcome: ProbeOutcome::Timeout,
+                                });
                             }
 
                             // PMTUD: Record failure for timed out PMTUD probes
