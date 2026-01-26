@@ -59,3 +59,5 @@ pub(crate) mod probe;
 pub(crate) mod trace;
 #[allow(dead_code)]
 pub(crate) mod tui;
+#[allow(dead_code)]
+pub(crate) mod update;

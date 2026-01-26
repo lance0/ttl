@@ -42,6 +42,7 @@ See [Installation](#installation) below for setup instructions.
 - **MPLS label detection** from ICMP extensions
 - **ICMP, UDP, TCP probing** with auto-detection
 - **Great TUI** with themes, sparklines, and session export
+- **Update notifications** - in-app banner when new versions are available
 - **Scriptable** - JSON, CSV, and text report output
 
 See [docs/FEATURES.md](docs/FEATURES.md) for detailed documentation, including optional setup for [GeoIP](docs/FEATURES.md#geoip-location) and [IX detection](docs/FEATURES.md#ix-detection).
@@ -251,6 +252,7 @@ When a hostname resolves to multiple IPs (round-robin DNS, CDN load balancing), 
 | `s` | Settings |
 | `e` | Export JSON |
 | `?` | Help |
+| `u` | Dismiss update banner |
 | `Tab` | Next target |
 | `l` | Target list |
 | `Enter` | Expand hop |

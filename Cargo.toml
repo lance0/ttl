@@ -1,6 +1,6 @@
 [package]
 name = "ttl"
-version = "0.14.1"
+version = "0.14.2"
 edition = "2024"
 rust-version = "1.85"
 description = "Modern traceroute/mtr-style TUI with hop stats and optional ASN/geo enrichment"
@@ -59,7 +59,7 @@ scopeguard = "1"
 dirs = "6.0"
 
 # Update notifications
-update-informer = { version = "1", default-features = false, features = ["github", "ureq"] }
+update-informer = { version = "1", default-features = false, features = ["github", "ureq", "rustls-tls"] }
 
 # TTY detection
 is-terminal = "0.4"

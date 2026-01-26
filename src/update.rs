@@ -1,9 +1,9 @@
 //! Update notification support
 //!
-//! Checks GitHub releases for new versions (cached, 24h interval).
+//! Checks GitHub releases for new versions (cached, 1h interval).
 //! Detects install method and shows appropriate update command.
 
-use update_informer::{Check, registry::GitHub};
+use update_informer::registry::GitHub;
 
 /// How ttl was installed (best guess based on binary path)
 #[derive(Debug, Clone, Copy)]
@@ -40,8 +40,15 @@ impl InstallMethod {
         match self {
             Self::Homebrew => "brew upgrade ttl",
             Self::Cargo => "cargo install ttl",
-            Self::Binary => "download from https://github.com/lance0/ttl/releases",
+            Self::Binary => "github.com/lance0/ttl/releases",
         }
+    }
+
+    /// Get cached install method (detected once per process)
+    pub fn cached() -> Self {
+        use std::sync::OnceLock;
+        static INSTALL_METHOD: OnceLock<InstallMethod> = OnceLock::new();
+        *INSTALL_METHOD.get_or_init(Self::detect)
     }
 }
 
@@ -50,9 +57,13 @@ impl InstallMethod {
 /// Returns Some(new_version) if an update is available and the cache has expired.
 /// Returns None if no update available, check failed, or within cache interval.
 pub fn check_for_update() -> Option<String> {
-    let informer = update_informer::new(GitHub, "lance0/ttl", env!("CARGO_PKG_VERSION"));
+    use std::time::Duration;
+    use update_informer::Check;
 
-    // Returns Some(new_version) if update available and cache expired
+    // Cache for 1 hour to avoid GitHub rate limits while still being responsive
+    let informer = update_informer::new(GitHub, "lance0/ttl", env!("CARGO_PKG_VERSION"))
+        .interval(Duration::from_secs(3600));
+
     informer
         .check_version()
         .ok()

@@ -256,7 +256,8 @@ async fn main() -> Result<()> {
         )
         .await
     } else {
-        run_interactive_mode(
+        // Interactive (TUI) mode - pass update_rx for in-app notification
+        return run_interactive_mode(
             args,
             sessions,
             targets,
@@ -264,11 +265,12 @@ async fn main() -> Result<()> {
             cancel,
             interface_info,
             resolve_info,
+            update_rx,
         )
-        .await
+        .await;
     };
 
-    // Check for update notification (only if stderr is a TTY)
+    // Check for update notification (only for non-interactive mode)
     // Use short timeout so we don't delay exit if check is slow
     if is_terminal::is_terminal(std::io::stderr()) {
         if let Ok(Some(new_version)) = update_rx.recv_timeout(Duration::from_millis(100)) {
@@ -341,7 +343,7 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
             cancel_clone.cancel();
         });
 
-        let final_prefs = run_tui(sessions, targets, cancel, prefs, None, None).await?;
+        let final_prefs = run_tui(sessions, targets, cancel, prefs, None, None, None).await?;
 
         // Save preferences (best effort, don't fail on save error)
         let _ = final_prefs.save();
@@ -493,6 +495,7 @@ fn resolve_target(target: &str, force_ipv4: bool, force_ipv6: bool) -> Result<Ip
     Ok(filtered[0])
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_interactive_mode(
     args: Args,
     sessions: SessionMap,
@@ -501,6 +504,7 @@ async fn run_interactive_mode(
     cancel: CancellationToken,
     interface: Option<InterfaceInfo>,
     resolve_info: Option<ResolveInfo>,
+    update_rx: std::sync::mpsc::Receiver<Option<String>>,
 ) -> Result<()> {
     // Shared pending map for probe correlation (engine writes, receiver reads)
     let pending = new_pending_map();
@@ -636,6 +640,13 @@ async fn run_interactive_mode(
     // Spawn rate limit detection worker (always enabled, lightweight analysis)
     let ratelimit_handle = tokio::spawn(run_ratelimit_worker(sessions.clone(), cancel.clone()));
 
+    // Check for update result - background check runs during target resolution
+    // Use short timeout since check should already be complete; don't delay startup
+    let update_available = update_rx
+        .recv_timeout(Duration::from_secs(1))
+        .ok()
+        .flatten();
+
     // Run TUI (with target list for cycling)
     let final_prefs = run_tui(
         sessions.clone(),
@@ -644,6 +655,7 @@ async fn run_interactive_mode(
         prefs,
         resolve_info,
         ix_lookup.clone(),
+        update_available,
     )
     .await?;
 

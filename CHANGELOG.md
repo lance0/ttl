@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.2] - 2026-01-26
+
+### Added
+- **In-app update notification**: When an update is available, a yellow status bar and banner show the new version. Press 'u' to dismiss.
+- **Update command in help**: Help overlay now shows the install-method-aware update command (e.g., `brew upgrade ttl` or `cargo install ttl`)
+
+### Fixed
+- **Update notification TLS**: Fix update checker silently failing due to missing TLS support in `ureq` backend
+
 ## [0.14.1] - 2026-01-26
 
 ### Added

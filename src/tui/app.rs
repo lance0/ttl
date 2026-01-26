@@ -7,7 +7,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::widgets::Paragraph;
 use scopeguard::defer;
 use std::borrow::Cow;
@@ -61,6 +61,8 @@ pub struct UiState {
     pub show_target_list: bool,
     /// Selected index in target list overlay
     pub target_list_index: usize,
+    /// Update available notification (version string)
+    pub update_available: Option<String>,
 }
 
 impl UiState {
@@ -85,6 +87,7 @@ pub async fn run_tui(
     initial_prefs: Prefs,
     resolve_info: Option<ResolveInfo>,
     ix_lookup: Option<Arc<IxLookup>>,
+    update_available: Option<String>,
 ) -> Result<Prefs> {
     // Setup terminal
     enable_raw_mode()?;
@@ -114,6 +117,7 @@ pub async fn run_tui(
         theme_index: initial_index,
         display_mode,
         settings: SettingsState::new(initial_index, display_mode, api_key),
+        update_available,
         ..Default::default()
     };
     let tick_rate = Duration::from_millis(100);
@@ -534,6 +538,12 @@ where
                         ui_state.show_target_list = true;
                     }
                 }
+                KeyCode::Char('u') => {
+                    // Dismiss update notification
+                    if ui_state.update_available.is_some() {
+                        ui_state.update_available = None;
+                    }
+                }
                 KeyCode::Char('e') => {
                     // Clone session data before releasing lock to avoid holding lock during I/O
                     let session_clone = {
@@ -616,34 +626,85 @@ fn draw_ui(
 ) {
     let area = f.area();
 
-    // Layout: main view + status bar
+    // Layout: optional update banner + main view + status bar
+    let has_update = ui_state.update_available.is_some();
+    let constraints = if has_update {
+        vec![
+            Constraint::Length(1), // Update banner
+            Constraint::Min(0),    // Main view
+            Constraint::Length(1), // Status bar
+        ]
+    } else {
+        vec![
+            Constraint::Min(0),    // Main view
+            Constraint::Length(1), // Status bar
+        ]
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints(constraints)
         .split(area);
+
+    // Update notification banner (if available)
+    let (main_chunk, status_chunk) = if has_update {
+        if let Some(ref version) = ui_state.update_available {
+            let update_text = format!(
+                " Update available: v{} -> {} | Press 'u' to dismiss ",
+                env!("CARGO_PKG_VERSION"),
+                version
+            );
+            let update_bar = Paragraph::new(update_text)
+                .style(Style::default().fg(Color::Black).bg(Color::Yellow));
+            f.render_widget(update_bar, chunks[0]);
+        }
+        (chunks[1], chunks[2])
+    } else {
+        (chunks[0], chunks[1])
+    };
 
     // Main view (with target indicator and display mode)
     let main_view = MainView::new(session, ui_state.selected, ui_state.paused, theme)
         .with_target_info(ui_state.selected_target + 1, num_targets)
         .with_display_mode(ui_state.display_mode);
-    f.render_widget(main_view, chunks[0]);
+    f.render_widget(main_view, main_chunk);
 
     // Status bar (use Cow to avoid allocation for static strings)
-    let status_text: Cow<'_, str> = if let Some((ref msg, _)) = ui_state.status_message {
-        Cow::Borrowed(msg.as_str())
+    // Update notification takes priority over normal status
+    let (status_text, status_style): (Cow<'_, str>, Style) = if let Some(ref version) =
+        ui_state.update_available
+    {
+        (
+            Cow::Owned(format!(
+                "UPDATE: v{} -> {} available | Press 'u' to dismiss | ? for update command",
+                env!("CARGO_PKG_VERSION"),
+                version
+            )),
+            Style::default().fg(Color::Yellow),
+        )
+    } else if let Some((ref msg, _)) = ui_state.status_message {
+        (
+            Cow::Borrowed(msg.as_str()),
+            Style::default().fg(theme.text_dim),
+        )
     } else if num_targets > 1 {
-        Cow::Borrowed(
-            "q quit | Tab next | l list | p pause | r reset | t theme | w display | s settings | e export | ? help",
+        (
+            Cow::Borrowed(
+                "q quit | Tab next | l list | p pause | r reset | t theme | w display | s settings | e export | ? help",
+            ),
+            Style::default().fg(theme.text_dim),
         )
     } else {
-        Cow::Borrowed(
-            "q quit | p pause | r reset | t theme | w display | s settings | e export | ? help",
+        (
+            Cow::Borrowed(
+                "q quit | p pause | r reset | t theme | w display | s settings | e export | ? help",
+            ),
+            Style::default().fg(theme.text_dim),
         )
     };
 
-    let status_bar =
-        Paragraph::new(status_text.as_ref()).style(Style::default().fg(theme.text_dim));
-    f.render_widget(status_bar, chunks[1]);
+    let status_bar = Paragraph::new(status_text.as_ref()).style(status_style);
+    f.render_widget(status_bar, status_chunk);
 
     // Overlays
     if ui_state.show_help {
