@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Resolver behavior**: Target resolution now follows OS resolver order (respects `/etc/gai.conf` on Linux). Use `-4` or `-6` to force a specific IP family. (PR #24 by @n-thumann)
+- **Target list number keys**: Pressing 1-9 now selects and closes the dialog in one action
+
+### Fixed
+- **Target list lockup**: Fix lock contention when selecting target from list overlay (#19)
+- **Export lock contention**: Clone session data before file I/O to avoid blocking receiver thread
+- **Hop navigation lock contention**: Extract hop count in scoped block before updating UI state
+
+### Performance
+- **Status bar allocation**: Use `Cow<str>` to avoid string allocation on every frame
 
 ## [0.14.0] - 2026-01-25
 

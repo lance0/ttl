@@ -10,6 +10,7 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use scopeguard::defer;
+use std::borrow::Cow;
 use std::io::stdout;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -361,16 +362,21 @@ where
                         ui_state.show_target_list = false;
                     }
                     KeyCode::Enter => {
-                        // Select target and close
-                        ui_state.selected_target = ui_state.target_list_index;
+                        // Extract pause state BEFORE closing dialog to avoid lock contention
+                        let new_target_idx = ui_state.target_list_index;
+                        let target = targets[new_target_idx];
+                        let paused = {
+                            let sessions_read = sessions.read();
+                            sessions_read
+                                .get(&target)
+                                .map(|state| state.read().paused)
+                                .unwrap_or(false)
+                        };
+                        // Now update UI state (no locks held)
+                        ui_state.selected_target = new_target_idx;
                         ui_state.selected = None;
                         ui_state.show_target_list = false;
-                        // Sync pause state with new target's session
-                        let target = targets[ui_state.selected_target];
-                        let sessions_read = sessions.read();
-                        if let Some(state) = sessions_read.get(&target) {
-                            ui_state.paused = state.read().paused;
-                        }
+                        ui_state.paused = paused;
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         if ui_state.target_list_index > 0 {
@@ -383,10 +389,23 @@ where
                         ui_state.target_list_index = (ui_state.target_list_index + 1) % num_targets;
                     }
                     KeyCode::Char(c) if c.is_ascii_digit() => {
-                        // Jump to target by number (1-9)
+                        // Jump to target by number (1-9) and select
                         let num = c.to_digit(10).unwrap() as usize;
                         if num >= 1 && num <= num_targets {
-                            ui_state.target_list_index = num - 1;
+                            let new_target_idx = num - 1;
+                            let target = targets[new_target_idx];
+                            let paused = {
+                                let sessions_read = sessions.read();
+                                sessions_read
+                                    .get(&target)
+                                    .map(|state| state.read().paused)
+                                    .unwrap_or(false)
+                            };
+                            ui_state.selected_target = new_target_idx;
+                            ui_state.target_list_index = new_target_idx;
+                            ui_state.selected = None;
+                            ui_state.show_target_list = false;
+                            ui_state.paused = paused;
                         }
                     }
                     _ => {}
@@ -414,42 +433,52 @@ where
                 // Target switching
                 KeyCode::Tab | KeyCode::Char('n') => {
                     if num_targets > 1 {
-                        ui_state.selected_target = (ui_state.selected_target + 1) % num_targets;
-                        ui_state.selected = None; // Reset hop selection when switching targets
-                        let target = targets[ui_state.selected_target];
+                        let new_idx = (ui_state.selected_target + 1) % num_targets;
+                        let target = targets[new_idx];
+                        // Extract pause state before updating UI to avoid lock contention
+                        let paused = {
+                            let sessions_read = sessions.read();
+                            sessions_read
+                                .get(&target)
+                                .map(|state| state.read().paused)
+                                .unwrap_or(false)
+                        };
+                        ui_state.selected_target = new_idx;
+                        ui_state.selected = None;
+                        ui_state.paused = paused;
                         ui_state.set_status(format!(
                             "Target {}/{}: {}",
-                            ui_state.selected_target + 1,
+                            new_idx + 1,
                             num_targets,
                             target
                         ));
-                        // Sync pause state with new target's session
-                        let sessions_read = sessions.read();
-                        if let Some(state) = sessions_read.get(&target) {
-                            ui_state.paused = state.read().paused;
-                        }
                     }
                 }
                 KeyCode::BackTab | KeyCode::Char('N') => {
                     if num_targets > 1 {
-                        ui_state.selected_target = if ui_state.selected_target == 0 {
+                        let new_idx = if ui_state.selected_target == 0 {
                             num_targets - 1
                         } else {
                             ui_state.selected_target - 1
                         };
-                        ui_state.selected = None; // Reset hop selection when switching targets
-                        let target = targets[ui_state.selected_target];
+                        let target = targets[new_idx];
+                        // Extract pause state before updating UI to avoid lock contention
+                        let paused = {
+                            let sessions_read = sessions.read();
+                            sessions_read
+                                .get(&target)
+                                .map(|state| state.read().paused)
+                                .unwrap_or(false)
+                        };
+                        ui_state.selected_target = new_idx;
+                        ui_state.selected = None;
+                        ui_state.paused = paused;
                         ui_state.set_status(format!(
                             "Target {}/{}: {}",
-                            ui_state.selected_target + 1,
+                            new_idx + 1,
                             num_targets,
                             target
                         ));
-                        // Sync pause state with new target's session
-                        let sessions_read = sessions.read();
-                        if let Some(state) = sessions_read.get(&target) {
-                            ui_state.paused = state.read().paused;
-                        }
                     }
                 }
                 KeyCode::Char('p') => {
@@ -506,9 +535,14 @@ where
                     }
                 }
                 KeyCode::Char('e') => {
-                    let sessions_read = sessions.read();
-                    if let Some(state) = sessions_read.get(&current_target) {
-                        let session = state.read();
+                    // Clone session data before releasing lock to avoid holding lock during I/O
+                    let session_clone = {
+                        let sessions_read = sessions.read();
+                        sessions_read
+                            .get(&current_target)
+                            .map(|state| state.read().clone())
+                    };
+                    if let Some(session) = session_clone {
                         match export_json_file(&session) {
                             Ok(filename) => {
                                 ui_state.set_status(format!("Exported to {}", filename));
@@ -520,31 +554,36 @@ where
                     }
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    let sessions_read = sessions.read();
-                    if let Some(state) = sessions_read.get(&current_target) {
-                        let session = state.read();
-                        let hop_count = session.hops.iter().filter(|h| h.sent > 0).count();
-                        if hop_count > 0 {
-                            ui_state.selected = Some(match ui_state.selected {
-                                Some(i) if i > 0 => i - 1,
-                                Some(_) => hop_count - 1,
-                                None => hop_count - 1,
-                            });
-                        }
+                    // Extract hop_count quickly, then release lock before updating UI
+                    let hop_count = {
+                        let sessions_read = sessions.read();
+                        sessions_read
+                            .get(&current_target)
+                            .map(|state| state.read().hops.iter().filter(|h| h.sent > 0).count())
+                            .unwrap_or(0)
+                    };
+                    if hop_count > 0 {
+                        ui_state.selected = Some(match ui_state.selected {
+                            Some(i) if i > 0 => i - 1,
+                            Some(_) => hop_count - 1,
+                            None => hop_count - 1,
+                        });
                     }
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    let sessions_read = sessions.read();
-                    if let Some(state) = sessions_read.get(&current_target) {
-                        let session = state.read();
-                        let hop_count = session.hops.iter().filter(|h| h.sent > 0).count();
-                        if hop_count > 0 {
-                            ui_state.selected = Some(match ui_state.selected {
-                                Some(i) if i < hop_count - 1 => i + 1,
-                                Some(_) => 0,
-                                None => 0,
-                            });
-                        }
+                    let hop_count = {
+                        let sessions_read = sessions.read();
+                        sessions_read
+                            .get(&current_target)
+                            .map(|state| state.read().hops.iter().filter(|h| h.sent > 0).count())
+                            .unwrap_or(0)
+                    };
+                    if hop_count > 0 {
+                        ui_state.selected = Some(match ui_state.selected {
+                            Some(i) if i < hop_count - 1 => i + 1,
+                            Some(_) => 0,
+                            None => 0,
+                        });
                     }
                 }
                 KeyCode::Enter => {
@@ -589,18 +628,21 @@ fn draw_ui(
         .with_display_mode(ui_state.display_mode);
     f.render_widget(main_view, chunks[0]);
 
-    // Status bar
-    let status_text = if let Some((ref msg, _)) = ui_state.status_message {
-        msg.clone()
+    // Status bar (use Cow to avoid allocation for static strings)
+    let status_text: Cow<'_, str> = if let Some((ref msg, _)) = ui_state.status_message {
+        Cow::Borrowed(msg.as_str())
     } else if num_targets > 1 {
-        "q quit | Tab next | l list | p pause | r reset | t theme | w display | s settings | e export | ? help"
-            .to_string()
+        Cow::Borrowed(
+            "q quit | Tab next | l list | p pause | r reset | t theme | w display | s settings | e export | ? help",
+        )
     } else {
-        "q quit | p pause | r reset | t theme | w display | s settings | e export | ? help"
-            .to_string()
+        Cow::Borrowed(
+            "q quit | p pause | r reset | t theme | w display | s settings | e export | ? help",
+        )
     };
 
-    let status_bar = Paragraph::new(status_text).style(Style::default().fg(theme.text_dim));
+    let status_bar =
+        Paragraph::new(status_text.as_ref()).style(Style::default().fg(theme.text_dim));
     f.render_widget(status_bar, chunks[1]);
 
     // Overlays
