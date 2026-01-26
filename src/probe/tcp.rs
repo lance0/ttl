@@ -254,7 +254,7 @@ pub fn create_tcp_socket_with_interface(
 ) -> Result<Socket> {
     let socket = create_tcp_socket(ipv6)?;
     if let Some(info) = interface {
-        bind_socket_to_interface(&socket, info)?;
+        bind_socket_to_interface(&socket, info, ipv6)?;
     }
     Ok(socket)
 }

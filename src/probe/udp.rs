@@ -113,7 +113,7 @@ pub fn create_udp_dgram_socket_bound_full(
     // Bind to interface BEFORE binding to address
     // SO_BINDTODEVICE affects which interface's addresses are valid for binding
     if let Some(info) = interface {
-        bind_socket_to_interface(&socket, info)?;
+        bind_socket_to_interface(&socket, info, ipv6)?;
     }
 
     // Bind to the specified source port (and optionally source IP)

@@ -2,7 +2,7 @@
 //!
 //! Provides cross-platform interface validation and socket binding.
 //! - Linux: Uses SO_BINDTODEVICE via socket2::bind_device()
-//! - macOS: Uses IP_BOUND_IF via socket2::bind_device_by_index()
+//! - macOS/FreeBSD: Uses IP_BOUND_IF via socket2::bind_device_by_index()
 
 use anyhow::{Result, anyhow};
 use pnet::datalink;
@@ -213,10 +213,12 @@ pub fn validate_interface(name: &str) -> Result<InterfaceInfo> {
 /// Bind a socket to a specific network interface
 ///
 /// On Linux, uses SO_BINDTODEVICE which requires CAP_NET_RAW or root.
-/// On macOS, uses IP_BOUND_IF with the interface index.
-pub fn bind_socket_to_interface(socket: &Socket, info: &InterfaceInfo) -> Result<()> {
+/// On macOS, uses IP_BOUND_IF (IPv4) or IPV6_BOUND_IF (IPv6) with the interface index.
+/// FreeBSD does not support interface binding (no SO_BINDTODEVICE or IP_BOUND_IF).
+pub fn bind_socket_to_interface(socket: &Socket, info: &InterfaceInfo, ipv6: bool) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
+        let _ = ipv6; // SO_BINDTODEVICE works for both IPv4 and IPv6
         socket.bind_device(Some(info.name.as_bytes())).map_err(|e| {
             anyhow!(
                 "Failed to bind socket to interface '{}': {}. \
@@ -231,21 +233,35 @@ pub fn bind_socket_to_interface(socket: &Socket, info: &InterfaceInfo) -> Result
     {
         use std::num::NonZeroU32;
         // macOS uses interface index binding
-        socket
-            .bind_device_by_index_v4(NonZeroU32::new(info.index))
-            .map_err(|e| {
-                anyhow!(
-                    "Failed to bind socket to interface '{}' (index {}): {}",
-                    info.name,
-                    info.index,
-                    e
-                )
-            })
+        // IPv4: IP_BOUND_IF, IPv6: IPV6_BOUND_IF
+        let idx = NonZeroU32::new(info.index);
+        let result = if ipv6 {
+            socket.bind_device_by_index_v6(idx)
+        } else {
+            socket.bind_device_by_index_v4(idx)
+        };
+        result.map_err(|e| {
+            anyhow!(
+                "Failed to bind socket to interface '{}' (index {}): {}",
+                info.name,
+                info.index,
+                e
+            )
+        })
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "freebsd")]
     {
-        let _ = (socket, info); // Suppress unused warnings
+        let _ = (socket, info, ipv6); // Suppress unused warnings
+        Err(anyhow!(
+            "Interface binding (-i) is not supported on FreeBSD. \
+             FreeBSD lacks SO_BINDTODEVICE and IP_BOUND_IF socket options."
+        ))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
+    {
+        let _ = (socket, info, ipv6); // Suppress unused warnings
         Err(anyhow!(
             "Interface binding is not supported on this platform. \
              It is only available on Linux and macOS."

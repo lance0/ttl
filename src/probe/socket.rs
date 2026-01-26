@@ -23,21 +23,21 @@ pub struct SocketInfo {
 }
 
 /// Check socket permissions and return capability level
-/// On macOS, requires RAW socket for receiving ICMP Time Exceeded messages
+/// On macOS/FreeBSD, requires RAW socket for receiving ICMP Time Exceeded messages
 /// (DGRAM sockets only receive Echo Reply, not error messages from routers)
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 pub fn check_permissions() -> Result<SocketCapability> {
-    // On macOS:
+    // On macOS/FreeBSD:
     // - Send socket uses DGRAM (supports IP_TTL for per-probe TTL control)
     // - Receive socket must use RAW (DGRAM can't receive Time Exceeded from routers)
     //
-    // Since RAW sockets require root, traceroute on macOS needs sudo.
+    // Since RAW sockets require root, traceroute on macOS/FreeBSD needs sudo.
 
     // Check if we can create RAW IPv4 socket (needed for receiving)
     if create_raw_icmp_socket(false).is_err() {
         return Err(anyhow!(
             "Insufficient permissions for ICMP sockets.\n\n\
-             On macOS, raw sockets are required to receive ICMP Time Exceeded\n\
+             On macOS/FreeBSD, raw sockets are required to receive ICMP Time Exceeded\n\
              messages from intermediate routers.\n\n\
              Fix: Run with sudo: sudo ttl <target>"
         ));
@@ -67,7 +67,7 @@ pub fn check_permissions() -> Result<SocketCapability> {
 
 /// Check socket permissions and return capability level
 /// On Linux, requires RAW sockets for traceroute functionality
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
 pub fn check_permissions() -> Result<SocketCapability> {
     // RAW sockets required - DGRAM can't receive Time Exceeded from intermediate routers
     if create_raw_icmp_socket(false).is_ok() {
@@ -143,12 +143,12 @@ pub fn create_dgram_icmp_socket_any(ipv6: bool) -> Result<Socket> {
 }
 
 /// Create a socket for sending ICMP probes with configurable TTL
-/// On macOS, uses DGRAM socket because RAW sockets don't support IP_TTL
+/// On macOS/FreeBSD, uses DGRAM socket because RAW sockets don't support IP_TTL
 /// On Linux, prefers RAW, falls back to DGRAM for unprivileged ICMP
 pub fn create_send_socket(ipv6: bool) -> Result<SocketInfo> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     {
-        // macOS: Prefer DGRAM (supports IP_TTL)
+        // macOS/FreeBSD: Prefer DGRAM (supports IP_TTL)
         if let Ok(socket) = create_dgram_icmp_socket_any(ipv6) {
             return Ok(SocketInfo {
                 socket,
@@ -164,7 +164,7 @@ pub fn create_send_socket(ipv6: bool) -> Result<SocketInfo> {
         });
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
     {
         // Linux: Prefer RAW, fall back to DGRAM for unprivileged
         if let Ok(socket) = create_raw_icmp_socket(ipv6) {
@@ -183,13 +183,13 @@ pub fn create_send_socket(ipv6: bool) -> Result<SocketInfo> {
 }
 
 /// Create a socket for receiving ICMP responses
-/// On macOS, must use RAW socket to receive ICMP Time Exceeded messages
+/// On macOS/FreeBSD, must use RAW socket to receive ICMP Time Exceeded messages
 /// (DGRAM sockets only receive Echo Reply, not error messages from intermediate routers)
 /// On Linux, tries RAW first, falls back to DGRAM for unprivileged ICMP
 pub fn create_recv_socket(ipv6: bool) -> Result<SocketInfo> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     {
-        // macOS: Must use RAW (DGRAM can't receive Time Exceeded from routers)
+        // macOS/FreeBSD: Must use RAW (DGRAM can't receive Time Exceeded from routers)
         let socket = create_raw_icmp_socket(ipv6)?;
         if let Err(e) = socket.set_recv_buffer_size(1024 * 1024) {
             eprintln!("Warning: Could not set receive buffer to 1MB: {}", e);
@@ -200,7 +200,7 @@ pub fn create_recv_socket(ipv6: bool) -> Result<SocketInfo> {
         });
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
     {
         // Linux: Try RAW first, fall back to DGRAM for unprivileged ICMP
         if let Ok(socket) = create_raw_icmp_socket(ipv6) {
@@ -294,16 +294,22 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
     Ok(())
 }
 
-/// Set Don't Fragment flag for Path MTU Discovery (macOS)
+/// Set Don't Fragment flag for Path MTU Discovery (macOS/FreeBSD)
 /// - IPv4: Sets IP_DONTFRAG = 1
 /// - IPv6: Sets IPV6_DONTFRAG = 1
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
     use std::os::unix::io::AsRawFd;
 
+    // Platform-specific constants
+    #[cfg(target_os = "macos")]
+    const IP_DONTFRAG: libc::c_int = 28;
+    #[cfg(target_os = "freebsd")]
+    const IP_DONTFRAG: libc::c_int = 67;
+    // IPV6_DONTFRAG = 62 on both macOS and FreeBSD
+    const IPV6_DONTFRAG: libc::c_int = 62;
+
     if ipv6 {
-        // IPV6_DONTFRAG = 62 on macOS
-        const IPV6_DONTFRAG: libc::c_int = 62;
         let val: libc::c_int = 1;
         let ret = unsafe {
             libc::setsockopt(
@@ -318,8 +324,6 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
             return Err(std::io::Error::last_os_error().into());
         }
     } else {
-        // IP_DONTFRAG = 28 on macOS
-        const IP_DONTFRAG: libc::c_int = 28;
         let val: libc::c_int = 1;
         let ret = unsafe {
             libc::setsockopt(
@@ -372,6 +376,10 @@ pub fn enable_recv_ttl(socket: &Socket, ipv6: bool) -> Result<()> {
     #[cfg(target_os = "macos")]
     const IP_RECVTTL: libc::c_int = 24;
     #[cfg(target_os = "macos")]
+    const IPV6_RECVHOPLIMIT: libc::c_int = 37;
+    #[cfg(target_os = "freebsd")]
+    const IP_RECVTTL: libc::c_int = 65;
+    #[cfg(target_os = "freebsd")]
     const IPV6_RECVHOPLIMIT: libc::c_int = 37;
 
     let (level, optname) = if ipv6 {
@@ -455,6 +463,7 @@ fn extract_ttl_from_cmsg(msg: &libc::msghdr, ipv6: bool) -> Option<u8> {
     // Platform-specific cmsg type values for IP_TTL
     // Linux: IP_TTL = 2
     // macOS: IP_TTL = 4, but IP_RECVTTL = 24 - accept both to be safe
+    // FreeBSD: IP_TTL = 4, IP_RECVTTL = 65
     #[cfg(target_os = "linux")]
     fn is_ip_ttl_type(cmsg_type: libc::c_int) -> bool {
         cmsg_type == 2 // IP_TTL
@@ -463,6 +472,11 @@ fn extract_ttl_from_cmsg(msg: &libc::msghdr, ipv6: bool) -> Option<u8> {
     fn is_ip_ttl_type(cmsg_type: libc::c_int) -> bool {
         // Accept both IP_TTL (4) and IP_RECVTTL (24) since macOS may deliver either
         cmsg_type == 4 || cmsg_type == 24
+    }
+    #[cfg(target_os = "freebsd")]
+    fn is_ip_ttl_type(cmsg_type: libc::c_int) -> bool {
+        // Accept both IP_TTL (4) and IP_RECVTTL (65) since FreeBSD may deliver either
+        cmsg_type == 4 || cmsg_type == 65
     }
 
     unsafe {
@@ -523,7 +537,7 @@ pub fn create_send_socket_with_interface(
 ) -> Result<SocketInfo> {
     let socket_info = create_send_socket(ipv6)?;
     if let Some(info) = interface {
-        bind_socket_to_interface(&socket_info.socket, info)?;
+        bind_socket_to_interface(&socket_info.socket, info, ipv6)?;
     }
     Ok(socket_info)
 }
@@ -535,7 +549,7 @@ pub fn create_recv_socket_with_interface(
 ) -> Result<SocketInfo> {
     let socket_info = create_recv_socket(ipv6)?;
     if let Some(info) = interface {
-        bind_socket_to_interface(&socket_info.socket, info)?;
+        bind_socket_to_interface(&socket_info.socket, info, ipv6)?;
     }
 
     // Enable TTL reception for asymmetric routing detection

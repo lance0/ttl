@@ -271,10 +271,13 @@ ttl 1.1.1.1 --theme dracula    # Start with theme
 | Linux | Full support |
 | macOS (Tahoe 26+) | Full support |
 | macOS (Sequoia 15) | Build from source* |
+| FreeBSD | Experimental** |
 | Windows (WSL2) | Full support |
 | Windows (native) | Not supported |
 
 *Pre-built binaries are built on `macos-latest` (Tahoe). Older macOS versions may have display issues - use `cargo install ttl` to compile from source.
+
+**FreeBSD support is untested. Requires `sudo`. Interface binding (`-i`) is not supported. Please report issues at https://github.com/lance0/ttl/issues
 
 ### Windows via WSL2
 
@@ -305,7 +308,7 @@ sudo ttl 8.8.8.8
 
 ### Permissions
 - Linux: Requires `CAP_NET_RAW` capability or root (see [Permissions](#permissions-linux))
-- macOS: Requires root (`sudo ttl target`) - RAW sockets are needed to receive ICMP Time Exceeded messages from intermediate routers
+- macOS/FreeBSD: Requires root (`sudo ttl target`) - RAW sockets are needed to receive ICMP Time Exceeded messages from intermediate routers
 
 ### Protocol Limitations
 - ICMP probes: Some networks filter ICMP, try `-p udp` or `-p tcp`
