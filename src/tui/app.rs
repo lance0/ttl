@@ -111,6 +111,7 @@ impl UiState {
 }
 
 /// Run the TUI application. Returns the final preferences for persistence.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_tui(
     sessions: SessionMap,
     targets: Vec<IpAddr>,
@@ -200,21 +201,31 @@ pub async fn run_tui(
 
 /// Apply a replay event to the session state
 fn apply_replay_event(session: &mut Session, event: &ProbeEvent) {
-    match &event.outcome {
-        ProbeOutcome::Reply { addr, rtt_us } => {
-            let rtt = Duration::from_micros(*rtt_us);
-            if let Some(hop) = session.hop_mut(event.ttl) {
+    let target_ip = session.target.resolved;
+
+    if let Some(hop) = session.hop_mut(event.ttl) {
+        // Increment sent counter so hop is visible in TUI
+        hop.record_sent();
+
+        match &event.outcome {
+            ProbeOutcome::Reply { addr, rtt_us } => {
+                let rtt = Duration::from_micros(*rtt_us);
                 hop.record_response_detecting_flaps(*addr, rtt, None);
+
+                // Check if we reached the destination
+                if *addr == target_ip {
+                    session.complete = true;
+                    if session.dest_ttl.is_none() || event.ttl < session.dest_ttl.unwrap() {
+                        session.dest_ttl = Some(event.ttl);
+                    }
+                }
             }
-            session.total_sent += 1;
-        }
-        ProbeOutcome::Timeout => {
-            if let Some(hop) = session.hop_mut(event.ttl) {
+            ProbeOutcome::Timeout => {
                 hop.record_timeout();
             }
-            session.total_sent += 1;
         }
     }
+    session.total_sent += 1;
 }
 
 async fn run_app<B>(
