@@ -20,33 +20,11 @@ impl<'a> HopDetailView<'a> {
     }
 }
 
-impl Widget for HopDetailView<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        // Calculate centered popup area
-        let popup_width = area.width.saturating_sub(10).min(80);
-        let popup_height = area.height.saturating_sub(6).min(25);
-        let popup_x = (area.width - popup_width) / 2 + area.x;
-        let popup_y = (area.height - popup_height) / 2 + area.y;
-        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
-
-        // Clear the popup area
-        Clear.render(popup_area, buf);
-
-        let stats = self.hop.primary_stats();
-        let ip = stats
-            .map(|s| s.ip.to_string())
-            .unwrap_or_else(|| "* * *".to_string());
-        let title = format!(" Hop {}: {} ", self.hop.ttl, ip);
-
-        let block = Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border));
-
-        let inner = block.inner(popup_area);
-        block.render(popup_area, buf);
-
+impl HopDetailView<'_> {
+    /// Build all content lines for the modal
+    fn build_lines(&self, inner_width: u16) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
+        let stats = self.hop.primary_stats();
 
         if let Some(stats) = stats {
             // Hostname
@@ -119,7 +97,7 @@ impl Widget for HopDetailView<'_> {
 
             // Sparkline visualization
             let recent: Vec<_> = stats.recent.iter().cloned().collect();
-            let sparkline = sparkline_string(&recent, (inner.width - 4) as usize);
+            let sparkline = sparkline_string(&recent, inner_width.saturating_sub(4) as usize);
             if !sparkline.is_empty() {
                 lines.push(Line::from(vec![
                     Span::styled("  Latency:   ", Style::default().fg(self.theme.text_dim)),
@@ -551,6 +529,46 @@ impl Widget for HopDetailView<'_> {
             "  [↑/↓] navigate  [1-9] jump  [Esc/q] back",
             Style::default().fg(self.theme.text_dim),
         )]));
+
+        lines
+    }
+}
+
+impl Widget for HopDetailView<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        // Calculate popup width first (needed for sparkline sizing)
+        let popup_width = area.width.saturating_sub(10).min(80);
+        let inner_width = popup_width.saturating_sub(2); // -2 for left/right borders
+
+        // Build content first to calculate required height
+        let lines = self.build_lines(inner_width);
+        let content_height = lines.len() as u16;
+
+        // Calculate centered popup area with dynamic height
+        // +2 for top/bottom borders
+        let needed_height = content_height + 2;
+        let max_height = area.height.saturating_sub(4);
+        let popup_height = needed_height.min(max_height);
+        let popup_x = (area.width - popup_width) / 2 + area.x;
+        let popup_y = (area.height - popup_height) / 2 + area.y;
+        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+        // Clear the popup area
+        Clear.render(popup_area, buf);
+
+        let stats = self.hop.primary_stats();
+        let ip = stats
+            .map(|s| s.ip.to_string())
+            .unwrap_or_else(|| "* * *".to_string());
+        let title = format!(" Hop {}: {} ", self.hop.ttl, ip);
+
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.border));
+
+        let inner = block.inner(popup_area);
+        block.render(popup_area, buf);
 
         let paragraph = Paragraph::new(lines);
         paragraph.render(inner, buf);

@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Target list lockup**: Fix lock contention when selecting target from list overlay (#19)
 - **Export lock contention**: Clone session data before file I/O to avoid blocking receiver thread
 - **Hop navigation lock contention**: Extract hop count in scoped block before updating UI state
+- **Hop detail modal truncation**: Modal now dynamically sizes to content, preventing help text cutoff
 
 ### Performance
 - **Status bar allocation**: Use `Cow<str>` to avoid string allocation on every frame
