@@ -5,10 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.14.1] - 2026-01-26
 
 ### Added
-- **FreeBSD support**: Platform-specific socket options and interface binding now support FreeBSD (experimental, untested)
+- **FreeBSD support (experimental)**: Basic traceroute now works on FreeBSD 13/14. Requires `sudo`. Interface binding (`-i`) is not supported due to missing kernel APIs.
 
 ### Changed
 - **Resolver behavior**: Target resolution now follows OS resolver order (respects `/etc/gai.conf` on Linux). Use `-4` or `-6` to force a specific IP family. (PR #24 by @n-thumann)
