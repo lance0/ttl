@@ -2135,7 +2135,7 @@ mod tests {
 
         /// Random bytes should not panic when parsed as ICMP
         #[test]
-        fn proptest_parse_icmp_no_panic(data in prop::collection::vec(0u8..=255, 0..1500)) {
+        fn proptest_parse_icmp_no_panic(data in prop::collection::vec(0u8..=255, 0..9216)) {
             let responder = IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1));
             let _ = parse_icmp_response(&data, responder, 0x1234, false);
         }

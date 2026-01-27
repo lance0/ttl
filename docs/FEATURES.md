@@ -166,7 +166,7 @@ ttl --dscp 46 --size 1400 8.8.8.8 # Combine both
 
 ### Packet Size
 
-Control probe packet size for MTU testing. Range: 36-1500 bytes for IPv4, 56+ for IPv6.
+Control probe packet size for MTU testing. Range: 36-9216 bytes for IPv4, 56-9216 for IPv6. Supports jumbo frames.
 
 ### DSCP Marking
 
@@ -191,7 +191,7 @@ ttl --pmtud 8.8.8.8
 Discover the path MTU using binary search:
 
 1. Sends probes with Don't Fragment (DF) flag set
-2. Binary searches between min (68 for IPv4, 1280 for IPv6) and max (1500)
+2. Binary searches between min (68 for IPv4, 1280 for IPv6) and max (9216)
 3. Uses ICMP "Fragmentation Needed" / "Packet Too Big" responses
 4. Results displayed in TUI title bar
 
@@ -493,7 +493,7 @@ Options:
       --flows <N>        Number of flows for ECMP (1-16, default: 1)
       --src-port <N>     Base source port for multi-flow (default: 50000)
       --timeout <S>      Probe timeout in seconds (default: 3)
-      --size <N>         Packet size in bytes (36-1500)
+      --size <N>         Packet size in bytes (36-9216)
       --dscp <N>         DSCP value for QoS testing (0-63)
       --rate <N>         Max probes per second (0 = unlimited)
       --pmtud            Enable Path MTU Discovery

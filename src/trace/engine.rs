@@ -754,7 +754,7 @@ impl ProbeEngine {
         // Set socket to non-blocking for polling
         let _ = socket.set_nonblocking(true);
 
-        let mut buffer = [0u8; 1500];
+        let mut buffer = [0u8; 9216];
 
         // Drain any pending Echo Reply responses
         loop {

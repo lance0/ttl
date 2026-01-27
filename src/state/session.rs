@@ -763,14 +763,15 @@ pub struct PmtudState {
 impl PmtudState {
     /// Create new PMTUD state with appropriate bounds for IPv4 or IPv6
     ///
-    /// - IPv4: min=68 (RFC 791), max=1500
-    /// - IPv6: min=1280 (RFC 8200), max=1500
+    /// - IPv4: min=68 (RFC 791), max=9216
+    /// - IPv6: min=1280 (RFC 8200), max=9216
+    /// - 9216 supports jumbo frame environments (9000 payload + headers)
     pub fn new(ipv6: bool) -> Self {
         let min = if ipv6 { 1280 } else { 68 };
         Self {
             min_size: min,
-            max_size: 1500,
-            current_size: 1500, // Start high, binary search down
+            max_size: 9216,
+            current_size: 9216, // Start high, binary search down
             successes: 0,
             failures: 0,
             discovered_mtu: None,

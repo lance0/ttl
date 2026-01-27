@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Jumbo frame support**: `--size` now accepts up to 9216 bytes (was 1500) for jumbo frame environments. PMTUD binary search also starts at 9216, discovering jumbo MTUs automatically (#28)
 - **Animated replay mode**: `--replay <file> --animate` replays saved sessions showing probe-by-probe discovery instead of final state (#9)
 - **Replay speed control**: `--speed` flag controls replay speed (default 10x, use 1.0 for real-time)
 - **Probe event recording**: Sessions now record per-probe events with full correlation info (TTL, seq, flow_id, responder, RTT)

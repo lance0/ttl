@@ -112,7 +112,7 @@ impl Receiver {
         // Set non-blocking with short timeout for polling
         socket.set_read_timeout(Some(Duration::from_millis(100)))?;
 
-        let mut buffer = [0u8; 1500];
+        let mut buffer = [0u8; 9216];
 
         loop {
             // Check cancellation

@@ -302,7 +302,7 @@ fn test_pmtud_state_lifecycle() {
     let pmtud = session.pmtud.as_ref().unwrap();
     assert_eq!(pmtud.phase, PmtudPhase::WaitingForDestination);
     assert_eq!(pmtud.min_size, 68); // IPv4 minimum
-    assert_eq!(pmtud.max_size, 1500);
+    assert_eq!(pmtud.max_size, 9216);
     assert_eq!(pmtud.discovered_mtu, None);
 
     // Simulate PMTUD progress
@@ -323,7 +323,7 @@ fn test_pmtud_state_lifecycle() {
     let pmtud = session.pmtud.as_ref().unwrap();
     assert_eq!(pmtud.phase, PmtudPhase::WaitingForDestination);
     assert_eq!(pmtud.min_size, 68);
-    assert_eq!(pmtud.max_size, 1500);
+    assert_eq!(pmtud.max_size, 9216);
     assert_eq!(pmtud.discovered_mtu, None);
 }
 
@@ -366,7 +366,7 @@ fn test_pmtud_ipv6_min_size() {
     assert!(session.pmtud.is_some());
     let pmtud = session.pmtud.as_ref().unwrap();
     assert_eq!(pmtud.min_size, 1280);
-    assert_eq!(pmtud.max_size, 1500);
+    assert_eq!(pmtud.max_size, 9216);
     assert_eq!(pmtud.phase, PmtudPhase::WaitingForDestination);
 }
 
@@ -435,7 +435,7 @@ fn test_pmtud_reset_clears_discovered_mtu() {
     let pmtud = session.pmtud.as_ref().unwrap();
     assert_eq!(pmtud.phase, PmtudPhase::WaitingForDestination);
     assert_eq!(pmtud.min_size, 68);
-    assert_eq!(pmtud.max_size, 1500);
+    assert_eq!(pmtud.max_size, 9216);
     assert_eq!(pmtud.discovered_mtu, None); // Key assertion
     assert_eq!(pmtud.successes, 0);
     assert_eq!(pmtud.failures, 0);
@@ -472,21 +472,36 @@ fn test_pmtud_reset_clears_discovered_mtu_ipv6() {
     let pmtud = session.pmtud.as_ref().unwrap();
     assert_eq!(pmtud.phase, PmtudPhase::WaitingForDestination);
     assert_eq!(pmtud.min_size, 1280); // IPv6 minimum
-    assert_eq!(pmtud.max_size, 1500);
+    assert_eq!(pmtud.max_size, 9216);
     assert_eq!(pmtud.discovered_mtu, None);
 }
 
 #[test]
-fn test_pmtud_frag_needed_above_max() {
-    // Edge case: router reports MTU > 1500 (jumbo frames or bogus value)
+fn test_pmtud_frag_needed_jumbo() {
+    // Router reports jumbo MTU within our search range
     let mut pmtud = PmtudState::new(false); // IPv4
     pmtud.start_search();
 
-    // Router reports 9000 (jumbo frame MTU)
+    // Router reports 9000 (jumbo frame MTU) - within our max of 9216
     pmtud.record_frag_needed(9000);
 
-    // max_size should stay at 1500 (min of current max and reported)
-    assert_eq!(pmtud.max_size, 1500);
+    // 9000 < 9216, so router-reported MTU is trusted per RFC 1191
+    assert_eq!(pmtud.max_size, 9000);
+    assert_eq!(pmtud.discovered_mtu, Some(9000));
+    assert_eq!(pmtud.phase, PmtudPhase::Complete);
+}
+
+#[test]
+fn test_pmtud_frag_needed_above_max() {
+    // Edge case: router reports MTU above our ceiling (bogus value)
+    let mut pmtud = PmtudState::new(false); // IPv4
+    pmtud.start_search();
+
+    // Router reports 16000 (above our 9216 ceiling)
+    pmtud.record_frag_needed(16000);
+
+    // max_size should stay at 9216 (min of current max and reported)
+    assert_eq!(pmtud.max_size, 9216);
 
     // Search continues normally
     assert_eq!(pmtud.phase, PmtudPhase::Searching);

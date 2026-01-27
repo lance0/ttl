@@ -130,7 +130,7 @@ Identifies a probe:
 
 Path MTU Discovery uses binary search:
 
-1. Start with `min=68` (IPv4) or `min=1280` (IPv6), `max=1500`
+1. Start with `min=68` (IPv4) or `min=1280` (IPv6), `max=9216`
 2. Send probe with size `mid = (min + max) / 2`, DF flag set
 3. On success: `min = mid + 1`
 4. On Frag Needed: `max = reported_mtu - 1` (or `mid - 1` if no MTU)
