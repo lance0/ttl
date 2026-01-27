@@ -668,8 +668,8 @@ where
                         }
                     }
                 }
-                KeyCode::Char(' ') => {
-                    // Space to pause/resume replay animation
+                KeyCode::Char(' ') | KeyCode::Char('p') => {
+                    // Space or 'p' to pause/resume replay animation
                     if let Some(ref mut replay) = ui_state.replay_state {
                         if replay.paused {
                             // RESUMING: Reset start time so current event plays at the right moment
@@ -689,7 +689,7 @@ where
                         } else {
                             // PAUSING
                             replay.paused = true;
-                            ui_state.set_status("Replay paused - press Space to resume");
+                            ui_state.set_status("Replay paused - press p or Space to resume");
                         }
                     }
                 }
