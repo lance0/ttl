@@ -636,7 +636,7 @@ mod tests {
     #[test]
     fn test_longest_prefix_match_sorting() {
         // Verify that prefixes are sorted by length descending
-        let mut entries = vec![
+        let mut entries = [
             PrefixEntry {
                 network: "10.0.0.0/8".parse().unwrap(),
                 info: IxInfo {
