@@ -27,7 +27,6 @@ clap_complete = "4.5"
 socket2 = { version = "0.6", features = ["all"] }
 pnet = "0.35"
 libc = "0.2"
-getifs = "0.4"  # Fast gateway detection via kernel APIs (netlink/sysctl)
 
 # DNS (note: trust-dns-resolver is now hickory-resolver)
 hickory-resolver = "0.25"
@@ -63,6 +62,11 @@ update-informer = { version = "1", default-features = false, features = ["github
 
 # TTY detection
 is-terminal = "0.4"
+
+# Gateway detection - Linux (netlink) and macOS (sysctl) only
+# FreeBSD excluded: getifs uses macOS-specific APIs (NET_RT_IFLIST2, rt_msghdr)
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+getifs = "0.4"
 
 [dev-dependencies]
 tokio-test = "0.4"

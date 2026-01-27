@@ -49,3 +49,21 @@ jobs:
 
       - name: Run tests
         run: cargo test --verbose
+
+  build-freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.2"
+          usesh: true
+          prepare: |
+            pkg install -y curl
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          run: |
+            . $HOME/.cargo/env
+            cargo build --verbose
+            cargo test --verbose
