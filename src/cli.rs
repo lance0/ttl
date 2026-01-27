@@ -135,6 +135,10 @@ pub struct Args {
     #[arg(long = "animate", requires = "replay")]
     pub animate: bool,
 
+    /// Replay speed multiplier (1.0 = realtime, 10.0 = 10x faster)
+    #[arg(long = "speed", default_value = "10.0", requires = "animate")]
+    pub speed: f32,
+
     /// Color theme (default, kawaii, cyber, dracula, monochrome, matrix, nord, gruvbox, catppuccin, tokyo_night, solarized)
     #[arg(long = "theme", default_value = "default")]
     pub theme: String,
@@ -308,6 +312,7 @@ mod tests {
             report: false,
             replay: None,
             animate: false,
+            speed: 10.0,
             theme: "default".to_string(),
             wide: false,
             interface: None,

@@ -465,11 +465,15 @@ Human-readable summary similar to mtr report mode.
 ### Session Replay
 
 ```bash
-ttl --replay results.json           # Open in TUI
-ttl --replay results.json --report  # Text report
+ttl --replay results.json                    # Open in TUI (final state)
+ttl --replay results.json --animate          # Animated replay (10x speed)
+ttl --replay results.json --animate --speed 1.0  # Real-time replay
+ttl --replay results.json --report           # Text report
 ```
 
-Load a previously saved JSON session for review.
+Load a previously saved JSON session for review. Use `--animate` to replay
+the session showing hop-by-hop discovery as it happened. Press Space to
+pause/resume during animated replay.
 
 ## CLI Reference
 
@@ -510,6 +514,8 @@ Options:
       --json             JSON output (requires -c)
       --csv              CSV output (requires -c)
       --replay <FILE>    Replay a saved JSON session
+      --animate          Animate replay (show probe-by-probe discovery)
+      --speed <N>        Replay speed multiplier (default: 10.0, requires --animate)
       --theme <NAME>     Color theme
   -h, --help             Print help
   -V, --version          Print version

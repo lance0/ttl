@@ -188,16 +188,17 @@
 
 ### v0.15.0 - Animated Replay (#9)
 - [x] TUI refresh rate increased to 60fps (from 10fps) for responsive updates (#17)
-- [x] ProbeEvent recording during trace (offset_ms, ttl, response/timeout)
+- [x] ProbeEvent recording during trace (offset_ms, ttl, seq, flow_id, response/timeout)
 - [x] Session JSON includes events array (backward compatible)
 - [x] `--animate` flag for replay mode
 - [x] Animated replay shows hop-by-hop discovery in TUI
 - [x] Space to pause/resume replay
 - [x] Progress indicator in status bar
 - [x] Graceful fallback for old sessions without events
-- [ ] Replay speed control (`--speed` multiplier)
+- [x] Replay speed control (`--speed` multiplier, default 10x)
+- [x] Monotonic event timestamps (immune to clock jumps)
+- [x] Late reply tracking for replay accuracy
 - [ ] Interactive replay (step through events, jump to time)
-- [ ] Multi-flow replay (flow_id in ProbeEvent)
 
 ### v0.16.0 - Interactive Target Selection (Planned)
 - [ ] `ttl` with no args enters interactive mode

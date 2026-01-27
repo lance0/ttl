@@ -33,10 +33,10 @@ pub struct ReplayState {
     pub events: Vec<ProbeEvent>,
     /// Current event index
     pub current_index: usize,
-    /// Last event time for pacing
-    pub last_event_time: std::time::Instant,
-    /// Delay between events (ms)
-    pub event_delay_ms: u64,
+    /// When the replay started (monotonic clock)
+    pub replay_started_at: std::time::Instant,
+    /// Speed multiplier (1.0 = realtime, 10.0 = 10x speed)
+    pub speed_multiplier: f32,
     /// Whether replay is paused
     pub paused: bool,
     /// Whether replay is complete
@@ -44,12 +44,12 @@ pub struct ReplayState {
 }
 
 impl ReplayState {
-    pub fn new(events: Vec<ProbeEvent>, delay_ms: u64) -> Self {
+    pub fn new(events: Vec<ProbeEvent>, speed: f32) -> Self {
         Self {
             events,
             current_index: 0,
-            last_event_time: std::time::Instant::now(),
-            event_delay_ms: delay_ms,
+            replay_started_at: std::time::Instant::now(),
+            speed_multiplier: speed.max(0.1), // Prevent zero/negative speed
             paused: false,
             finished: false,
         }
@@ -223,6 +223,12 @@ fn apply_replay_event(session: &mut Session, event: &ProbeEvent) {
             ProbeOutcome::Timeout => {
                 hop.record_timeout();
             }
+            ProbeOutcome::LateReply { addr, rtt_us } => {
+                // Late reply - response arrived after timeout was recorded.
+                // During replay, record it as a normal response to show what happened.
+                let rtt = Duration::from_micros(*rtt_us);
+                hop.record_response_detecting_flaps(*addr, rtt, None);
+            }
         }
     }
     session.total_sent += 1;
@@ -257,22 +263,35 @@ where
         // Process replay animation tick
         if let Some(ref mut replay) = ui_state.replay_state {
             if !replay.paused && !replay.finished {
-                let now = std::time::Instant::now();
-                if now.duration_since(replay.last_event_time).as_millis() >= replay.event_delay_ms as u128 {
-                    // Apply next event
-                    if replay.current_index < replay.events.len() {
-                        let event = replay.events[replay.current_index].clone();
+                // Calculate elapsed replay time (adjusted for speed)
+                let elapsed_ms = replay.replay_started_at.elapsed().as_millis() as u64;
+                let adjusted_elapsed = (elapsed_ms as f32 * replay.speed_multiplier) as u64;
+
+                // Capture target before acquiring locks to prevent race condition
+                let target_ip = targets[ui_state.selected_target];
+
+                // Apply all events up to current adjusted time
+                while replay.current_index < replay.events.len() {
+                    let event = &replay.events[replay.current_index];
+                    if event.offset_ms <= adjusted_elapsed {
                         let sessions_read = sessions.read();
-                        if let Some(session_lock) = sessions_read.get(&targets[ui_state.selected_target]) {
+                        if let Some(session_lock) = sessions_read.get(&target_ip) {
                             let mut session = session_lock.write();
-                            apply_replay_event(&mut session, &event);
+                            apply_replay_event(
+                                &mut session,
+                                &replay.events[replay.current_index].clone(),
+                            );
                         }
                         replay.current_index += 1;
-                        replay.last_event_time = now;
                     } else {
-                        replay.finished = true;
-                        ui_state.set_status("Replay complete");
+                        break; // Wait for this event's time
                     }
+                }
+
+                // Check if replay is complete
+                if replay.current_index >= replay.events.len() {
+                    replay.finished = true;
+                    ui_state.set_status("Replay complete");
                 }
             }
         }
@@ -652,11 +671,25 @@ where
                 KeyCode::Char(' ') => {
                     // Space to pause/resume replay animation
                     if let Some(ref mut replay) = ui_state.replay_state {
-                        replay.paused = !replay.paused;
                         if replay.paused {
-                            ui_state.set_status("Replay paused - press Space to resume");
-                        } else {
+                            // RESUMING: Reset start time so current event plays at the right moment
+                            let current_event_offset = if replay.current_index < replay.events.len()
+                            {
+                                replay.events[replay.current_index].offset_ms
+                            } else {
+                                0
+                            };
+                            // Adjust start time to account for where we are in the replay
+                            let offset_duration = std::time::Duration::from_millis(
+                                (current_event_offset as f32 / replay.speed_multiplier) as u64,
+                            );
+                            replay.replay_started_at = std::time::Instant::now() - offset_duration;
+                            replay.paused = false;
                             ui_state.set_status("Replay resumed");
+                        } else {
+                            // PAUSING
+                            replay.paused = true;
+                            ui_state.set_status("Replay paused - press Space to resume");
                         }
                     }
                 }

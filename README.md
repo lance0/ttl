@@ -147,6 +147,7 @@ ttl 1.1.1.1 -c 100 --report    # Text report
 ttl 1.1.1.1 -c 100 --json      # JSON export
 ttl 1.1.1.1 -c 100 --csv       # CSV export
 ttl --replay results.json      # Replay saved session
+ttl --replay results.json --animate  # Animated replay
 ```
 
 ### Advanced Options

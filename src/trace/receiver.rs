@@ -10,8 +10,9 @@ use crate::probe::{
     InterfaceInfo, create_recv_socket_with_interface, get_identifier, parse_icmp_response,
     recv_icmp_with_ttl,
 };
-use crate::state::{IcmpResponseType, MplsLabel, PmtudPhase, ProbeEvent, ProbeId, ProbeOutcome, Session};
-use chrono::Utc;
+use crate::state::{
+    IcmpResponseType, MplsLabel, PmtudPhase, ProbeEvent, ProbeId, ProbeOutcome, Session,
+};
 use crate::trace::pending::PendingMap;
 
 /// Map of target IP to session, shared across multiple engines and the receiver
@@ -228,6 +229,24 @@ impl Receiver {
                                 });
                             } else {
                                 // Late packet arrival - response came after timeout
+                                // Record as LateReply for replay accuracy
+                                if let Some(target) = parsed.original_dest {
+                                    let sessions = self.sessions.read();
+                                    if let Some(session_lock) = sessions.get(&target) {
+                                        let mut state = session_lock.write();
+                                        let offset_ms = state.offset_ms();
+                                        state.record_event(ProbeEvent {
+                                            offset_ms,
+                                            ttl: parsed.probe_id.ttl,
+                                            seq: parsed.probe_id.seq,
+                                            flow_id,
+                                            outcome: ProbeOutcome::LateReply {
+                                                addr: parsed.responder,
+                                                rtt_us: 0, // RTT unknown for late arrivals
+                                            },
+                                        });
+                                    }
+                                }
                                 #[cfg(debug_assertions)]
                                 eprintln!(
                                     "Late response: TTL {} seq {} from {} (already timed out)",
@@ -319,14 +338,13 @@ impl Receiver {
                                 }
                             }
 
-                            // Record event for animated replay
-                            let offset_ms = Utc::now()
-                                .signed_duration_since(state.started_at)
-                                .num_milliseconds()
-                                .unsigned_abs();
+                            // Record event for animated replay (monotonic timing)
+                            let offset_ms = state.offset_ms();
                             state.record_event(ProbeEvent {
                                 offset_ms,
                                 ttl: resp.probe_id.ttl,
+                                seq: resp.probe_id.seq,
+                                flow_id: resp.flow_id,
                                 outcome: ProbeOutcome::Reply {
                                     addr: resp.responder,
                                     rtt_us: resp.rtt.as_micros() as u64,
@@ -399,14 +417,13 @@ impl Receiver {
                                     hop.record_flow_timeout(probe.flow_id);
                                 }
 
-                                // Record event for animated replay
-                                let offset_ms = Utc::now()
-                                    .signed_duration_since(state.started_at)
-                                    .num_milliseconds()
-                                    .unsigned_abs();
+                                // Record event for animated replay (monotonic timing)
+                                let offset_ms = state.offset_ms();
                                 state.record_event(ProbeEvent {
                                     offset_ms,
                                     ttl: probe_id.ttl,
+                                    seq: probe_id.seq,
+                                    flow_id: probe.flow_id,
                                     outcome: ProbeOutcome::Timeout,
                                 });
                             }

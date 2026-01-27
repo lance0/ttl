@@ -469,6 +469,12 @@ pub struct ProbeEvent {
     pub offset_ms: u64,
     /// TTL of the probe
     pub ttl: u8,
+    /// Sequence number for probe correlation
+    #[serde(default)]
+    pub seq: u8,
+    /// Flow ID for multi-flow ECMP tracking
+    #[serde(default)]
+    pub flow_id: u8,
     /// Probe outcome
     #[serde(flatten)]
     pub outcome: ProbeOutcome,
@@ -489,6 +495,14 @@ pub enum ProbeOutcome {
     /// Probe timed out with no response
     #[serde(rename = "timeout")]
     Timeout,
+    /// Late reply received after timeout was already recorded
+    #[serde(rename = "late_reply")]
+    LateReply {
+        /// IP address of the responder
+        addr: IpAddr,
+        /// Round-trip time in microseconds
+        rtt_us: u64,
+    },
 }
 
 /// Asymmetric routing detection information for a hop
@@ -1207,6 +1221,9 @@ impl Target {
 pub struct Session {
     pub target: Target,
     pub started_at: DateTime<Utc>,
+    /// Monotonic start time for offset calculations (avoids clock jumps)
+    #[serde(skip)]
+    pub started_instant: Option<std::time::Instant>,
     pub hops: Vec<Hop>,
     pub config: Config,
     pub complete: bool,       // destination reached?
@@ -1246,6 +1263,7 @@ impl Session {
         Self {
             target,
             started_at: Utc::now(),
+            started_instant: Some(std::time::Instant::now()),
             hops,
             config,
             complete: false,
@@ -1295,6 +1313,7 @@ impl Session {
         self.complete = false;
         self.dest_ttl = None;
         self.started_at = Utc::now();
+        self.started_instant = Some(std::time::Instant::now());
 
         // Reset PMTUD state if enabled
         if self.pmtud.is_some() {
@@ -1335,6 +1354,21 @@ impl Session {
     /// Record a probe event for animated replay
     pub fn record_event(&mut self, event: ProbeEvent) {
         self.events.push(event);
+    }
+
+    /// Get monotonic offset in milliseconds since session start.
+    /// Uses Instant for monotonic timing (avoids clock jumps).
+    /// Falls back to Utc for deserialized sessions (where started_instant is None).
+    pub fn offset_ms(&self) -> u64 {
+        if let Some(instant) = self.started_instant {
+            instant.elapsed().as_millis() as u64
+        } else {
+            // Fallback for deserialized sessions
+            Utc::now()
+                .signed_duration_since(self.started_at)
+                .num_milliseconds()
+                .unsigned_abs()
+        }
     }
 }
 

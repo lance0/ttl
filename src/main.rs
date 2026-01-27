@@ -323,11 +323,8 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
             } else {
                 // Create fresh session with same config but no data
                 let events = session.events.clone();
-                let fresh_session = Session::new(
-                    session.target.clone(),
-                    session.config.clone(),
-                );
-                let replay = ReplayState::new(events, 150); // 150ms between events
+                let fresh_session = Session::new(session.target.clone(), session.config.clone());
+                let replay = ReplayState::new(events, args.speed);
                 (fresh_session, Some(replay))
             }
         } else {
@@ -362,7 +359,17 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
             cancel_clone.cancel();
         });
 
-        let final_prefs = run_tui(sessions, targets, cancel, prefs, None, None, None, replay_state).await?;
+        let final_prefs = run_tui(
+            sessions,
+            targets,
+            cancel,
+            prefs,
+            None,
+            None,
+            None,
+            replay_state,
+        )
+        .await?;
 
         // Save preferences (best effort, don't fail on save error)
         let _ = final_prefs.save();
