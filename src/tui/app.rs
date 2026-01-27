@@ -245,7 +245,7 @@ fn apply_replay_event(session: &mut Session, event: &ProbeEvent) {
                 // Check if we reached the destination
                 if *addr == target_ip {
                     session.complete = true;
-                    if session.dest_ttl.is_none() || event.ttl < session.dest_ttl.unwrap() {
+                    if session.dest_ttl.is_none_or(|d| event.ttl < d) {
                         session.dest_ttl = Some(event.ttl);
                     }
                 }
@@ -712,8 +712,18 @@ where
                     }
                 }
                 KeyCode::Char(' ') => {
-                    // Space to pause/resume replay animation
-                    toggle_replay_pause(ui_state);
+                    // Space works the same as 'p': replay pause or live pause
+                    if ui_state.replay_state.is_some() {
+                        toggle_replay_pause(ui_state);
+                    } else {
+                        ui_state.paused = !ui_state.paused;
+                        let sessions_read = sessions.read();
+                        if let Some(state) = sessions_read.get(&current_target) {
+                            let mut session = state.write();
+                            session.paused = ui_state.paused;
+                        }
+                        ui_state.set_status(if ui_state.paused { "Paused" } else { "Resumed" });
+                    }
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     // Extract hop_count quickly, then release lock before updating UI

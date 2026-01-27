@@ -45,8 +45,8 @@ impl Widget for HelpView<'_> {
                 Span::raw("Quit"),
             ]),
             Line::from(vec![
-                Span::styled("  p       ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Pause/Resume probing"),
+                Span::styled("  p/Space ", Style::default().fg(self.theme.shortcut)),
+                Span::raw("Pause/Resume"),
             ]),
             Line::from(vec![
                 Span::styled("  r       ", Style::default().fg(self.theme.shortcut)),

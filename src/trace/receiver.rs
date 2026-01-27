@@ -358,7 +358,7 @@ impl Receiver {
                         {
                             state.complete = true;
                             let ttl = resp.probe_id.ttl;
-                            if state.dest_ttl.is_none() || ttl < state.dest_ttl.unwrap() {
+                            if state.dest_ttl.is_none_or(|d| ttl < d) {
                                 state.dest_ttl = Some(ttl);
                             }
                         }

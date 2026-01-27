@@ -123,4 +123,4 @@ WSL2 has full network stack access, so all ttl features work including ICMP, UDP
 | Linux | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | macOS | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | Windows | :x: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| BSD | :x: | :white_check_mark: | :white_check_mark: | :x: |
+| BSD | :construction: | :white_check_mark: | :white_check_mark: | :x: |

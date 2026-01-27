@@ -50,6 +50,20 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install MSRV Rust
+        uses: dtolnay/rust-toolchain@1.85
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check MSRV
+        run: cargo check --verbose
+
   build-freebsd:
     runs-on: ubuntu-latest
     steps:

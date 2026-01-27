@@ -1382,7 +1382,7 @@ mod duration_serde {
     where
         S: Serializer,
     {
-        duration.as_micros().serialize(serializer)
+        (duration.as_micros() as u64).serialize(serializer)
     }
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
