@@ -68,6 +68,18 @@ cargo install ttl
 brew install lance0/tap/ttl
 ```
 
+### Arch Linux (AUR)
+
+```bash
+yay -S ttl-bin
+```
+
+### Gentoo
+
+```bash
+emerge net-analyzer/ttl
+```
+
 ### Pre-built Binaries
 
 Download from [GitHub Releases](https://github.com/lance0/ttl/releases):
