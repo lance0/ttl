@@ -193,7 +193,7 @@
 - [x] `--animate` flag for replay mode
 - [x] Animated replay shows hop-by-hop discovery in TUI
 - [x] Space to pause/resume replay
-- [x] Progress indicator in status bar
+- [ ] Progress indicator in status bar
 - [x] Graceful fallback for old sessions without events
 - [x] Replay speed control (`--speed` multiplier, default 10x)
 - [x] Monotonic event timestamps (immune to clock jumps)
