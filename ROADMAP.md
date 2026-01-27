@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-## Current Status (v0.14.2)
+## Current Status (v0.15.0)
 
 ### Core Features
 - [x] ICMP Echo probing with TTL sweep
