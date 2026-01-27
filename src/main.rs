@@ -36,7 +36,7 @@ use state::{Session, Target, run_ratelimit_worker};
 use trace::engine::ProbeEngine;
 use trace::pending::new_pending_map;
 use trace::receiver::{ReceiverConfig, SessionMap, spawn_receiver};
-use tui::app::{ResolveInfo, run_tui};
+use tui::app::{ReplayState, ResolveInfo, run_tui};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -315,8 +315,24 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
         // Default to report for replay without TUI
         generate_report(&session, std::io::stdout())?;
     } else {
-        // Show in TUI (read-only)
-        let state = Arc::new(RwLock::new(session));
+        // Check for animated replay mode
+        let (session_to_display, replay_state) = if args.animate {
+            if session.events.is_empty() {
+                eprintln!("Note: No event timeline in session file; showing final state.");
+                (session, None)
+            } else {
+                // Create fresh session with same config but no data
+                let events = session.events.clone();
+                let fresh_session = Session::new(session.target.clone(), session.config.clone());
+                let replay = ReplayState::new(events, args.speed);
+                (fresh_session, Some(replay))
+            }
+        } else {
+            (session, None)
+        };
+
+        // Show in TUI
+        let state = Arc::new(RwLock::new(session_to_display));
         let cancel = CancellationToken::new();
 
         // Create SessionMap with single session
@@ -343,7 +359,17 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
             cancel_clone.cancel();
         });
 
-        let final_prefs = run_tui(sessions, targets, cancel, prefs, None, None, None).await?;
+        let final_prefs = run_tui(
+            sessions,
+            targets,
+            cancel,
+            prefs,
+            None,
+            None,
+            None,
+            replay_state,
+        )
+        .await?;
 
         // Save preferences (best effort, don't fail on save error)
         let _ = final_prefs.save();
@@ -656,6 +682,7 @@ async fn run_interactive_mode(
         resolve_info,
         ix_lookup.clone(),
         update_available,
+        None, // replay_state (live mode)
     )
     .await?;
 

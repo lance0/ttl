@@ -462,6 +462,49 @@ pub struct RouteChange {
     pub at_seq: u64,
 }
 
+/// A recorded probe event for replay animation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProbeEvent {
+    /// Milliseconds since session start
+    pub offset_ms: u64,
+    /// TTL of the probe
+    pub ttl: u8,
+    /// Sequence number for probe correlation
+    #[serde(default)]
+    pub seq: u8,
+    /// Flow ID for multi-flow ECMP tracking
+    #[serde(default)]
+    pub flow_id: u8,
+    /// Probe outcome
+    #[serde(flatten)]
+    pub outcome: ProbeOutcome,
+}
+
+/// Outcome of a probe (reply or timeout)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ProbeOutcome {
+    /// Received a reply from a hop
+    #[serde(rename = "reply")]
+    Reply {
+        /// IP address of the responder
+        addr: IpAddr,
+        /// Round-trip time in microseconds
+        rtt_us: u64,
+    },
+    /// Probe timed out with no response
+    #[serde(rename = "timeout")]
+    Timeout,
+    /// Late reply received after timeout was already recorded
+    #[serde(rename = "late_reply")]
+    LateReply {
+        /// IP address of the responder
+        addr: IpAddr,
+        /// Round-trip time in microseconds
+        rtt_us: u64,
+    },
+}
+
 /// Asymmetric routing detection information for a hop
 ///
 /// Detects when the return path (from router back to us) differs from the
@@ -1178,6 +1221,9 @@ impl Target {
 pub struct Session {
     pub target: Target,
     pub started_at: DateTime<Utc>,
+    /// Monotonic start time for offset calculations (avoids clock jumps)
+    #[serde(skip)]
+    pub started_instant: Option<std::time::Instant>,
     pub hops: Vec<Hop>,
     pub config: Config,
     pub complete: bool,       // destination reached?
@@ -1194,6 +1240,9 @@ pub struct Session {
     /// Default gateway IP (for display in TUI)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<IpAddr>,
+    /// Recorded probe events for animated replay
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<ProbeEvent>,
 }
 
 impl Session {
@@ -1214,6 +1263,7 @@ impl Session {
         Self {
             target,
             started_at: Utc::now(),
+            started_instant: Some(std::time::Instant::now()),
             hops,
             config,
             complete: false,
@@ -1223,6 +1273,7 @@ impl Session {
             pmtud,
             source_ip: None,
             gateway: None,
+            events: Vec::new(),
         }
     }
 
@@ -1262,11 +1313,15 @@ impl Session {
         self.complete = false;
         self.dest_ttl = None;
         self.started_at = Utc::now();
+        self.started_instant = Some(std::time::Instant::now());
 
         // Reset PMTUD state if enabled
         if self.pmtud.is_some() {
             self.pmtud = Some(PmtudState::new(self.target.resolved.is_ipv6()));
         }
+
+        // Clear recorded events
+        self.events.clear();
 
         for hop in &mut self.hops {
             hop.sent = 0;
@@ -1294,6 +1349,26 @@ impl Session {
     #[allow(dead_code)]
     pub fn first_nat_hop(&self) -> Option<u8> {
         self.hops.iter().find(|h| h.has_nat()).map(|h| h.ttl)
+    }
+
+    /// Record a probe event for animated replay
+    pub fn record_event(&mut self, event: ProbeEvent) {
+        self.events.push(event);
+    }
+
+    /// Get monotonic offset in milliseconds since session start.
+    /// Uses Instant for monotonic timing (avoids clock jumps).
+    /// Falls back to Utc for deserialized sessions (where started_instant is None).
+    pub fn offset_ms(&self) -> u64 {
+        if let Some(instant) = self.started_instant {
+            instant.elapsed().as_millis() as u64
+        } else {
+            // Fallback for deserialized sessions
+            Utc::now()
+                .signed_duration_since(self.started_at)
+                .num_milliseconds()
+                .unsigned_abs()
+        }
     }
 }
 

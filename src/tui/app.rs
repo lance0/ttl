@@ -20,12 +20,46 @@ use tokio_util::sync::CancellationToken;
 use crate::export::export_json_file;
 use crate::lookup::ix::IxLookup;
 use crate::prefs::{DisplayMode, Prefs};
-use crate::state::Session;
+use crate::state::{ProbeEvent, ProbeOutcome, Session};
 use crate::trace::receiver::SessionMap;
 use crate::tui::theme::Theme;
 use crate::tui::views::{
     HelpView, HopDetailView, MainView, SettingsState, SettingsView, TargetListView,
 };
+
+/// State for animated replay playback
+pub struct ReplayState {
+    /// All events to replay
+    pub events: Vec<ProbeEvent>,
+    /// Current event index
+    pub current_index: usize,
+    /// When the replay started (monotonic clock)
+    pub replay_started_at: std::time::Instant,
+    /// Speed multiplier (1.0 = realtime, 10.0 = 10x speed)
+    pub speed_multiplier: f32,
+    /// Whether replay is paused
+    pub paused: bool,
+    /// Whether replay is complete
+    pub finished: bool,
+    /// Adjusted elapsed ms at time of pause (for accurate resume)
+    pub paused_at_elapsed_ms: u64,
+}
+
+impl ReplayState {
+    pub fn new(mut events: Vec<ProbeEvent>, speed: f32) -> Self {
+        // Sort events by offset to prevent stalled replay from out-of-order events
+        events.sort_by_key(|e| e.offset_ms);
+        Self {
+            events,
+            current_index: 0,
+            replay_started_at: std::time::Instant::now(),
+            speed_multiplier: speed.max(0.1), // Prevent zero/negative speed
+            paused: false,
+            finished: false,
+            paused_at_elapsed_ms: 0,
+        }
+    }
+}
 
 /// Information about skipped IPs during resolution
 #[derive(Clone, Default)]
@@ -63,6 +97,8 @@ pub struct UiState {
     pub target_list_index: usize,
     /// Update available notification (version string)
     pub update_available: Option<String>,
+    /// Replay animation state (None = live mode or static replay)
+    pub replay_state: Option<ReplayState>,
 }
 
 impl UiState {
@@ -80,6 +116,7 @@ impl UiState {
 }
 
 /// Run the TUI application. Returns the final preferences for persistence.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_tui(
     sessions: SessionMap,
     targets: Vec<IpAddr>,
@@ -88,6 +125,7 @@ pub async fn run_tui(
     resolve_info: Option<ResolveInfo>,
     ix_lookup: Option<Arc<IxLookup>>,
     update_available: Option<String>,
+    replay_state: Option<ReplayState>,
 ) -> Result<Prefs> {
     // Setup terminal
     enable_raw_mode()?;
@@ -118,9 +156,10 @@ pub async fn run_tui(
         display_mode,
         settings: SettingsState::new(initial_index, display_mode, api_key),
         update_available,
+        replay_state,
         ..Default::default()
     };
-    let tick_rate = Duration::from_millis(100);
+    let tick_rate = Duration::from_millis(16); // ~60fps for responsive per-probe updates
 
     // Show initial status if resolve_info is present and multiple targets
     if let Some(info) = resolve_info {
@@ -165,6 +204,74 @@ pub async fn run_tui(
     })
 }
 
+/// Toggle pause/resume for replay animation
+fn toggle_replay_pause(ui_state: &mut UiState) {
+    if let Some(ref mut replay) = ui_state.replay_state {
+        if replay.paused {
+            // RESUMING: Restore start time from the elapsed time we recorded at pause
+            let offset_duration = std::time::Duration::from_millis(
+                (replay.paused_at_elapsed_ms as f32 / replay.speed_multiplier) as u64,
+            );
+            replay.replay_started_at = std::time::Instant::now() - offset_duration;
+            replay.paused = false;
+            ui_state.set_status("Replay resumed");
+        } else {
+            // PAUSING: Record exactly how far into the replay we are (in adjusted ms)
+            let elapsed_ms = replay.replay_started_at.elapsed().as_millis() as u64;
+            replay.paused_at_elapsed_ms = (elapsed_ms as f32 * replay.speed_multiplier) as u64;
+            replay.paused = true;
+            ui_state.set_status("Replay paused - press p or Space to resume");
+        }
+    }
+}
+
+/// Apply a replay event to the session state
+fn apply_replay_event(session: &mut Session, event: &ProbeEvent) {
+    let target_ip = session.target.resolved;
+    let single_flow = session.config.flows == 1;
+
+    if let Some(hop) = session.hop_mut(event.ttl) {
+        match &event.outcome {
+            ProbeOutcome::Reply { addr, rtt_us } => {
+                hop.record_sent();
+                let rtt = Duration::from_micros(*rtt_us);
+                if single_flow {
+                    hop.record_response_detecting_flaps(*addr, rtt, None);
+                } else {
+                    hop.record_response_with_mpls(*addr, rtt, None);
+                }
+                hop.record_flow_response(event.flow_id, *addr, rtt);
+
+                // Check if we reached the destination
+                if *addr == target_ip {
+                    session.complete = true;
+                    if session.dest_ttl.is_none() || event.ttl < session.dest_ttl.unwrap() {
+                        session.dest_ttl = Some(event.ttl);
+                    }
+                }
+                session.total_sent += 1;
+            }
+            ProbeOutcome::Timeout => {
+                hop.record_sent();
+                hop.record_timeout();
+                hop.record_flow_timeout(event.flow_id);
+                session.total_sent += 1;
+            }
+            ProbeOutcome::LateReply { addr, rtt_us } => {
+                // Late reply arrived after timeout was already recorded.
+                // Don't increment sent/total_sent - the Timeout event already did that.
+                let rtt = Duration::from_micros(*rtt_us);
+                if single_flow {
+                    hop.record_response_detecting_flaps(*addr, rtt, None);
+                } else {
+                    hop.record_response_with_mpls(*addr, rtt, None);
+                }
+                hop.record_flow_response(event.flow_id, *addr, rtt);
+            }
+        }
+    }
+}
+
 async fn run_app<B>(
     terminal: &mut Terminal<B>,
     sessions: SessionMap,
@@ -190,6 +297,42 @@ where
 
         // Clear old status messages
         ui_state.clear_old_status();
+
+        // Process replay animation tick
+        if let Some(ref mut replay) = ui_state.replay_state {
+            if !replay.paused && !replay.finished {
+                // Calculate elapsed replay time (adjusted for speed)
+                let elapsed_ms = replay.replay_started_at.elapsed().as_millis() as u64;
+                let adjusted_elapsed = (elapsed_ms as f32 * replay.speed_multiplier) as u64;
+
+                // Capture target before acquiring locks to prevent race condition
+                let target_ip = targets[ui_state.selected_target];
+
+                // Apply all events up to current adjusted time
+                while replay.current_index < replay.events.len() {
+                    let event = &replay.events[replay.current_index];
+                    if event.offset_ms <= adjusted_elapsed {
+                        let sessions_read = sessions.read();
+                        if let Some(session_lock) = sessions_read.get(&target_ip) {
+                            let mut session = session_lock.write();
+                            apply_replay_event(
+                                &mut session,
+                                &replay.events[replay.current_index].clone(),
+                            );
+                        }
+                        replay.current_index += 1;
+                    } else {
+                        break; // Wait for this event's time
+                    }
+                }
+
+                // Check if replay is complete
+                if replay.current_index >= replay.events.len() {
+                    replay.finished = true;
+                    ui_state.set_status("Replay complete");
+                }
+            }
+        }
 
         // Get current theme
         let theme = Theme::by_name(theme_names[ui_state.theme_index]);
@@ -486,14 +629,19 @@ where
                     }
                 }
                 KeyCode::Char('p') => {
-                    ui_state.paused = !ui_state.paused;
-                    // Pause/resume current target's probe engine
-                    let sessions_read = sessions.read();
-                    if let Some(state) = sessions_read.get(&current_target) {
-                        let mut session = state.write();
-                        session.paused = ui_state.paused;
+                    if ui_state.replay_state.is_some() {
+                        // In replay mode, 'p' toggles replay pause (same as Space)
+                        toggle_replay_pause(ui_state);
+                    } else {
+                        // In live mode, 'p' toggles probe engine pause
+                        ui_state.paused = !ui_state.paused;
+                        let sessions_read = sessions.read();
+                        if let Some(state) = sessions_read.get(&current_target) {
+                            let mut session = state.write();
+                            session.paused = ui_state.paused;
+                        }
+                        ui_state.set_status(if ui_state.paused { "Paused" } else { "Resumed" });
                     }
-                    ui_state.set_status(if ui_state.paused { "Paused" } else { "Resumed" });
                 }
                 KeyCode::Char('r') => {
                     // Reset current target's statistics
@@ -562,6 +710,10 @@ where
                             }
                         }
                     }
+                }
+                KeyCode::Char(' ') => {
+                    // Space to pause/resume replay animation
+                    toggle_replay_pause(ui_state);
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     // Extract hop_count quickly, then release lock before updating UI

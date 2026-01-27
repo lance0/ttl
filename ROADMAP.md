@@ -186,7 +186,21 @@
 - [x] Cache refresh from settings (`r` key in PeeringDB section)
 - [x] Fix macOS probe TTL batching issue (#12) - add minimum inter-probe delay
 
-### v0.14.0 - Interactive Target Selection (Planned)
+### v0.15.0 - Animated Replay (#9)
+- [x] TUI refresh rate increased to 60fps (from 10fps) for responsive updates (#17)
+- [x] ProbeEvent recording during trace (offset_ms, ttl, seq, flow_id, response/timeout)
+- [x] Session JSON includes events array (backward compatible)
+- [x] `--animate` flag for replay mode
+- [x] Animated replay shows hop-by-hop discovery in TUI
+- [x] Space to pause/resume replay
+- [ ] Progress indicator in status bar
+- [x] Graceful fallback for old sessions without events
+- [x] Replay speed control (`--speed` multiplier, default 10x)
+- [x] Monotonic event timestamps (immune to clock jumps)
+- [x] Late reply tracking for replay accuracy
+- [ ] Interactive replay (step through events, jump to time)
+
+### v0.16.0 - Interactive Target Selection (Planned)
 - [ ] `ttl` with no args enters interactive mode
 - [ ] Press `o` to open target input modal
 - [ ] Text input with hostname/IP validation

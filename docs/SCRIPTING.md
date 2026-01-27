@@ -233,12 +233,20 @@ Save and replay sessions for historical analysis or sharing:
 # Save a trace session
 ttl 1.1.1.1 -c 100 --json > trace-$(date +%Y%m%d-%H%M%S).json
 
-# Replay in TUI
+# Replay in TUI (final state)
 ttl --replay trace-20240115-143022.json
+
+# Animated replay (shows probe-by-probe discovery at 10x speed)
+ttl --replay trace.json --animate
+
+# Real-time animated replay
+ttl --replay trace.json --animate --speed 1.0
 
 # Replay and export as CSV
 ttl --replay trace.json --csv > trace.csv
 ```
+
+During animated replay, press Space to pause/resume.
 
 ## Exit Codes
 
