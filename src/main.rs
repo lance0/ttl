@@ -272,10 +272,10 @@ async fn main() -> Result<()> {
 
     // Check for update notification (only for non-interactive mode)
     // Use short timeout so we don't delay exit if check is slow
-    if is_terminal::is_terminal(std::io::stderr()) {
-        if let Ok(Some(new_version)) = update_rx.recv_timeout(Duration::from_millis(100)) {
-            update::print_update_notice(&new_version);
-        }
+    if is_terminal::is_terminal(std::io::stderr())
+        && let Ok(Some(new_version)) = update_rx.recv_timeout(Duration::from_millis(100))
+    {
+        update::print_update_notice(&new_version);
     }
 
     result
