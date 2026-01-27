@@ -299,38 +299,39 @@ where
         ui_state.clear_old_status();
 
         // Process replay animation tick
-        if let Some(ref mut replay) = ui_state.replay_state {
-            if !replay.paused && !replay.finished {
-                // Calculate elapsed replay time (adjusted for speed)
-                let elapsed_ms = replay.replay_started_at.elapsed().as_millis() as u64;
-                let adjusted_elapsed = (elapsed_ms as f32 * replay.speed_multiplier) as u64;
+        if let Some(ref mut replay) = ui_state.replay_state
+            && !replay.paused
+            && !replay.finished
+        {
+            // Calculate elapsed replay time (adjusted for speed)
+            let elapsed_ms = replay.replay_started_at.elapsed().as_millis() as u64;
+            let adjusted_elapsed = (elapsed_ms as f32 * replay.speed_multiplier) as u64;
 
-                // Capture target before acquiring locks to prevent race condition
-                let target_ip = targets[ui_state.selected_target];
+            // Capture target before acquiring locks to prevent race condition
+            let target_ip = targets[ui_state.selected_target];
 
-                // Apply all events up to current adjusted time
-                while replay.current_index < replay.events.len() {
-                    let event = &replay.events[replay.current_index];
-                    if event.offset_ms <= adjusted_elapsed {
-                        let sessions_read = sessions.read();
-                        if let Some(session_lock) = sessions_read.get(&target_ip) {
-                            let mut session = session_lock.write();
-                            apply_replay_event(
-                                &mut session,
-                                &replay.events[replay.current_index].clone(),
-                            );
-                        }
-                        replay.current_index += 1;
-                    } else {
-                        break; // Wait for this event's time
+            // Apply all events up to current adjusted time
+            while replay.current_index < replay.events.len() {
+                let event = &replay.events[replay.current_index];
+                if event.offset_ms <= adjusted_elapsed {
+                    let sessions_read = sessions.read();
+                    if let Some(session_lock) = sessions_read.get(&target_ip) {
+                        let mut session = session_lock.write();
+                        apply_replay_event(
+                            &mut session,
+                            &replay.events[replay.current_index].clone(),
+                        );
                     }
+                    replay.current_index += 1;
+                } else {
+                    break; // Wait for this event's time
                 }
+            }
 
-                // Check if replay is complete
-                if replay.current_index >= replay.events.len() {
-                    replay.finished = true;
-                    ui_state.set_status("Replay complete");
-                }
+            // Check if replay is complete
+            if replay.current_index >= replay.events.len() {
+                replay.finished = true;
+                ui_state.set_status("Replay complete");
             }
         }
 

@@ -151,19 +151,20 @@ impl ProbeEngine {
 
         // Bind to source IP if configured OR if IPv6 (required for checksum consistency)
         // Skip binding if source is unspecified (:: or 0.0.0.0) - let kernel choose
-        if (self.config.source_ip.is_some() || ipv6) && !src_ip.is_unspecified() {
-            if let Err(e) = bind_to_source_ip(&socket, src_ip) {
-                if self.config.source_ip.is_some() {
-                    // User explicitly requested this source IP - hard fail
-                    return Err(e);
-                }
-                // Auto-detected source IP failed to bind (e.g., link-local scope mismatch)
-                // Warn and continue - kernel will choose source, checksum may be wrong
-                eprintln!(
-                    "Warning: Failed to bind to source IP {}: {}. IPv6 checksum may be incorrect.",
-                    src_ip, e
-                );
+        if (self.config.source_ip.is_some() || ipv6)
+            && !src_ip.is_unspecified()
+            && let Err(e) = bind_to_source_ip(&socket, src_ip)
+        {
+            if self.config.source_ip.is_some() {
+                // User explicitly requested this source IP - hard fail
+                return Err(e);
             }
+            // Auto-detected source IP failed to bind (e.g., link-local scope mismatch)
+            // Warn and continue - kernel will choose source, checksum may be wrong
+            eprintln!(
+                "Warning: Failed to bind to source IP {}: {}. IPv6 checksum may be incorrect.",
+                src_ip, e
+            );
         }
 
         let mut seq: u8 = 0;
@@ -798,15 +799,13 @@ impl ProbeEngine {
                         let mut state = self.state.write();
 
                         // Only record hop stats for normal probes, not PMTUD probes
-                        if !is_pmtud_probe {
-                            if let Some(hop) = state.hop_mut(parsed.probe_id.ttl) {
-                                // Use flap-detecting record for single-flow mode (ICMP is always single-flow)
-                                hop.record_response_detecting_flaps(parsed.responder, rtt, None);
-                                hop.record_flow_response(flow_id, parsed.responder, rtt);
-                                // Record response TTL for asymmetry detection
-                                if let Some(response_ttl) = recv_result.response_ttl {
-                                    hop.record_response_ttl(response_ttl, true);
-                                }
+                        if !is_pmtud_probe && let Some(hop) = state.hop_mut(parsed.probe_id.ttl) {
+                            // Use flap-detecting record for single-flow mode (ICMP is always single-flow)
+                            hop.record_response_detecting_flaps(parsed.responder, rtt, None);
+                            hop.record_flow_response(flow_id, parsed.responder, rtt);
+                            // Record response TTL for asymmetry detection
+                            if let Some(response_ttl) = recv_result.response_ttl {
+                                hop.record_response_ttl(response_ttl, true);
                             }
                         }
 
@@ -820,14 +819,12 @@ impl ProbeEngine {
                         }
 
                         // Handle PMTUD probe success
-                        if let Some(probe_size) = probe.packet_size {
-                            if let Some(ref mut pmtud) = state.pmtud {
-                                if pmtud.phase == PmtudPhase::Searching
-                                    && probe_size == pmtud.current_size
-                                {
-                                    pmtud.record_success();
-                                }
-                            }
+                        if let Some(probe_size) = probe.packet_size
+                            && let Some(ref mut pmtud) = state.pmtud
+                            && pmtud.phase == PmtudPhase::Searching
+                            && probe_size == pmtud.current_size
+                        {
+                            pmtud.record_success();
                         }
                     }
                 }
