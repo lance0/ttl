@@ -258,7 +258,7 @@ When a hostname resolves to multiple IPs (round-robin DNS, CDN load balancing), 
 | Key | Action |
 |-----|--------|
 | `q` / `Ctrl+C` | Quit |
-| `p` | Pause/Resume |
+| `p` / `Space` | Pause/Resume |
 | `r` | Reset stats |
 | `t` | Cycle theme |
 | `w` | Cycle display mode |

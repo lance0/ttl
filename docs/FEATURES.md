@@ -209,8 +209,8 @@ The JSON output includes PMTUD state:
 {
   "pmtud": {
     "min_size": 1400,
-    "max_size": 1500,
-    "current_size": 1450,
+    "max_size": 1400,
+    "current_size": 1400,
     "successes": 0,
     "failures": 0,
     "discovered_mtu": 1400,
@@ -362,7 +362,7 @@ High jitter indicates path instability from congestion, route changes, or load b
 | Key | Action |
 |-----|--------|
 | `q` / `Ctrl+C` | Quit |
-| `p` | Pause/Resume probing |
+| `p` / `Space` | Pause/Resume |
 | `r` | Reset all statistics |
 | `t` | Cycle color theme |
 | `w` | Cycle display mode (auto/compact/wide) |

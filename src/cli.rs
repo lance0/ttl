@@ -268,6 +268,11 @@ impl Args {
             ));
         }
 
+        // Validate replay speed
+        if self.speed < 0.1 || self.speed > 1000.0 {
+            return Err("Replay speed must be between 0.1 and 1000.0".into());
+        }
+
         // Validate interface name
         if let Some(ref iface) = self.interface {
             if iface.is_empty() {
