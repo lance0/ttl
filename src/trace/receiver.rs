@@ -295,10 +295,15 @@ impl Receiver {
                         let mut state = session.write();
                         let is_pmtud_probe = resp.packet_size.is_some();
 
+                        // Increment sent count here (not in engine) so all stats update atomically
+                        state.total_sent += 1;
+
                         // Only record hop stats for normal probes, not PMTUD probes
                         // PMTUD probes are for MTU discovery, not traceroute measurements
                         if !is_pmtud_probe {
                             if let Some(hop) = state.hop_mut(resp.probe_id.ttl) {
+                                hop.record_sent();
+                                hop.record_flow_sent(resp.flow_id);
                                 // Record aggregate stats with optional flap detection
                                 // Only detect flaps in single-flow mode (multi-flow expects path changes)
                                 if self.config.num_flows == 1 {
@@ -410,9 +415,14 @@ impl Receiver {
                         if let Some(session) = sessions.get(target) {
                             let mut state = session.write();
 
+                            // Increment sent count here (not in engine) so all stats update atomically
+                            state.total_sent += 1;
+
                             // Only record hop timeouts for normal probes, not PMTUD probes
                             if !is_pmtud_probe {
                                 if let Some(hop) = state.hop_mut(probe_id.ttl) {
+                                    hop.record_sent();
+                                    hop.record_flow_sent(probe.flow_id);
                                     hop.record_timeout();
                                     hop.record_flow_timeout(probe.flow_id);
                                 }

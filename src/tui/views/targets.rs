@@ -9,36 +9,81 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 use crate::trace::receiver::SessionMap;
 use crate::tui::theme::Theme;
 
+/// Pre-extracted target info to avoid holding locks during render
+pub(crate) struct TargetInfo {
+    pub ip: IpAddr,
+    pub hostname: String,
+    pub hops_str: String,
+    pub loss_str: String,
+}
+
+/// Extract target info from all sessions, holding locks briefly then releasing.
+/// Called before `terminal.draw()` so no locks are held during rendering.
+pub(crate) fn extract_target_infos(sessions: &SessionMap, targets: &[IpAddr]) -> Vec<TargetInfo> {
+    let sessions_read = sessions.read();
+    targets
+        .iter()
+        .map(|target_ip| {
+            let (hostname, hops_str, loss_str) = if let Some(state) = sessions_read.get(target_ip) {
+                let session = state.read();
+
+                // Get display name (hostname or original input)
+                let display_name = session.target.display_name();
+                let hostname = if display_name.parse::<IpAddr>().is_ok() {
+                    // Original was an IP, use reverse DNS hostname if available
+                    session.target.hostname.clone().unwrap_or_default()
+                } else {
+                    display_name
+                };
+
+                // Get hop count (dest_ttl if known)
+                let hops = if let Some(dest_ttl) = session.dest_ttl {
+                    format!("{} hops", dest_ttl)
+                } else {
+                    "--".to_string()
+                };
+
+                // Get loss % at destination
+                let loss = if let Some(dest_ttl) = session.dest_ttl {
+                    if let Some(hop) = session.hops.get(dest_ttl as usize - 1) {
+                        format!("{:.1}%", hop.loss_pct())
+                    } else {
+                        "--".to_string()
+                    }
+                } else {
+                    "--".to_string()
+                };
+
+                (hostname, hops, loss)
+            } else {
+                (String::new(), "--".to_string(), "--".to_string())
+            };
+
+            TargetInfo {
+                ip: *target_ip,
+                hostname,
+                hops_str,
+                loss_str,
+            }
+        })
+        .collect()
+}
+
 /// Target list overlay for multi-target mode
 pub struct TargetListView<'a> {
     theme: &'a Theme,
-    sessions: &'a SessionMap,
-    targets: &'a [IpAddr],
+    target_infos: &'a [TargetInfo],
     selected_index: usize,
 }
 
 impl<'a> TargetListView<'a> {
-    pub fn new(
-        theme: &'a Theme,
-        sessions: &'a SessionMap,
-        targets: &'a [IpAddr],
-        selected_index: usize,
-    ) -> Self {
+    pub fn new(theme: &'a Theme, target_infos: &'a [TargetInfo], selected_index: usize) -> Self {
         Self {
             theme,
-            sessions,
-            targets,
+            target_infos,
             selected_index,
         }
     }
-}
-
-/// Pre-extracted target info to avoid holding locks during render
-struct TargetInfo {
-    ip: IpAddr,
-    hostname: String,
-    hops_str: String,
-    loss_str: String,
 }
 
 impl Widget for TargetListView<'_> {
@@ -46,7 +91,7 @@ impl Widget for TargetListView<'_> {
         // Calculate centered popup area
         let popup_width = 65.min(area.width.saturating_sub(4));
         let popup_height =
-            (self.targets.len() + 8).min(area.height.saturating_sub(4) as usize) as u16;
+            (self.target_infos.len() + 8).min(area.height.saturating_sub(4) as usize) as u16;
         let popup_x = (area.width - popup_width) / 2 + area.x;
         let popup_y = (area.height - popup_height) / 2 + area.y;
         let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
@@ -62,69 +107,15 @@ impl Widget for TargetListView<'_> {
         let inner = block.inner(popup_area);
         block.render(popup_area, buf);
 
-        // Extract all target info while holding the lock briefly, then release
-        let target_infos: Vec<TargetInfo> = {
-            let sessions_read = self.sessions.read();
-            self.targets
-                .iter()
-                .map(|target_ip| {
-                    let (hostname, hops_str, loss_str) =
-                        if let Some(state) = sessions_read.get(target_ip) {
-                            let session = state.read();
-
-                            // Get display name (hostname or original input)
-                            let display_name = session.target.display_name();
-                            let hostname = if display_name.parse::<IpAddr>().is_ok() {
-                                // Original was an IP, use reverse DNS hostname if available
-                                session.target.hostname.clone().unwrap_or_default()
-                            } else {
-                                display_name
-                            };
-
-                            // Get hop count (dest_ttl if known)
-                            let hops = if let Some(dest_ttl) = session.dest_ttl {
-                                format!("{} hops", dest_ttl)
-                            } else {
-                                "--".to_string()
-                            };
-
-                            // Get loss % at destination
-                            let loss = if let Some(dest_ttl) = session.dest_ttl {
-                                if let Some(hop) = session.hops.get(dest_ttl as usize - 1) {
-                                    format!("{:.1}%", hop.loss_pct())
-                                } else {
-                                    "--".to_string()
-                                }
-                            } else {
-                                "--".to_string()
-                            };
-
-                            (hostname, hops, loss)
-                        } else {
-                            (String::new(), "--".to_string(), "--".to_string())
-                        };
-
-                    TargetInfo {
-                        ip: *target_ip,
-                        hostname,
-                        hops_str,
-                        loss_str,
-                    }
-                })
-                .collect()
-        }; // Lock released here
-
-        // Now render with owned data - no locks held
         let mut lines = Vec::new();
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
-            format!("  Resolved {} addresses:", target_infos.len()),
+            format!("  Resolved {} addresses:", self.target_infos.len()),
             Style::default().fg(self.theme.header),
         )]));
         lines.push(Line::from(""));
 
-        // Build target list from pre-extracted data
-        for (i, info) in target_infos.iter().enumerate() {
+        for (i, info) in self.target_infos.iter().enumerate() {
             let is_selected = i == self.selected_index;
             let marker = if is_selected { ">" } else { " " };
 

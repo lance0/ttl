@@ -24,7 +24,8 @@ use crate::state::{ProbeEvent, ProbeOutcome, Session};
 use crate::trace::receiver::SessionMap;
 use crate::tui::theme::Theme;
 use crate::tui::views::{
-    HelpView, HopDetailView, MainView, SettingsState, SettingsView, TargetListView,
+    HelpView, HopDetailView, MainView, SettingsState, SettingsView, TargetInfo, TargetListView,
+    extract_target_infos,
 };
 
 /// State for animated replay playback
@@ -99,6 +100,10 @@ pub struct UiState {
     pub update_available: Option<String>,
     /// Replay animation state (None = live mode or static replay)
     pub replay_state: Option<ReplayState>,
+    /// Cached target list info (populated when overlay is open, refreshed every 30 ticks)
+    pub target_list_cache: Option<Vec<TargetInfo>>,
+    /// Tick counter for target list cache refresh
+    pub target_list_tick: u32,
 }
 
 impl UiState {
@@ -310,22 +315,23 @@ where
             // Capture target before acquiring locks to prevent race condition
             let target_ip = targets[ui_state.selected_target];
 
-            // Apply all events up to current adjusted time
-            while replay.current_index < replay.events.len() {
-                let event = &replay.events[replay.current_index];
-                if event.offset_ms <= adjusted_elapsed {
-                    let sessions_read = sessions.read();
-                    if let Some(session_lock) = sessions_read.get(&target_ip) {
-                        let mut session = session_lock.write();
-                        apply_replay_event(
-                            &mut session,
-                            &replay.events[replay.current_index].clone(),
-                        );
+            // Find all events up to current adjusted time
+            let start = replay.current_index;
+            let mut end = start;
+            while end < replay.events.len() && replay.events[end].offset_ms <= adjusted_elapsed {
+                end += 1;
+            }
+
+            // Apply all events in a single lock acquisition (no per-event lock churn)
+            if end > start {
+                let sessions_read = sessions.read();
+                if let Some(session_lock) = sessions_read.get(&target_ip) {
+                    let mut session = session_lock.write();
+                    for event in &replay.events[start..end] {
+                        apply_replay_event(&mut session, event);
                     }
-                    replay.current_index += 1;
-                } else {
-                    break; // Wait for this event's time
                 }
+                replay.current_index = end;
             }
 
             // Check if replay is complete
@@ -344,24 +350,41 @@ where
         // Get cache status for settings modal
         let cache_status = ix_lookup.as_ref().map(|ix| ix.get_cache_status());
 
-        // Draw
-        terminal.draw(|f| {
+        // Snapshot session data BEFORE draw so no locks are held during rendering.
+        // Uses snapshot_for_render() to skip cloning the events vec (unbounded, not used in render).
+        let session_snapshot = {
             let sessions_read = sessions.read();
-            if let Some(state) = sessions_read.get(&current_target) {
-                let session = state.read();
+            sessions_read
+                .get(&current_target)
+                .map(|state| state.read().snapshot_for_render())
+        };
+
+        // Refresh target list cache (~every 500ms while overlay is open)
+        if ui_state.show_target_list {
+            ui_state.target_list_tick += 1;
+            if ui_state.target_list_cache.is_none() || ui_state.target_list_tick.is_multiple_of(30)
+            {
+                ui_state.target_list_cache = Some(extract_target_infos(&sessions, &targets));
+            }
+        } else {
+            ui_state.target_list_cache = None;
+            ui_state.target_list_tick = 0;
+        }
+
+        // Draw (no locks held — all data is pre-extracted snapshots)
+        if let Some(ref session) = session_snapshot {
+            terminal.draw(|f| {
                 draw_ui(
                     f,
-                    &session,
+                    session,
                     ui_state,
                     &theme,
                     num_targets,
-                    &sessions,
-                    &targets,
                     cache_status.clone(),
                     ix_enabled,
                 );
-            }
-        })?;
+            })?;
+        }
 
         // Handle input with timeout
         if event::poll(tick_rate)?
@@ -685,6 +708,9 @@ where
                     if num_targets > 1 {
                         ui_state.target_list_index = ui_state.selected_target;
                         ui_state.show_target_list = true;
+                        ui_state.target_list_cache =
+                            Some(extract_target_infos(&sessions, &targets));
+                        ui_state.target_list_tick = 0;
                     }
                 }
                 KeyCode::Char('u') => {
@@ -782,8 +808,6 @@ fn draw_ui(
     ui_state: &UiState,
     theme: &Theme,
     num_targets: usize,
-    sessions: &SessionMap,
-    targets: &[IpAddr],
     cache_status: Option<crate::lookup::ix::CacheStatus>,
     ix_enabled: bool,
 ) {
@@ -897,9 +921,11 @@ fn draw_ui(
         }
     }
 
-    if ui_state.show_target_list {
+    if ui_state.show_target_list
+        && let Some(ref infos) = ui_state.target_list_cache
+    {
         f.render_widget(
-            TargetListView::new(theme, sessions, targets, ui_state.target_list_index),
+            TargetListView::new(theme, infos, ui_state.target_list_index),
             area,
         );
     }

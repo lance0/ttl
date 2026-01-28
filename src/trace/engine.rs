@@ -269,16 +269,6 @@ impl ProbeEngine {
                             continue;
                         }
 
-                        // Record that we sent a probe
-                        {
-                            let mut state = self.state.write();
-                            if let Some(hop) = state.hop_mut(ttl) {
-                                hop.record_sent();
-                                hop.record_flow_sent(0); // ICMP uses single flow (checksum trick not yet implemented)
-                            }
-                            state.total_sent += 1;
-                        }
-
                         // Apply rate limiting if configured
                         self.apply_rate_limit().await;
                     }
@@ -425,16 +415,6 @@ impl ProbeEngine {
                                 continue;
                             }
 
-                            // Record that we sent a probe
-                            {
-                                let mut state = self.state.write();
-                                if let Some(hop) = state.hop_mut(ttl) {
-                                    hop.record_sent();
-                                    hop.record_flow_sent(flow_id);
-                                }
-                                state.total_sent += 1;
-                            }
-
                             // Apply rate limiting if configured
                             self.apply_rate_limit().await;
                         }
@@ -561,16 +541,6 @@ impl ProbeEngine {
                                 self.pending.write().remove(&(probe_id, flow_id, self.target, false));
                                 eprintln!("Failed to send TCP probe TTL {} flow {}: {}", ttl, flow_id, e);
                                 continue;
-                            }
-
-                            // Record that we sent a probe
-                            {
-                                let mut state = self.state.write();
-                                if let Some(hop) = state.hop_mut(ttl) {
-                                    hop.record_sent();
-                                    hop.record_flow_sent(flow_id);
-                                }
-                                state.total_sent += 1;
                             }
 
                             // Apply rate limiting if configured
@@ -701,10 +671,7 @@ impl ProbeEngine {
         // Send the probe
         match send_icmp(socket, &packet, self.target) {
             Ok(_) => {
-                // Don't increment hop.sent for PMTUD probes - they're for MTU discovery,
-                // not traceroute measurements. Only increment total_sent for diagnostics.
-                let mut state = self.state.write();
-                state.total_sent += 1;
+                // Sent counting deferred to receiver for atomic stat updates
                 true
             }
             Err(e) => {
@@ -797,9 +764,12 @@ impl ProbeEngine {
 
                         // Update state with parity to receiver behavior
                         let mut state = self.state.write();
+                        state.total_sent += 1;
 
                         // Only record hop stats for normal probes, not PMTUD probes
                         if !is_pmtud_probe && let Some(hop) = state.hop_mut(parsed.probe_id.ttl) {
+                            hop.record_sent();
+                            hop.record_flow_sent(flow_id);
                             // Use flap-detecting record for single-flow mode (ICMP is always single-flow)
                             hop.record_response_detecting_flaps(parsed.responder, rtt, None);
                             hop.record_flow_response(flow_id, parsed.responder, rtt);

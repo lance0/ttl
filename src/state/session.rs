@@ -1229,7 +1229,7 @@ pub struct Session {
     pub config: Config,
     pub complete: bool,       // destination reached?
     pub dest_ttl: Option<u8>, // TTL at which destination was reached (actual hop count)
-    pub total_sent: u64,      // total probes sent across all hops
+    pub total_sent: u64,      // total completed probes (response or timeout) across all hops
     #[serde(skip)]
     pub paused: bool, // pause probing (TUI only)
     /// PMTUD state (only present when --pmtud is enabled)
@@ -1350,6 +1350,26 @@ impl Session {
     #[allow(dead_code)]
     pub fn first_nat_hop(&self) -> Option<u8> {
         self.hops.iter().find(|h| h.has_nat()).map(|h| h.ttl)
+    }
+
+    /// Clone session data for TUI rendering, excluding events (which can be large).
+    /// The events vec is only used for replay export, never during TUI rendering.
+    pub fn snapshot_for_render(&self) -> Self {
+        Self {
+            target: self.target.clone(),
+            started_at: self.started_at,
+            started_instant: self.started_instant,
+            hops: self.hops.clone(),
+            config: self.config.clone(),
+            complete: self.complete,
+            dest_ttl: self.dest_ttl,
+            total_sent: self.total_sent,
+            paused: self.paused,
+            pmtud: self.pmtud.clone(),
+            source_ip: self.source_ip,
+            gateway: self.gateway,
+            events: Vec::new(),
+        }
     }
 
     /// Record a probe event for animated replay
