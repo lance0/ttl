@@ -6,7 +6,7 @@ Thank you for your interest in contributing to ttl!
 
 ### Prerequisites
 
-- Rust 1.85+ (edition 2024)
+- Rust 1.88+ (edition 2024)
 - Linux or macOS (Windows not currently supported)
 - `CAP_NET_RAW` capability or root access for testing
 

@@ -3,4 +3,5 @@
 *.swo
 *~
 .DS_Store
+*.rlib
 .claude/
