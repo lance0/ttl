@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.2] - 2026-01-28
+
+### Added
+- **`--jumbo` flag**: Enable 9216-byte max for PMTUD in jumbo frame environments. Without this flag, PMTUD uses standard 1500-byte ethernet max (#28)
+
+### Fixed
+- **PMTUD accuracy**: Standard ethernet (1500 MTU) now reports exact MTU instead of ~1495 (#28)
+
 ## [0.15.1] - 2026-01-28
 
 ### Fixed

@@ -22,6 +22,7 @@ fn test_session_with_pmtud() -> Session {
     let target = Target::new("8.8.8.8".to_string(), IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)));
     let config = Config {
         pmtud: true,
+        jumbo: true, // Use jumbo mode to test full 9216 range
         ..Default::default()
     };
     Session::new(target, config)
@@ -35,6 +36,7 @@ fn test_session_ipv6_with_pmtud() -> Session {
     );
     let config = Config {
         pmtud: true,
+        jumbo: true, // Use jumbo mode to test full 9216 range
         ..Default::default()
     };
     Session::new(target, config)
@@ -371,9 +373,21 @@ fn test_pmtud_ipv6_min_size() {
 }
 
 #[test]
+fn test_pmtud_default_max_is_1500() {
+    // Non-jumbo mode should use 1500 (standard ethernet) as max
+    let pmtud_ipv4 = PmtudState::new(false, false); // IPv4, non-jumbo
+    assert_eq!(pmtud_ipv4.min_size, 68);
+    assert_eq!(pmtud_ipv4.max_size, 1500);
+
+    let pmtud_ipv6 = PmtudState::new(true, false); // IPv6, non-jumbo
+    assert_eq!(pmtud_ipv6.min_size, 1280);
+    assert_eq!(pmtud_ipv6.max_size, 1500);
+}
+
+#[test]
 fn test_pmtud_frag_needed_below_min() {
     // Test that record_frag_needed trusts ICMP-reported MTU per RFC 1191
-    let mut pmtud = PmtudState::new(false); // IPv4
+    let mut pmtud = PmtudState::new(false, false); // IPv4
     pmtud.start_search();
 
     // Router reports MTU of 576 (old internet minimum)
@@ -390,7 +404,7 @@ fn test_pmtud_frag_needed_below_min() {
 #[test]
 fn test_pmtud_frag_needed_at_min() {
     // Edge case: reported MTU equals or is below min_size
-    let mut pmtud = PmtudState::new(true); // IPv6, min=1280
+    let mut pmtud = PmtudState::new(true, false); // IPv6, min=1280
     pmtud.start_search();
 
     // Router reports exactly 1280
@@ -479,7 +493,7 @@ fn test_pmtud_reset_clears_discovered_mtu_ipv6() {
 #[test]
 fn test_pmtud_frag_needed_jumbo() {
     // Router reports jumbo MTU within our search range
-    let mut pmtud = PmtudState::new(false); // IPv4
+    let mut pmtud = PmtudState::new(false, true); // IPv4, jumbo mode
     pmtud.start_search();
 
     // Router reports 9000 (jumbo frame MTU) - within our max of 9216
@@ -494,7 +508,7 @@ fn test_pmtud_frag_needed_jumbo() {
 #[test]
 fn test_pmtud_frag_needed_above_max() {
     // Edge case: router reports MTU above our ceiling (bogus value)
-    let mut pmtud = PmtudState::new(false); // IPv4
+    let mut pmtud = PmtudState::new(false, true); // IPv4, jumbo mode
     pmtud.start_search();
 
     // Router reports 16000 (above our 9216 ceiling)
@@ -510,7 +524,7 @@ fn test_pmtud_frag_needed_above_max() {
 #[test]
 fn test_pmtud_ipv6_convergence() {
     // Full IPv6 PMTUD cycle with realistic MTU
-    let mut pmtud = PmtudState::new(true); // IPv6, min=1280
+    let mut pmtud = PmtudState::new(true, false); // IPv6, min=1280
     pmtud.start_search();
 
     // Simulate link with 1400 byte MTU (common for tunnels)

@@ -185,15 +185,18 @@ Verify with: `sudo tcpdump -v -n icmp | grep tos`
 ## Path MTU Discovery (PMTUD)
 
 ```bash
-ttl --pmtud 8.8.8.8
+ttl --pmtud 8.8.8.8              # Standard ethernet (max 1500)
+ttl --pmtud --jumbo 8.8.8.8      # Jumbo frame environments (max 9216)
 ```
 
 Discover the path MTU using binary search:
 
 1. Sends probes with Don't Fragment (DF) flag set
-2. Binary searches between min (68 for IPv4, 1280 for IPv6) and max (9216)
+2. Binary searches between min (68 for IPv4, 1280 for IPv6) and max (1500 or 9216)
 3. Uses ICMP "Fragmentation Needed" / "Packet Too Big" responses
 4. Results displayed in TUI title bar
+
+By default, PMTUD uses 1500 bytes as the upper bound (standard ethernet MTU). Use `--jumbo` to search up to 9216 bytes for jumbo frame environments (data centers, 10GbE networks with 9000-byte MTUs).
 
 PMTUD runs in the background after the destination is discovered, without interrupting normal tracing.
 
@@ -496,7 +499,8 @@ Options:
       --size <N>         Packet size in bytes (36-9216)
       --dscp <N>         DSCP value for QoS testing (0-63)
       --rate <N>         Max probes per second (0 = unlimited)
-      --pmtud            Enable Path MTU Discovery
+      --pmtud            Enable Path MTU Discovery (max 1500)
+      --jumbo            Enable jumbo frame detection (max 9216, requires --pmtud)
       --source-ip <IP>   Force specific source IP address
       --interface <NAME> Bind probes to specific interface
       --recv-any         Don't bind receiver (asymmetric routing)

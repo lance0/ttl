@@ -169,6 +169,11 @@ pub struct Args {
     #[arg(long = "pmtud")]
     pub pmtud: bool,
 
+    /// Enable jumbo frame detection (9216 byte max) for PMTUD
+    /// Without this flag, PMTUD uses standard ethernet max (1500 bytes)
+    #[arg(long = "jumbo", requires = "pmtud")]
+    pub jumbo: bool,
+
     /// Maximum probes per second (0 = unlimited)
     #[arg(long = "rate", value_parser = clap::value_parser!(u32).range(0..=10000))]
     pub rate: Option<u32>,
@@ -326,6 +331,7 @@ mod tests {
             dscp: None,
             size: None,
             pmtud: false,
+            jumbo: false,
             rate: None,
             source_ip: None,
             completions: None,

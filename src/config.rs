@@ -62,6 +62,9 @@ pub struct Config {
     /// Enable Path MTU discovery mode
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pmtud: bool,
+    /// Enable jumbo frame detection for PMTUD
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub jumbo: bool,
     /// Maximum probes per second (None = unlimited)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate: Option<u32>,
@@ -98,6 +101,7 @@ impl Default for Config {
             dscp: None,
             packet_size: None,
             pmtud: false,
+            jumbo: false,
             rate: None,
             source_ip: None,
         }
@@ -143,6 +147,7 @@ impl From<&Args> for Config {
             dscp: args.dscp,
             packet_size: args.size,
             pmtud: args.pmtud,
+            jumbo: args.jumbo,
             rate: args.rate,
             source_ip: args.source_ip,
         }

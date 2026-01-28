@@ -763,15 +763,16 @@ pub struct PmtudState {
 impl PmtudState {
     /// Create new PMTUD state with appropriate bounds for IPv4 or IPv6
     ///
-    /// - IPv4: min=68 (RFC 791), max=9216
-    /// - IPv6: min=1280 (RFC 8200), max=9216
-    /// - 9216 supports jumbo frame environments (9000 payload + headers)
-    pub fn new(ipv6: bool) -> Self {
+    /// - IPv4: min=68 (RFC 791)
+    /// - IPv6: min=1280 (RFC 8200)
+    /// - max=1500 for standard ethernet, 9216 with --jumbo flag
+    pub fn new(ipv6: bool, jumbo: bool) -> Self {
         let min = if ipv6 { 1280 } else { 68 };
+        let max = if jumbo { 9216 } else { 1500 };
         Self {
             min_size: min,
-            max_size: 9216,
-            current_size: 9216, // Start high, binary search down
+            max_size: max,
+            current_size: max, // Start high, binary search down
             successes: 0,
             failures: 0,
             discovered_mtu: None,
@@ -1256,7 +1257,7 @@ impl Session {
 
         // Initialize PMTUD state if enabled
         let pmtud = if config.pmtud {
-            Some(PmtudState::new(target.resolved.is_ipv6()))
+            Some(PmtudState::new(target.resolved.is_ipv6(), config.jumbo))
         } else {
             None
         };
@@ -1318,7 +1319,10 @@ impl Session {
 
         // Reset PMTUD state if enabled
         if self.pmtud.is_some() {
-            self.pmtud = Some(PmtudState::new(self.target.resolved.is_ipv6()));
+            self.pmtud = Some(PmtudState::new(
+                self.target.resolved.is_ipv6(),
+                self.config.jumbo,
+            ));
         }
 
         // Clear recorded events
