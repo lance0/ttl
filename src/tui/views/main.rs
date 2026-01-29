@@ -114,9 +114,12 @@ impl<'a> MainView<'a> {
                             + 4; // space for " !~^"
                         max_host = max_host.max(host_len);
 
-                        // ASN name length
+                        // ASN column shows "AS##### name", account for full format
                         if let Some(ref asn) = stats.asn {
-                            max_asn = max_asn.max(asn.name.chars().count());
+                            // "AS" (2) + digits + " " (1) + name
+                            let digits = asn.number.checked_ilog10().unwrap_or(0) as usize + 1;
+                            let asn_len = 3 + digits + asn.name.chars().count();
+                            max_asn = max_asn.max(asn_len);
                         }
                     }
                 }
@@ -302,8 +305,12 @@ impl Widget for MainView<'_> {
                     };
                     let asn = if let Some(ref asn_info) = stats.asn {
                         // Use computed ASN width (minus 1 for padding)
+                        // Show "AS##### name" so ASN number is always visible even when truncated
                         let asn_max_len = (col_widths.asn as usize).saturating_sub(1);
-                        truncate_with_ellipsis(&asn_info.name, asn_max_len)
+                        truncate_with_ellipsis(
+                            &format!("AS{} {}", asn_info.number, asn_info.name),
+                            asn_max_len,
+                        )
                     } else {
                         String::new()
                     };

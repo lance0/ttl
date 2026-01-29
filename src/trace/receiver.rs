@@ -115,11 +115,6 @@ impl Receiver {
         let mut buffer = [0u8; 9216];
 
         loop {
-            // Check cancellation
-            if self.cancel.is_cancelled() {
-                break;
-            }
-
             // FIRST: Drain packets from socket into batch (limited to prevent starvation)
             // This prevents dropping responses that are already queued in the buffer
             let mut batch: Vec<BatchedResponse> = Vec::with_capacity(MAX_DRAIN_BATCH);
@@ -400,6 +395,14 @@ impl Receiver {
                 }
             }
 
+            // Check cancellation AFTER draining socket, so queued responses aren't lost
+            if self.cancel.is_cancelled() {
+                // Flush remaining pending probes as timeouts before exiting
+                // This ensures consistent sent counts across all hops (#37)
+                self.flush_pending_as_timeouts();
+                break;
+            }
+
             // THEN: Clean up timed out probes from shared pending map
             // This runs after draining the socket, so queued responses aren't lost
             {
@@ -457,6 +460,31 @@ impl Receiver {
         }
 
         Ok(())
+    }
+
+    /// Flush all remaining pending probes as timeouts on shutdown.
+    /// Called when cancel signal is received to ensure consistent sent counts.
+    fn flush_pending_as_timeouts(&self) {
+        let mut pending = self.pending.write();
+        let sessions = self.sessions.read();
+
+        // Drain all remaining probes and count them as timeouts
+        for ((probe_id, _flow_id, target, is_pmtud), probe) in pending.drain() {
+            if let Some(session) = sessions.get(&target) {
+                let mut state = session.write();
+
+                // Increment sent count for consistency
+                state.total_sent += 1;
+
+                // Only record hop stats for normal probes, not PMTUD probes
+                if !is_pmtud && let Some(hop) = state.hop_mut(probe_id.ttl) {
+                    hop.record_sent();
+                    hop.record_flow_sent(probe.flow_id);
+                    hop.record_timeout();
+                    hop.record_flow_timeout(probe.flow_id);
+                }
+            }
+        }
     }
 }
 
