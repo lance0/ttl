@@ -51,6 +51,12 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 curl -fsSL "$URL" | tar xz -C "$TMPDIR"
 
+# Create install directory if it doesn't exist
+if [ ! -d "$INSTALL_DIR" ]; then
+  echo "Creating $INSTALL_DIR..."
+  sudo mkdir -p "$INSTALL_DIR"
+fi
+
 # Install
 if [ -w "$INSTALL_DIR" ]; then
   mv "$TMPDIR/ttl" "$INSTALL_DIR/ttl"
