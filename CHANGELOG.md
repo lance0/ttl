@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-02-05
+
+### Changed
+- **Immediate sent counting**: Sent counters now increment when probes leave, not when responses arrive. Matches mtr behavior for real-time feedback (#17)
+
+### Fixed
+- **FreeBSD ICMP sockets**: FreeBSD doesn't support `SOCK_DGRAM + IPPROTO_ICMP`, now uses RAW sockets directly. Fixes `Protocol not supported` error on FreeBSD (#14)
+- **Dual-stack `--resolve-all`**: `--resolve-all` without `-4`/`-6` now traces both IPv4 and IPv6 addresses by spawning dual receivers. Previously silently dropped one address family (#11)
+- **IPv6 Echo Reply double-counting**: Fixed sent counter being incremented twice for Linux IPv6 ICMP probes (once at send, once at Echo Reply)
+
+### Removed
+- Dead `create_probe_interval()` function
+
 ## [0.15.3] - 2026-01-29
 
 ### Changed

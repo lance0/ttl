@@ -269,6 +269,16 @@ impl ProbeEngine {
                             continue;
                         }
 
+                        // Increment sent count immediately (mtr parity)
+                        {
+                            let mut state = self.state.write();
+                            state.total_sent += 1;
+                            if let Some(hop) = state.hop_mut(ttl) {
+                                hop.record_sent();
+                                hop.record_flow_sent(flow_id);
+                            }
+                        }
+
                         // Apply rate limiting if configured
                         self.apply_rate_limit().await;
                     }
@@ -415,6 +425,16 @@ impl ProbeEngine {
                                 continue;
                             }
 
+                            // Increment sent count immediately (mtr parity)
+                            {
+                                let mut state = self.state.write();
+                                state.total_sent += 1;
+                                if let Some(hop) = state.hop_mut(ttl) {
+                                    hop.record_sent();
+                                    hop.record_flow_sent(flow_id);
+                                }
+                            }
+
                             // Apply rate limiting if configured
                             self.apply_rate_limit().await;
                         }
@@ -541,6 +561,16 @@ impl ProbeEngine {
                                 self.pending.write().remove(&(probe_id, flow_id, self.target, false));
                                 eprintln!("Failed to send TCP probe TTL {} flow {}: {}", ttl, flow_id, e);
                                 continue;
+                            }
+
+                            // Increment sent count immediately (mtr parity)
+                            {
+                                let mut state = self.state.write();
+                                state.total_sent += 1;
+                                if let Some(hop) = state.hop_mut(ttl) {
+                                    hop.record_sent();
+                                    hop.record_flow_sent(flow_id);
+                                }
                             }
 
                             // Apply rate limiting if configured
@@ -671,7 +701,10 @@ impl ProbeEngine {
         // Send the probe
         match send_icmp(socket, &packet, self.target) {
             Ok(_) => {
-                // Sent counting deferred to receiver for atomic stat updates
+                // Increment sent count immediately (mtr parity)
+                // PMTUD only increments total_sent, not hop-level stats
+                let mut state = self.state.write();
+                state.total_sent += 1;
                 true
             }
             Err(e) => {
@@ -762,14 +795,11 @@ impl ProbeEngine {
                         let rtt = Instant::now().duration_since(probe.sent_at);
                         let is_pmtud_probe = probe.packet_size.is_some();
 
-                        // Update state with parity to receiver behavior
+                        // Record response (sent counting already happened at send time)
                         let mut state = self.state.write();
-                        state.total_sent += 1;
 
                         // Only record hop stats for normal probes, not PMTUD probes
                         if !is_pmtud_probe && let Some(hop) = state.hop_mut(parsed.probe_id.ttl) {
-                            hop.record_sent();
-                            hop.record_flow_sent(flow_id);
                             // Use flap-detecting record for single-flow mode (ICMP is always single-flow)
                             hop.record_response_detecting_flaps(parsed.responder, rtt, None);
                             hop.record_flow_response(flow_id, parsed.responder, rtt);
@@ -816,12 +846,4 @@ impl ProbeEngine {
         // Restore blocking mode for sending
         let _ = socket.set_nonblocking(false);
     }
-}
-
-/// Create interval from config
-#[allow(dead_code)]
-pub fn create_probe_interval(config: &Config) -> tokio::time::Interval {
-    let mut interval = tokio::time::interval(config.interval);
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    interval
 }

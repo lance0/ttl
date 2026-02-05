@@ -290,15 +290,10 @@ impl Receiver {
                         let mut state = session.write();
                         let is_pmtud_probe = resp.packet_size.is_some();
 
-                        // Increment sent count here (not in engine) so all stats update atomically
-                        state.total_sent += 1;
-
-                        // Only record hop stats for normal probes, not PMTUD probes
+                        // Only record hop responses for normal probes, not PMTUD probes
                         // PMTUD probes are for MTU discovery, not traceroute measurements
                         if !is_pmtud_probe {
                             if let Some(hop) = state.hop_mut(resp.probe_id.ttl) {
-                                hop.record_sent();
-                                hop.record_flow_sent(resp.flow_id);
                                 // Record aggregate stats with optional flap detection
                                 // Only detect flaps in single-flow mode (multi-flow expects path changes)
                                 if self.config.num_flows == 1 {
@@ -398,7 +393,6 @@ impl Receiver {
             // Check cancellation AFTER draining socket, so queued responses aren't lost
             if self.cancel.is_cancelled() {
                 // Flush remaining pending probes as timeouts before exiting
-                // This ensures consistent sent counts across all hops (#37)
                 self.flush_pending_as_timeouts();
                 break;
             }
@@ -418,14 +412,9 @@ impl Receiver {
                         if let Some(session) = sessions.get(target) {
                             let mut state = session.write();
 
-                            // Increment sent count here (not in engine) so all stats update atomically
-                            state.total_sent += 1;
-
                             // Only record hop timeouts for normal probes, not PMTUD probes
                             if !is_pmtud_probe {
                                 if let Some(hop) = state.hop_mut(probe_id.ttl) {
-                                    hop.record_sent();
-                                    hop.record_flow_sent(probe.flow_id);
                                     hop.record_timeout();
                                     hop.record_flow_timeout(probe.flow_id);
                                 }
@@ -463,23 +452,17 @@ impl Receiver {
     }
 
     /// Flush all remaining pending probes as timeouts on shutdown.
-    /// Called when cancel signal is received to ensure consistent sent counts.
     fn flush_pending_as_timeouts(&self) {
         let mut pending = self.pending.write();
         let sessions = self.sessions.read();
 
-        // Drain all remaining probes and count them as timeouts
+        // Drain all remaining probes and record them as timeouts
         for ((probe_id, _flow_id, target, is_pmtud), probe) in pending.drain() {
             if let Some(session) = sessions.get(&target) {
                 let mut state = session.write();
 
-                // Increment sent count for consistency
-                state.total_sent += 1;
-
-                // Only record hop stats for normal probes, not PMTUD probes
+                // Only record hop timeouts for normal probes, not PMTUD probes
                 if !is_pmtud && let Some(hop) = state.hop_mut(probe_id.ttl) {
-                    hop.record_sent();
-                    hop.record_flow_sent(probe.flow_id);
                     hop.record_timeout();
                     hop.record_flow_timeout(probe.flow_id);
                 }

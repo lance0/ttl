@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-## Current Status (v0.15.0)
+## Current Status (v0.16.0)
 
 ### Core Features
 - [x] ICMP Echo probing with TTL sweep
@@ -22,6 +22,8 @@
 - [x] Stats reset
 - [x] Destination detection (stops at actual hop count)
 - [x] Race-free probe correlation (shared pending map)
+- [x] Immediate sent counting (mtr parity — sent increments at probe send, not response)
+- [x] Dual-stack `--resolve-all` (trace IPv4 and IPv6 simultaneously)
 - [x] Terminal state cleanup on error/panic
 - [x] Interface binding (`--interface`, `--recv-any`)
 - [x] Shell completions (`--completions bash/zsh/fish/powershell`)
@@ -57,7 +59,7 @@
 ### Platform Support
 - [x] Linux (raw sockets with CAP_NET_RAW or root)
 - [x] macOS (requires root, uses DGRAM sockets for proper TTL support)
-- [x] FreeBSD (build support, gateway detection unavailable)
+- [x] FreeBSD (raw sockets, gateway detection unavailable)
 
 ## Planned Features
 

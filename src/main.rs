@@ -34,7 +34,7 @@ use probe::{
 };
 use state::{Session, Target, run_ratelimit_worker};
 use trace::engine::ProbeEngine;
-use trace::pending::new_pending_map;
+use trace::pending::{PendingMap, new_pending_map};
 use trace::receiver::{ReceiverConfig, SessionMap, spawn_receiver};
 use tui::app::{ReplayState, ResolveInfo, run_tui};
 
@@ -192,44 +192,67 @@ async fn main() -> Result<()> {
         cancel_clone.cancel();
     });
 
-    // All targets must be same IP version for now (single receiver)
-    let ipv6 = targets[0].is_ipv6();
-    if targets.iter().any(|t| t.is_ipv6() != ipv6) {
-        anyhow::bail!("Mixed IPv4/IPv6 targets not supported. Use -4 or -6 to force one version.");
-    }
+    // Determine which IP families are present
+    let has_ipv4 = targets.iter().any(|t| t.is_ipv4());
+    let has_ipv6 = targets.iter().any(|t| t.is_ipv6());
+    let mixed = has_ipv4 && has_ipv6;
 
-    // Validate interface has address matching target IP family
+    // For single-family compat (used by validation below)
+    let ipv6 = !has_ipv4 && has_ipv6;
+
+    // Validate interface has address matching target IP families
     if let Some(ref info) = interface_info {
-        if ipv6 && info.ipv6.is_none() {
-            eprintln!(
-                "Error: Interface '{}' has no IPv6 address but targets require IPv6. \
-                 Use -4 to force IPv4.",
-                info.name
-            );
-            std::process::exit(1);
+        if has_ipv6 && info.ipv6.is_none() {
+            if mixed {
+                eprintln!(
+                    "Warning: Interface '{}' has no IPv6 address; IPv6 targets will not use interface binding.",
+                    info.name
+                );
+            } else {
+                eprintln!(
+                    "Error: Interface '{}' has no IPv6 address but targets require IPv6. \
+                     Use -4 to force IPv4.",
+                    info.name
+                );
+                std::process::exit(1);
+            }
         }
-        if !ipv6 && info.ipv4.is_none() {
-            eprintln!(
-                "Error: Interface '{}' has no IPv4 address but targets require IPv4. \
-                 Use -6 to force IPv6.",
-                info.name
-            );
-            std::process::exit(1);
+        if has_ipv4 && info.ipv4.is_none() {
+            if mixed {
+                eprintln!(
+                    "Warning: Interface '{}' has no IPv4 address; IPv4 targets will not use interface binding.",
+                    info.name
+                );
+            } else {
+                eprintln!(
+                    "Error: Interface '{}' has no IPv4 address but targets require IPv4. \
+                     Use -6 to force IPv6.",
+                    info.name
+                );
+                std::process::exit(1);
+            }
         }
     }
 
     // Validate source IP matches target IP family
-    if let Some(source_ip) = config.source_ip
-        && source_ip.is_ipv6() != ipv6
-    {
-        eprintln!(
-            "Error: Source IP {} is {} but targets are {}. \
-             Use -4 or -6 to force matching IP version.",
-            source_ip,
-            if source_ip.is_ipv6() { "IPv6" } else { "IPv4" },
-            if ipv6 { "IPv6" } else { "IPv4" }
-        );
-        std::process::exit(1);
+    if let Some(source_ip) = config.source_ip {
+        if mixed {
+            eprintln!(
+                "Error: --source-ip cannot be used with mixed IPv4/IPv6 targets. \
+                 Use -4 or -6 to restrict to one family."
+            );
+            std::process::exit(1);
+        }
+        if source_ip.is_ipv6() != ipv6 {
+            eprintln!(
+                "Error: Source IP {} is {} but targets are {}. \
+                 Use -4 or -6 to force matching IP version.",
+                source_ip,
+                if source_ip.is_ipv6() { "IPv6" } else { "IPv4" },
+                if ipv6 { "IPv6" } else { "IPv4" }
+            );
+            std::process::exit(1);
+        }
     }
 
     // Run in appropriate mode
@@ -440,13 +463,16 @@ fn resolve_targets(
         anyhow::bail!("No addresses found for hostnames");
     }
 
-    let use_ipv6 = if force_ipv6 {
-        true
+    // When resolve_all + no explicit family flag, keep both IPv4 and IPv6
+    let filter_family = if resolve_all && !force_ipv4 && !force_ipv6 {
+        None // Keep all families
+    } else if force_ipv6 {
+        Some(true)
     } else if force_ipv4 {
-        false
+        Some(false)
     } else {
-        // Use IPv6, if first resolved address is IPv6
-        order[0].is_ipv6()
+        // Default: use first resolved address's family
+        Some(order[0].is_ipv6())
     };
 
     let mut targets = Vec::new();
@@ -454,7 +480,7 @@ fn resolve_targets(
     let mut skipped_ipv6 = 0;
 
     for ip in order {
-        if ip.is_ipv6() == use_ipv6 {
+        if filter_family.is_none() || ip.is_ipv6() == filter_family.unwrap() {
             let hostnames = ip_to_hostnames.remove(&ip).unwrap();
             let primary = hostnames[0].clone();
             let aliases: Vec<String> = hostnames.into_iter().skip(1).collect();
@@ -467,10 +493,12 @@ fn resolve_targets(
     }
 
     if targets.is_empty() {
-        anyhow::bail!(
-            "No {} addresses found for targets",
-            if use_ipv6 { "IPv6" } else { "IPv4" }
-        );
+        let family = match filter_family {
+            Some(true) => "IPv6",
+            Some(false) => "IPv4",
+            None => "matching",
+        };
+        anyhow::bail!("No {} addresses found for targets", family);
     }
 
     Ok(ResolveResult {
@@ -521,6 +549,72 @@ fn resolve_target(target: &str, force_ipv4: bool, force_ipv6: bool) -> Result<Ip
     Ok(filtered[0])
 }
 
+/// Spawn one or two receiver threads based on which IP families are present in targets.
+/// Returns a vec of join handles (1 for single-family, 2 for mixed IPv4+IPv6).
+fn spawn_receivers(
+    sessions: &SessionMap,
+    pending: &PendingMap,
+    cancel: &CancellationToken,
+    config: &Config,
+    targets: &[IpAddr],
+    interface: &Option<InterfaceInfo>,
+) -> Vec<std::thread::JoinHandle<Result<()>>> {
+    let has_ipv4 = targets.iter().any(|t| t.is_ipv4());
+    let has_ipv6 = targets.iter().any(|t| t.is_ipv6());
+    let mut handles = Vec::new();
+
+    if has_ipv4 {
+        let receiver_config = ReceiverConfig {
+            timeout: config.timeout,
+            ipv6: false,
+            src_port_base: config.src_port_base,
+            num_flows: config.flows,
+            interface: interface.clone(),
+            recv_any: config.recv_any,
+        };
+        handles.push(spawn_receiver(
+            sessions.clone(),
+            pending.clone(),
+            cancel.clone(),
+            receiver_config,
+        ));
+    }
+
+    if has_ipv6 {
+        let receiver_config = ReceiverConfig {
+            timeout: config.timeout,
+            ipv6: true,
+            src_port_base: config.src_port_base,
+            num_flows: config.flows,
+            interface: interface.clone(),
+            recv_any: config.recv_any,
+        };
+        handles.push(spawn_receiver(
+            sessions.clone(),
+            pending.clone(),
+            cancel.clone(),
+            receiver_config,
+        ));
+    }
+
+    handles
+}
+
+/// Join all receiver threads, returning the first error if any.
+fn join_receivers(handles: Vec<std::thread::JoinHandle<Result<()>>>) -> Result<()> {
+    for handle in handles {
+        handle.join().map_err(|e| {
+            let msg = e
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| e.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            anyhow::anyhow!("Receiver thread failed: {}", msg)
+        })??;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_interactive_mode(
     args: Args,
@@ -535,24 +629,9 @@ async fn run_interactive_mode(
     // Shared pending map for probe correlation (engine writes, receiver reads)
     let pending = new_pending_map();
 
-    // All targets must be same IP version (validated in main)
-    let ipv6 = targets[0].is_ipv6();
-
-    // Spawn receiver thread (handles all targets)
-    let receiver_config = ReceiverConfig {
-        timeout: config.timeout,
-        ipv6,
-        src_port_base: config.src_port_base,
-        num_flows: config.flows,
-        interface: interface.clone(),
-        recv_any: config.recv_any,
-    };
-    let receiver_handle = spawn_receiver(
-        sessions.clone(),
-        pending.clone(),
-        cancel.clone(),
-        receiver_config,
-    );
+    // Spawn receiver thread(s) — one per IP family present
+    let receiver_handles =
+        spawn_receivers(&sessions, &pending, &cancel, &config, &targets, &interface);
 
     // Spawn probe engine for each target
     let mut engine_handles = Vec::new();
@@ -694,16 +773,7 @@ async fn run_interactive_mode(
     for handle in engine_handles {
         handle.await??;
     }
-    receiver_handle.join().map_err(|e| {
-        // This branch shouldn't be reached since we use catch_unwind in the receiver,
-        // but handle it just in case something panics outside the protected region
-        let msg = e
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| e.downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "unknown panic".to_string());
-        anyhow::anyhow!("Receiver thread failed: {}", msg)
-    })??;
+    join_receivers(receiver_handles)?;
     if let Some(handle) = dns_handle {
         handle.await?;
     }
@@ -749,24 +819,9 @@ async fn run_batch_mode(
     // Shared pending map for probe correlation (engine writes, receiver reads)
     let pending = new_pending_map();
 
-    // All targets must be same IP version (validated in main)
-    let ipv6 = targets[0].is_ipv6();
-
-    // Spawn receiver thread (handles all targets)
-    let receiver_config = ReceiverConfig {
-        timeout: config.timeout,
-        ipv6,
-        src_port_base: config.src_port_base,
-        num_flows: config.flows,
-        interface: interface.clone(),
-        recv_any: config.recv_any,
-    };
-    let receiver_handle = spawn_receiver(
-        sessions.clone(),
-        pending.clone(),
-        cancel.clone(),
-        receiver_config,
-    );
+    // Spawn receiver thread(s) — one per IP family present
+    let receiver_handles =
+        spawn_receivers(&sessions, &pending, &cancel, &config, &targets, &interface);
 
     // Spawn probe engine for each target
     let mut engine_handles = Vec::new();
@@ -866,14 +921,7 @@ async fn run_batch_mode(
     tokio::time::sleep(config.timeout + Duration::from_millis(500)).await;
     cancel.cancel();
 
-    receiver_handle.join().map_err(|e| {
-        let msg = e
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| e.downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "unknown panic".to_string());
-        anyhow::anyhow!("Receiver thread failed: {}", msg)
-    })??;
+    join_receivers(receiver_handles)?;
 
     // Wait for enrichment workers to finish
     if let Some(handle) = dns_handle {
@@ -967,24 +1015,9 @@ async fn run_streaming_mode(
     // Shared pending map for probe correlation (engine writes, receiver reads)
     let pending = new_pending_map();
 
-    // All targets must be same IP version (validated in main)
-    let ipv6 = targets[0].is_ipv6();
-
-    // Spawn receiver thread (handles all targets)
-    let receiver_config = ReceiverConfig {
-        timeout: config.timeout,
-        ipv6,
-        src_port_base: config.src_port_base,
-        num_flows: config.flows,
-        interface: interface.clone(),
-        recv_any: config.recv_any,
-    };
-    let receiver_handle = spawn_receiver(
-        sessions.clone(),
-        pending.clone(),
-        cancel.clone(),
-        receiver_config,
-    );
+    // Spawn receiver thread(s) — one per IP family present
+    let receiver_handles =
+        spawn_receivers(&sessions, &pending, &cancel, &config, &targets, &interface);
 
     // Spawn probe engine for each target
     let mut engine_handles = Vec::new();
@@ -1124,14 +1157,7 @@ async fn run_streaming_mode(
     for handle in engine_handles {
         handle.await??;
     }
-    receiver_handle.join().map_err(|e| {
-        let msg = e
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| e.downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "unknown panic".to_string());
-        anyhow::anyhow!("Receiver thread failed: {}", msg)
-    })??;
+    join_receivers(receiver_handles)?;
 
     // Wait for enrichment workers to finish
     if let Some(handle) = dns_handle {

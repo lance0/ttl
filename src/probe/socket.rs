@@ -23,21 +23,20 @@ pub struct SocketInfo {
 }
 
 /// Check socket permissions and return capability level
-/// On macOS/FreeBSD, requires RAW socket for receiving ICMP Time Exceeded messages
-/// (DGRAM sockets only receive Echo Reply, not error messages from routers)
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+/// On macOS, requires RAW socket for receiving and DGRAM for sending (IP_TTL support)
+#[cfg(target_os = "macos")]
 pub fn check_permissions() -> Result<SocketCapability> {
-    // On macOS/FreeBSD:
+    // On macOS:
     // - Send socket uses DGRAM (supports IP_TTL for per-probe TTL control)
     // - Receive socket must use RAW (DGRAM can't receive Time Exceeded from routers)
     //
-    // Since RAW sockets require root, traceroute on macOS/FreeBSD needs sudo.
+    // Since RAW sockets require root, traceroute on macOS needs sudo.
 
     // Check if we can create RAW IPv4 socket (needed for receiving)
     if create_raw_icmp_socket(false).is_err() {
         return Err(anyhow!(
             "Insufficient permissions for ICMP sockets.\n\n\
-             On macOS/FreeBSD, raw sockets are required to receive ICMP Time Exceeded\n\
+             On macOS, raw sockets are required to receive ICMP Time Exceeded\n\
              messages from intermediate routers.\n\n\
              Fix: Run with sudo: sudo ttl <target>"
         ));
@@ -62,6 +61,26 @@ pub fn check_permissions() -> Result<SocketCapability> {
     }
 
     // Return Raw capability since we're using RAW for receiving
+    Ok(SocketCapability::Raw)
+}
+
+/// Check socket permissions and return capability level
+/// On FreeBSD, uses RAW sockets for both sending and receiving
+/// (FreeBSD does not support SOCK_DGRAM + IPPROTO_ICMP)
+#[cfg(target_os = "freebsd")]
+pub fn check_permissions() -> Result<SocketCapability> {
+    if create_raw_icmp_socket(false).is_err() {
+        return Err(anyhow!(
+            "Insufficient permissions for ICMP sockets.\n\n\
+             On FreeBSD, raw sockets are required for traceroute.\n\n\
+             Fix: Run with sudo: sudo ttl <target>"
+        ));
+    }
+
+    if create_raw_icmp_socket(true).is_err() {
+        eprintln!("Note: IPv6 raw sockets unavailable; IPv6 traceroute will not work.");
+    }
+
     Ok(SocketCapability::Raw)
 }
 
@@ -143,12 +162,13 @@ pub fn create_dgram_icmp_socket_any(ipv6: bool) -> Result<Socket> {
 }
 
 /// Create a socket for sending ICMP probes with configurable TTL
-/// On macOS/FreeBSD, uses DGRAM socket because RAW sockets don't support IP_TTL
+/// On macOS, uses DGRAM socket because RAW sockets don't support IP_TTL
+/// On FreeBSD, uses RAW socket directly (DGRAM+ICMP not supported)
 /// On Linux, prefers RAW, falls back to DGRAM for unprivileged ICMP
 pub fn create_send_socket(ipv6: bool) -> Result<SocketInfo> {
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    #[cfg(target_os = "macos")]
     {
-        // macOS/FreeBSD: Prefer DGRAM (supports IP_TTL)
+        // macOS: Prefer DGRAM (supports IP_TTL)
         if let Ok(socket) = create_dgram_icmp_socket_any(ipv6) {
             return Ok(SocketInfo {
                 socket,
@@ -157,6 +177,16 @@ pub fn create_send_socket(ipv6: bool) -> Result<SocketInfo> {
         }
         // Fall back to RAW (won't support TTL but might work for something)
         eprintln!("Warning: DGRAM socket failed, using RAW. Per-probe TTL control may not work.");
+        let socket = create_raw_icmp_socket(ipv6)?;
+        return Ok(SocketInfo {
+            socket,
+            is_dgram: false,
+        });
+    }
+
+    #[cfg(target_os = "freebsd")]
+    {
+        // FreeBSD: Use RAW directly (SOCK_DGRAM + IPPROTO_ICMP not supported)
         let socket = create_raw_icmp_socket(ipv6)?;
         return Ok(SocketInfo {
             socket,
