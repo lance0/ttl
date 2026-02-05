@@ -70,7 +70,7 @@ getifs = "0.4"
 
 [dev-dependencies]
 tokio-test = "0.4"
-proptest = "1.4"
+proptest = "1.10"
 
 [profile.release]
 lto = true
