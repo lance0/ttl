@@ -339,7 +339,7 @@ sudo ttl 8.8.8.8
 - [Features](docs/FEATURES.md) - Detailed feature documentation and CLI reference
 - [Scripting](docs/SCRIPTING.md) - CI/CD integration, JSON parsing, Docker usage
 - [Architecture](docs/ARCHITECTURE.md) - Internal design and module structure
-- [Contributing](docs/CONTRIBUTING.md) - Development setup and guidelines
+- [Contributing](CONTRIBUTING.md) - Development setup and guidelines
 - [Comparison](docs/COMPARISON.md) - Comparison with similar tools (including pathping)
 - [Changelog](CHANGELOG.md) - Release history
 - [Roadmap](ROADMAP.md) - Planned features

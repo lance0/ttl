@@ -62,7 +62,7 @@ Note: Many features require raw socket access and are difficult to test in CI. M
 
 ## Project Structure
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed module documentation.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed module documentation.
 
 Key directories:
 - `src/probe/` - Packet crafting and ICMP parsing
