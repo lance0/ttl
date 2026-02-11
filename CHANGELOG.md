@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1] - 2026-02-11
+
+### Fixed
+- **Hang on exit**: Bounded IPv6 echo-reply drain loop to prevent starvation when socket is continuously readable (#41)
+- **Ctrl+C during shutdown**: Ctrl+C now force-exits if cleanup stalls — first press cancels, second press terminates immediately (#41)
+
+### Added
+- **Shutdown tracing**: Set `TTL_SHUTDOWN_TRACE=1` to emit `[shutdown]` stage markers for diagnosing exit hangs
+
 ## [0.16.0] - 2026-02-05
 
 ### Changed

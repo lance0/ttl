@@ -18,6 +18,11 @@ use crate::probe::{
 use crate::state::{IcmpResponseType, PmtudPhase, ProbeId, Session};
 use crate::trace::pending::{PendingMap, PendingProbe};
 
+/// Safety cap for IPv6 echo-reply draining per tick.
+/// Prevents shutdown starvation if the socket is continuously readable.
+#[cfg(target_os = "linux")]
+const MAX_IPV6_ECHO_DRAIN_BATCH: usize = 256;
+
 /// The probe engine sends ICMP probes at configured intervals
 pub struct ProbeEngine {
     config: Config,
@@ -756,11 +761,18 @@ impl ProbeEngine {
         let _ = socket.set_nonblocking(true);
 
         let mut buffer = [0u8; 9216];
+        let mut drained = 0usize;
 
         // Drain any pending Echo Reply responses
         loop {
+            if self.cancel.is_cancelled() || drained >= MAX_IPV6_ECHO_DRAIN_BATCH {
+                break;
+            }
+
             match recv_icmp_with_ttl(socket, &mut buffer, true) {
                 Ok(recv_result) => {
+                    drained += 1;
+
                     // Parse the ICMP response
                     // For IPv6 raw sockets, kernel strips the IPv6 header
                     let Some(parsed) = parse_icmp_response(

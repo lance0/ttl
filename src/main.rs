@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::BufReader;
 use std::net::{IpAddr, ToSocketAddrs};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -186,11 +186,7 @@ async fn main() -> Result<()> {
     let cancel = CancellationToken::new();
 
     // Setup Ctrl+C handler
-    let cancel_clone = cancel.clone();
-    tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        cancel_clone.cancel();
-    });
+    install_ctrlc_handler(cancel.clone());
 
     // Determine which IP families are present
     let has_ipv4 = targets.iter().any(|t| t.is_ipv4());
@@ -376,11 +372,7 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
         }
 
         // Setup Ctrl+C handler
-        let cancel_clone = cancel.clone();
-        tokio::spawn(async move {
-            tokio::signal::ctrl_c().await.ok();
-            cancel_clone.cancel();
-        });
+        install_ctrlc_handler(cancel.clone());
 
         let final_prefs = run_tui(
             sessions,
@@ -602,7 +594,10 @@ fn spawn_receivers(
 
 /// Join all receiver threads, returning the first error if any.
 fn join_receivers(handles: Vec<std::thread::JoinHandle<Result<()>>>) -> Result<()> {
-    for handle in handles {
+    let total = handles.len();
+    shutdown_log(&format!("joining {total} receiver thread(s)"));
+    for (idx, handle) in handles.into_iter().enumerate() {
+        shutdown_log(&format!("joining receiver thread {}/{}", idx + 1, total));
         handle.join().map_err(|e| {
             let msg = e
                 .downcast_ref::<&str>()
@@ -611,6 +606,7 @@ fn join_receivers(handles: Vec<std::thread::JoinHandle<Result<()>>>) -> Result<(
                 .unwrap_or_else(|| "unknown panic".to_string());
             anyhow::anyhow!("Receiver thread failed: {}", msg)
         })??;
+        shutdown_log(&format!("receiver thread {}/{} joined", idx + 1, total));
     }
     Ok(())
 }
@@ -769,24 +765,40 @@ async fn run_interactive_mode(
     let _ = final_prefs.save();
 
     // Cleanup
+    shutdown_log("interactive cleanup start");
     cancel.cancel();
+    shutdown_log("interactive cancel requested");
+    shutdown_log("interactive waiting for probe engines");
     for handle in engine_handles {
         handle.await??;
     }
+    shutdown_log("interactive probe engines joined");
+    shutdown_log("interactive joining receiver threads");
     join_receivers(receiver_handles)?;
+    shutdown_log("interactive receiver threads joined");
     if let Some(handle) = dns_handle {
+        shutdown_log("interactive waiting for dns worker");
         handle.await?;
+        shutdown_log("interactive dns worker joined");
     }
     if let Some(handle) = asn_handle {
+        shutdown_log("interactive waiting for asn worker");
         handle.await?;
+        shutdown_log("interactive asn worker joined");
     }
     if let Some(handle) = geo_handle {
+        shutdown_log("interactive waiting for geo worker");
         handle.await?;
+        shutdown_log("interactive geo worker joined");
     }
     if let Some(handle) = ix_handle {
+        shutdown_log("interactive waiting for ix worker");
         handle.await?;
+        shutdown_log("interactive ix worker joined");
     }
+    shutdown_log("interactive waiting for ratelimit worker");
     ratelimit_handle.await?;
+    shutdown_log("interactive ratelimit worker joined");
 
     Ok(())
 }
@@ -913,30 +925,47 @@ async fn run_batch_mode(
     let ratelimit_handle = tokio::spawn(run_ratelimit_worker(sessions.clone(), cancel.clone()));
 
     // Wait for all engines to complete
+    shutdown_log("batch waiting for probe engines");
     for handle in engine_handles {
         handle.await??;
     }
+    shutdown_log("batch probe engines joined");
 
     // Wait for final responses and enrichment to settle
+    shutdown_log("batch waiting for final response settle window");
     tokio::time::sleep(config.timeout + Duration::from_millis(500)).await;
+    shutdown_log("batch settle window complete");
     cancel.cancel();
+    shutdown_log("batch cancel requested");
 
+    shutdown_log("batch joining receiver threads");
     join_receivers(receiver_handles)?;
+    shutdown_log("batch receiver threads joined");
 
     // Wait for enrichment workers to finish
     if let Some(handle) = dns_handle {
+        shutdown_log("batch waiting for dns worker");
         handle.await?;
+        shutdown_log("batch dns worker joined");
     }
     if let Some(handle) = asn_handle {
+        shutdown_log("batch waiting for asn worker");
         handle.await?;
+        shutdown_log("batch asn worker joined");
     }
     if let Some(handle) = geo_handle {
+        shutdown_log("batch waiting for geo worker");
         handle.await?;
+        shutdown_log("batch geo worker joined");
     }
     if let Some(handle) = ix_handle {
+        shutdown_log("batch waiting for ix worker");
         handle.await?;
+        shutdown_log("batch ix worker joined");
     }
+    shutdown_log("batch waiting for ratelimit worker");
     ratelimit_handle.await?;
+    shutdown_log("batch ratelimit worker joined");
 
     // Output results for all targets
     let sessions_read = sessions.read();
@@ -1154,25 +1183,39 @@ async fn run_streaming_mode(
         }
     }
 
+    shutdown_log("streaming waiting for probe engines");
     for handle in engine_handles {
         handle.await??;
     }
+    shutdown_log("streaming probe engines joined");
+    shutdown_log("streaming joining receiver threads");
     join_receivers(receiver_handles)?;
+    shutdown_log("streaming receiver threads joined");
 
     // Wait for enrichment workers to finish
     if let Some(handle) = dns_handle {
+        shutdown_log("streaming waiting for dns worker");
         handle.await?;
+        shutdown_log("streaming dns worker joined");
     }
     if let Some(handle) = asn_handle {
+        shutdown_log("streaming waiting for asn worker");
         handle.await?;
+        shutdown_log("streaming asn worker joined");
     }
     if let Some(handle) = geo_handle {
+        shutdown_log("streaming waiting for geo worker");
         handle.await?;
+        shutdown_log("streaming geo worker joined");
     }
     if let Some(handle) = ix_handle {
+        shutdown_log("streaming waiting for ix worker");
         handle.await?;
+        shutdown_log("streaming ix worker joined");
     }
+    shutdown_log("streaming waiting for ratelimit worker");
     ratelimit_handle.await?;
+    shutdown_log("streaming ratelimit worker joined");
 
     Ok(())
 }
@@ -1190,4 +1233,42 @@ fn generate_completions(shell: &str) {
         _ => unreachable!(),
     };
     generate(shell, &mut cmd, "ttl", &mut std::io::stdout());
+}
+
+fn install_ctrlc_handler(cancel: CancellationToken) {
+    tokio::spawn(async move {
+        loop {
+            if tokio::signal::ctrl_c().await.is_err() {
+                break;
+            }
+
+            if cancel.is_cancelled() {
+                eprintln!("Ctrl+C during shutdown, forcing exit.");
+                std::process::exit(130);
+            }
+
+            eprintln!("Ctrl+C received, shutting down (press Ctrl+C again to force exit).");
+            cancel.cancel();
+        }
+    });
+}
+
+fn shutdown_trace_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("TTL_SHUTDOWN_TRACE")
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn shutdown_log(message: &str) {
+    if shutdown_trace_enabled() {
+        eprintln!("[shutdown] {message}");
+    }
 }
