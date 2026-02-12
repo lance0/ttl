@@ -98,6 +98,10 @@ The "isolated hop loss" heuristic requires a downstream hop for comparison. At t
 
 Linux delivers ICMPv6 Echo Reply only to the socket that sent the request, not to the separate receive socket. The engine polls the send socket for Echo Replies after each probe round. macOS delivers to any raw ICMPv6 socket, so the receiver handles it there.
 
+### Last RTT Not Persisted in JSON
+
+`last_rtt` is intentionally `#[serde(skip)]` — it represents the most recent probe response and is inherently a live-only metric. The `Last` column in TUI and `last_ms` in CSV will show "-"/empty for replayed sessions. All other RTT and jitter stats are persisted and display correctly.
+
 ### TCP Bitrate Not Paced
 
 TCP mode ignores the `--rate` flag. TCP should run at the kernel's congestion-controlled rate. Rate limiting is only meaningful for ICMP and UDP probing modes.

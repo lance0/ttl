@@ -60,7 +60,7 @@
 - [x] Update notifications (checks GitHub releases, install-method-aware)
 - [x] FreeBSD support (experimental, raw sockets)
 
-## Completed (v0.15.x - v0.16.x)
+## Completed (v0.15.x - v0.17.x)
 
 - [x] Animated replay (`--replay file --animate`) with speed control
 - [x] Probe event recording for replay accuracy
@@ -69,6 +69,9 @@
 - [x] Immediate sent counting (mtr parity — increments at probe send, not response)
 - [x] Dual-stack `--resolve-all` (trace IPv4 and IPv6 simultaneously)
 - [x] FreeBSD ICMP socket fix (RAW sockets, not DGRAM)
+- [x] Last RTT column in main table (mtr parity — `Loss% Snt Last Avg Min Max StdDev`)
+- [x] JAvg and JMax columns in Wide display mode
+- [x] Wider ASN column for full AS name visibility
 
 ---
 

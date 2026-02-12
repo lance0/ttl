@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-02-12
+
+### Added
+- **Last RTT column**: Main table now shows the most recent probe RTT between Sent and Avg, matching mtr's default column order (#17)
+- **JAvg and JMax columns**: Jitter average and jitter max columns appear in Wide display mode (press `w`) (#17)
+- **CSV columns**: Added `last_ms`, `jitter_avg_ms`, `jitter_max_ms` to CSV export
+
+### Changed
+- **CSV schema** (breaking): Header now has 14 columns (was 11). `last_ms` inserted before `avg_ms`; `jitter_avg_ms` and `jitter_max_ms` appended
+- **ASN column width**: Increased auto mode cap (30→40 chars) and wide mode width (24→36 chars) to show more of the AS name
+
+### Dependencies
+- Updated clap (4.5.54→4.5.58), clap_complete (4.5.65→4.5.66), anyhow (1.0.100→1.0.101), libc (0.2.180→0.2.181), proptest (1.9.0→1.10.0), plus transitive deps
+
 ## [0.16.1] - 2026-02-11
 
 ### Fixed

@@ -10,11 +10,11 @@ use crate::tui::widgets::loss_sparkline_string;
 
 /// Column width limits for autosize mode
 const MAX_HOST_WIDTH: u16 = 60;
-const MAX_ASN_WIDTH: u16 = 30;
+const MAX_ASN_WIDTH: u16 = 40;
 const COMPACT_HOST: u16 = 20;
 const COMPACT_ASN: u16 = 12;
 const WIDE_HOST: u16 = 45;
-const WIDE_ASN: u16 = 24;
+const WIDE_ASN: u16 = 36;
 const MIN_HOST: u16 = 12;
 const MIN_ASN: u16 = 8;
 
@@ -263,6 +263,7 @@ impl Widget for MainView<'_> {
 
         // Check if multi-flow mode is enabled (Paris/Dublin traceroute)
         let multi_flow = self.session.config.flows > 1;
+        let is_wide = matches!(self.display_mode, DisplayMode::Wide);
 
         // Build header - add "Paths" column if multi-flow enabled
         let mut header_cells = vec![
@@ -271,12 +272,17 @@ impl Widget for MainView<'_> {
             Cell::from("ASN").style(Style::default().bold()),
             Cell::from("Loss%").style(Style::default().bold()),
             Cell::from("Sent").style(Style::default().bold()),
+            Cell::from("Last").style(Style::default().bold()),
             Cell::from("Avg").style(Style::default().bold()),
             Cell::from("Min").style(Style::default().bold()),
             Cell::from("Max").style(Style::default().bold()),
             Cell::from("StdDev").style(Style::default().bold()),
             Cell::from("Jitter").style(Style::default().bold()),
         ];
+        if is_wide {
+            header_cells.push(Cell::from("JAvg").style(Style::default().bold()));
+            header_cells.push(Cell::from("JMax").style(Style::default().bold()));
+        }
         if multi_flow {
             header_cells.push(Cell::from("NAT").style(Style::default().bold()));
             header_cells.push(Cell::from("Paths").style(Style::default().bold()));
@@ -366,9 +372,14 @@ impl Widget for MainView<'_> {
                     self.theme.success
                 };
 
-                let (avg, min, max, stddev, jitter) = if let Some(stats) = hop.primary_stats() {
+                let (last, avg, min, max, stddev, jitter) = if let Some(stats) = hop.primary_stats()
+                {
                     if stats.received > 0 {
                         (
+                            stats
+                                .last_rtt()
+                                .map(|d| format!("{:.1}", d.as_secs_f64() * 1000.0))
+                                .unwrap_or_else(|| "-".into()),
                             format!("{:.1}", stats.avg_rtt().as_secs_f64() * 1000.0),
                             format!("{:.1}", stats.min_rtt.as_secs_f64() * 1000.0),
                             format!("{:.1}", stats.max_rtt.as_secs_f64() * 1000.0),
@@ -376,10 +387,41 @@ impl Widget for MainView<'_> {
                             format!("{:.1}", stats.jitter().as_secs_f64() * 1000.0),
                         )
                     } else {
-                        ("-".into(), "-".into(), "-".into(), "-".into(), "-".into())
+                        (
+                            "-".into(),
+                            "-".into(),
+                            "-".into(),
+                            "-".into(),
+                            "-".into(),
+                            "-".into(),
+                        )
                     }
                 } else {
-                    ("-".into(), "-".into(), "-".into(), "-".into(), "-".into())
+                    (
+                        "-".into(),
+                        "-".into(),
+                        "-".into(),
+                        "-".into(),
+                        "-".into(),
+                        "-".into(),
+                    )
+                };
+
+                let (j_avg, j_max) = if is_wide {
+                    if let Some(stats) = hop.primary_stats() {
+                        if stats.received > 0 {
+                            (
+                                format!("{:.1}", stats.jitter_avg().as_secs_f64() * 1000.0),
+                                format!("{:.1}", stats.jitter_max().as_secs_f64() * 1000.0),
+                            )
+                        } else {
+                            ("-".into(), "-".into())
+                        }
+                    } else {
+                        ("-".into(), "-".into())
+                    }
+                } else {
+                    (String::new(), String::new())
                 };
 
                 // Determine if rate limiting is suspected
@@ -421,12 +463,17 @@ impl Widget for MainView<'_> {
                     Cell::from(asn_display).style(Style::default().fg(self.theme.text_dim)),
                     Cell::from(loss_display).style(loss_style),
                     Cell::from(hop.sent.to_string()),
+                    Cell::from(last),
                     Cell::from(avg),
                     Cell::from(min),
                     Cell::from(max),
                     Cell::from(stddev),
                     Cell::from(jitter),
                 ];
+                if is_wide {
+                    cells.push(Cell::from(j_avg));
+                    cells.push(Cell::from(j_max));
+                }
 
                 // Add "NAT" and "Paths" columns if multi-flow mode
                 if multi_flow {
@@ -463,12 +510,17 @@ impl Widget for MainView<'_> {
             Constraint::Length(col_widths.asn + 1), // ASN (dynamic, +1 for padding)
             Constraint::Length(7),                  // Loss%
             Constraint::Length(5),                  // Sent
+            Constraint::Length(7),                  // Last
             Constraint::Length(7),                  // Avg
             Constraint::Length(7),                  // Min
             Constraint::Length(7),                  // Max
             Constraint::Length(7),                  // StdDev
             Constraint::Length(7),                  // Jitter
         ];
+        if is_wide {
+            widths.push(Constraint::Length(7)); // JAvg
+            widths.push(Constraint::Length(7)); // JMax
+        }
         if multi_flow {
             widths.push(Constraint::Length(4)); // NAT
             widths.push(Constraint::Length(6)); // Paths
