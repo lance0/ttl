@@ -84,9 +84,19 @@
 - [ ] Detect per-packet vs per-flow ECMP (primary_ratio heuristic per flow)
 - [ ] Paths column reflects actual responder count for per-packet ECMP
 - [ ] Separate indicators: `E` for ECMP detected vs `!` for route flap
-- [ ] Warn when `--flows > 1` with ICMP (no port to vary, flows have no effect)
-- [ ] Paris strategy for UDP (`--strategy paris` — fixed 5-tuple, checksum encodes sequence)
-- [ ] Dublin strategy for UDP (`--strategy dublin` — IP ID field encodes sequence)
+- [ ] Warn when `--flows > 1` with effective ICMP probing (`-p icmp`, or `-p auto` when auto-select resolves to ICMP)
+- [ ] Define `-p auto` warning semantics for multi-target/mixed-family runs (warn if any target resolves to effective ICMP, avoid duplicate spam)
+- [ ] Track effective flow capability at runtime (requested `--flows` vs effective protocol) and use it for flap detection + NAT/Paths column visibility
+- [ ] Add CLI/TUI hint that flow-based ECMP detection is meaningful with UDP/TCP probes
+- [ ] Keep Paths value + highlight + host indicator driven by one shared ECMP classification (avoid count/style drift)
+- [ ] Handle out-of-range returned src ports as unknown flow (not forced flow 0) to avoid false per-flow attribution behind NAT/CGNAT
+- [ ] Update indicator/UI budget for new `E` marker (host width autosize currently assumes `" !~^"`)
+- [ ] Update user-facing indicator docs/help (`E` vs `!`) in CLI help + docs pages
+- [ ] Add tests for per-packet ECMP classification, `-p auto` ICMP warning behavior, and out-of-range src-port flow attribution
+- [ ] #46 acceptance: per-packet ECMP no longer presents as misleading `Paths: 1` when many responders are observed
+- [ ] #46 acceptance: `E` (ECMP) and `!` (route flap) are no longer conflated in the same scenario
+- [ ] Paris strategy for UDP (`--strategy paris` — fixed 5-tuple, checksum encodes sequence) *(follow-on after #46 core fix)*
+- [ ] Dublin strategy for UDP (`--strategy dublin` — IP ID field encodes sequence) *(follow-on after #46 core fix)*
 
 ### Trace Diffing & Streaming
 
