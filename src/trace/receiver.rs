@@ -13,7 +13,7 @@ use crate::probe::{
 use crate::state::{
     IcmpResponseType, MplsLabel, PmtudPhase, ProbeEvent, ProbeId, ProbeOutcome, Session,
 };
-use crate::trace::pending::PendingMap;
+use crate::trace::pending::{PendingMap, PendingProbe};
 
 /// Map of target IP to session, shared across multiple engines and the receiver
 pub type SessionMap = Arc<RwLock<HashMap<IpAddr, Arc<RwLock<Session>>>>>;
@@ -96,6 +96,61 @@ impl Receiver {
         }
     }
 
+    fn derive_flow_hint(&self, src_port: Option<u16>) -> Option<u8> {
+        match src_port {
+            Some(port)
+                if port >= self.config.src_port_base
+                    && port < self.config.src_port_base + self.config.num_flows as u16 =>
+            {
+                Some((port - self.config.src_port_base) as u8)
+            }
+            Some(_) => None,
+            // ICMP has no source port. In effective single-flow mode, use flow 0.
+            None if self.config.num_flows == 1 => Some(0),
+            None => None,
+        }
+    }
+
+    fn remove_pending_by_flow_hint(
+        pending: &mut HashMap<(ProbeId, u8, IpAddr, bool), PendingProbe>,
+        probe_id: ProbeId,
+        target: IpAddr,
+        flow_hint: Option<u8>,
+    ) -> Option<PendingProbe> {
+        if let Some(flow_id) = flow_hint {
+            if let Some(probe) = pending.remove(&(probe_id, flow_id, target, false)) {
+                return Some(probe);
+            }
+            if let Some(probe) = pending.remove(&(probe_id, flow_id, target, true)) {
+                return Some(probe);
+            }
+            return None;
+        }
+
+        // Unknown flow: only remove when there's a single unambiguous candidate.
+        // This avoids forcing replies into flow 0 when NAT rewrites source ports.
+        let mut normal_flows = Vec::new();
+        let mut pmtud_flows = Vec::new();
+        for &(pid, flow_id, tgt, is_pmtud) in pending.keys() {
+            if pid == probe_id && tgt == target {
+                if is_pmtud {
+                    pmtud_flows.push(flow_id);
+                } else {
+                    normal_flows.push(flow_id);
+                }
+            }
+        }
+
+        if normal_flows.len() == 1 {
+            return pending.remove(&(probe_id, normal_flows[0], target, false));
+        }
+        if normal_flows.is_empty() && pmtud_flows.len() == 1 {
+            return pending.remove(&(probe_id, pmtud_flows[0], target, true));
+        }
+
+        None
+    }
+
     /// Run the receiver on a dedicated thread (blocking I/O)
     pub fn run_blocking(mut self) -> Result<()> {
         let identifier = get_identifier();
@@ -138,24 +193,10 @@ impl Receiver {
                             identifier,
                             is_dgram,
                         ) {
-                            // Derive flow_id from source port in ICMP error payload
-                            // For UDP/TCP: src_port = src_port_base + flow_id
-                            // For ICMP: src_port is None, flow_id = 0
-                            // Validate range to avoid mis-attribution from NAT rewrites or unrelated errors
-                            let flow_id = parsed
-                                .src_port
-                                .and_then(|p| {
-                                    if p >= self.config.src_port_base
-                                        && p < self.config.src_port_base
-                                            + self.config.num_flows as u16
-                                    {
-                                        Some((p - self.config.src_port_base) as u8)
-                                    } else {
-                                        // Port outside expected range - treat as ICMP (flow 0)
-                                        None
-                                    }
-                                })
-                                .unwrap_or(0);
+                            // Derive flow hint from quoted source port.
+                            // If the port is out of range (e.g., NAT rewrite), keep it unknown
+                            // and only match pending probes when unambiguous.
+                            let flow_hint = self.derive_flow_hint(parsed.src_port);
 
                             // Find matching pending probe (key includes flow_id, target, is_pmtud)
                             let mut found_probe = None;
@@ -164,39 +205,23 @@ impl Receiver {
 
                                 // If we have original_dest from ICMP error, use direct lookup
                                 if let Some(dest) = parsed.original_dest {
-                                    // Try normal probe first
-                                    if let Some(probe) =
-                                        pending.remove(&(parsed.probe_id, flow_id, dest, false))
-                                    {
-                                        found_probe = Some(probe);
-                                    } else if let Some(probe) =
-                                        pending.remove(&(parsed.probe_id, flow_id, dest, true))
-                                    {
-                                        // Try PMTUD probe
-                                        found_probe = Some(probe);
-                                    }
+                                    found_probe = Self::remove_pending_by_flow_hint(
+                                        &mut pending,
+                                        parsed.probe_id,
+                                        dest,
+                                        flow_hint,
+                                    );
                                 }
 
                                 // Fallback: iterate targets (for Echo Reply which has no quoted dest)
                                 if found_probe.is_none() {
                                     for target in &self.targets {
-                                        // Try normal probe first
-                                        if let Some(probe) = pending.remove(&(
+                                        if let Some(probe) = Self::remove_pending_by_flow_hint(
+                                            &mut pending,
                                             parsed.probe_id,
-                                            flow_id,
                                             *target,
-                                            false,
-                                        )) {
-                                            found_probe = Some(probe);
-                                            break;
-                                        }
-                                        // Try PMTUD probe
-                                        if let Some(probe) = pending.remove(&(
-                                            parsed.probe_id,
-                                            flow_id,
-                                            *target,
-                                            true,
-                                        )) {
+                                            flow_hint,
+                                        ) {
                                             found_probe = Some(probe);
                                             break;
                                         }
@@ -234,7 +259,7 @@ impl Receiver {
                                             offset_ms,
                                             ttl: parsed.probe_id.ttl,
                                             seq: parsed.probe_id.seq,
-                                            flow_id,
+                                            flow_id: flow_hint.unwrap_or(0),
                                             outcome: ProbeOutcome::LateReply {
                                                 addr: parsed.responder,
                                                 rtt_us: 0, // RTT unknown for late arrivals
@@ -496,4 +521,157 @@ pub fn spawn_receiver(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trace::pending::new_pending_map;
+
+    fn test_receiver(num_flows: u8) -> Receiver {
+        let sessions: SessionMap = Arc::new(RwLock::new(HashMap::new()));
+        let pending = new_pending_map();
+        let cancel = CancellationToken::new();
+        let config = ReceiverConfig {
+            timeout: Duration::from_secs(1),
+            ipv6: false,
+            src_port_base: 50000,
+            num_flows,
+            interface: None,
+            recv_any: false,
+        };
+        Receiver::new(sessions, pending, cancel, config)
+    }
+
+    #[test]
+    fn test_derive_flow_hint_in_range() {
+        let receiver = test_receiver(4);
+        assert_eq!(receiver.derive_flow_hint(Some(50002)), Some(2));
+    }
+
+    #[test]
+    fn test_derive_flow_hint_out_of_range_is_unknown() {
+        let receiver = test_receiver(4);
+        assert_eq!(receiver.derive_flow_hint(Some(61000)), None);
+    }
+
+    #[test]
+    fn test_derive_flow_hint_none_single_flow_is_zero() {
+        let receiver = test_receiver(1);
+        assert_eq!(receiver.derive_flow_hint(None), Some(0));
+    }
+
+    #[test]
+    fn test_remove_pending_unknown_flow_unambiguous() {
+        let probe_id = ProbeId::new(3, 7);
+        let target = IpAddr::V4(std::net::Ipv4Addr::new(1, 1, 1, 1));
+        let mut pending: HashMap<(ProbeId, u8, IpAddr, bool), PendingProbe> = HashMap::new();
+        pending.insert(
+            (probe_id, 3, target, false),
+            PendingProbe {
+                sent_at: Instant::now(),
+                target,
+                flow_id: 3,
+                original_src_port: Some(50003),
+                packet_size: None,
+            },
+        );
+
+        let removed = Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, None);
+        assert!(removed.is_some(), "single candidate should be removable");
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn test_remove_pending_unknown_flow_ambiguous() {
+        let probe_id = ProbeId::new(3, 7);
+        let target = IpAddr::V4(std::net::Ipv4Addr::new(1, 1, 1, 1));
+        let mut pending: HashMap<(ProbeId, u8, IpAddr, bool), PendingProbe> = HashMap::new();
+        for flow_id in [0u8, 1u8] {
+            pending.insert(
+                (probe_id, flow_id, target, false),
+                PendingProbe {
+                    sent_at: Instant::now(),
+                    target,
+                    flow_id,
+                    original_src_port: Some(50000 + flow_id as u16),
+                    packet_size: None,
+                },
+            );
+        }
+
+        let removed = Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, None);
+        assert!(
+            removed.is_none(),
+            "ambiguous candidates should not be forced"
+        );
+        assert_eq!(pending.len(), 2);
+    }
+
+    #[test]
+    fn test_remove_pending_unknown_flow_prefers_unique_normal_over_pmtud() {
+        let probe_id = ProbeId::new(2, 9);
+        let target = IpAddr::V4(std::net::Ipv4Addr::new(8, 8, 8, 8));
+        let mut pending: HashMap<(ProbeId, u8, IpAddr, bool), PendingProbe> = HashMap::new();
+        pending.insert(
+            (probe_id, 1, target, false),
+            PendingProbe {
+                sent_at: Instant::now(),
+                target,
+                flow_id: 1,
+                original_src_port: Some(50001),
+                packet_size: None,
+            },
+        );
+        pending.insert(
+            (probe_id, 2, target, true),
+            PendingProbe {
+                sent_at: Instant::now(),
+                target,
+                flow_id: 2,
+                original_src_port: Some(50002),
+                packet_size: Some(1400),
+            },
+        );
+
+        let removed = Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, None);
+        assert!(removed.is_some());
+        let removed = removed.unwrap();
+        assert_eq!(removed.flow_id, 1);
+        assert_eq!(pending.len(), 1);
+        assert!(pending.contains_key(&(probe_id, 2, target, true)));
+    }
+
+    #[test]
+    fn test_remove_pending_unknown_flow_ambiguous_normal_does_not_fall_back_to_pmtud() {
+        let probe_id = ProbeId::new(2, 10);
+        let target = IpAddr::V4(std::net::Ipv4Addr::new(9, 9, 9, 9));
+        let mut pending: HashMap<(ProbeId, u8, IpAddr, bool), PendingProbe> = HashMap::new();
+        for flow_id in [0u8, 1u8] {
+            pending.insert(
+                (probe_id, flow_id, target, false),
+                PendingProbe {
+                    sent_at: Instant::now(),
+                    target,
+                    flow_id,
+                    original_src_port: Some(50000 + flow_id as u16),
+                    packet_size: None,
+                },
+            );
+        }
+        pending.insert(
+            (probe_id, 3, target, true),
+            PendingProbe {
+                sent_at: Instant::now(),
+                target,
+                flow_id: 3,
+                original_src_port: Some(50003),
+                packet_size: Some(1500),
+            },
+        );
+
+        let removed = Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, None);
+        assert!(removed.is_none());
+        assert_eq!(pending.len(), 3);
+    }
 }

@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -150,6 +150,7 @@ pub struct ResponderStats {
     pub jitter: f64,     // microseconds (smoothed)
     pub jitter_avg: f64, // microseconds (running average)
     pub jitter_max: f64, // microseconds (maximum observed)
+    /// Most recent RTT sample for this responder (live-only; not persisted in replay JSON).
     #[serde(skip)]
     pub last_rtt: Option<Duration>,
 
@@ -306,7 +307,7 @@ impl ResponderStats {
         Duration::from_micros(self.jitter_max as u64)
     }
 
-    /// Last observed RTT
+    /// Most recent RTT sample for this responder (live-only; replay returns `None`).
     pub fn last_rtt(&self) -> Option<Duration> {
         self.last_rtt
     }
@@ -396,6 +397,17 @@ impl FlowPathStats {
             (self.timeouts as f64 / completed as f64) * 100.0
         }
     }
+}
+
+/// ECMP classification for a hop.
+///
+/// - `PerFlow`: Different flows consistently map to different primary responders.
+/// - `PerPacket`: Responses rotate between responders regardless of flow affinity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EcmpKind {
+    None,
+    PerFlow,
+    PerPacket,
 }
 
 /// NAT detection information for a hop
@@ -910,6 +922,12 @@ impl Hop {
     const MIN_RESPONSES_FOR_FLAP: u64 = 5;
     /// Maximum route changes to store
     const MAX_ROUTE_CHANGES: usize = 50;
+    /// Minimum hop responses before classifying per-packet behavior
+    const MIN_RESPONSES_FOR_PER_PACKET: u64 = 8;
+    /// Minimum responses per flow before using per-flow concentration heuristic
+    const MIN_FLOW_RESPONSES_FOR_CLASSIFICATION: u64 = 4;
+    /// Primary concentration threshold below which behavior looks per-packet
+    const PER_PACKET_PRIMARY_RATIO_THRESHOLD: f64 = 0.70;
 
     pub fn new(ttl: u8) -> Self {
         Self {
@@ -1092,20 +1110,85 @@ impl Hop {
         self.flow_paths.entry(flow_id).or_default().record_timeout();
     }
 
-    /// Check if ECMP is detected (multiple unique primary responders across flows)
-    pub fn has_ecmp(&self) -> bool {
-        if self.flow_paths.len() < 2 {
-            return false;
-        }
-
-        // Collect unique primary responders across flows
-        let unique_responders: std::collections::HashSet<_> = self
-            .flow_paths
+    fn unique_flow_primary_count(&self) -> usize {
+        self.flow_paths
             .values()
             .filter_map(|fp| fp.primary_responder)
-            .collect();
+            .collect::<HashSet<_>>()
+            .len()
+    }
 
-        unique_responders.len() > 1
+    fn flow_primary_ratio(flow: &FlowPathStats) -> Option<f64> {
+        if flow.received == 0 {
+            return None;
+        }
+        let primary = flow.responder_counts.values().copied().max().unwrap_or(0);
+        Some(primary as f64 / flow.received as f64)
+    }
+
+    fn hop_primary_ratio(&self) -> Option<f64> {
+        if self.received == 0 {
+            return None;
+        }
+        let primary_count = self
+            .primary
+            .and_then(|ip| self.responders.get(&ip))
+            .map(|s| s.received)?;
+        Some(primary_count as f64 / self.received as f64)
+    }
+
+    /// Classify ECMP behavior for this hop.
+    pub fn ecmp_kind(&self) -> EcmpKind {
+        let unique_flow_primaries = self.unique_flow_primary_count();
+        let has_multiple_responders = self.responders.len() > 1;
+
+        // Multi-flow heuristic:
+        // - High per-flow primary concentration + different flow primaries => per-flow ECMP
+        // - Low per-flow primary concentration across flows => per-packet load balancing
+        let sampled_flows: Vec<_> = self
+            .flow_paths
+            .values()
+            .filter(|fp| fp.received >= Self::MIN_FLOW_RESPONSES_FOR_CLASSIFICATION)
+            .collect();
+        if sampled_flows.len() >= 2 {
+            let avg_primary_ratio = sampled_flows
+                .iter()
+                .filter_map(|fp| Self::flow_primary_ratio(fp))
+                .sum::<f64>()
+                / sampled_flows.len() as f64;
+
+            if has_multiple_responders
+                && avg_primary_ratio < Self::PER_PACKET_PRIMARY_RATIO_THRESHOLD
+            {
+                return EcmpKind::PerPacket;
+            }
+            if unique_flow_primaries > 1 {
+                return EcmpKind::PerFlow;
+            }
+        }
+
+        // Effective single-flow heuristic (includes ICMP mode):
+        // if one hop receives many responses split across multiple responders with
+        // no dominant primary, treat as per-packet ECMP.
+        if has_multiple_responders
+            && self.received >= Self::MIN_RESPONSES_FOR_PER_PACKET
+            && self
+                .hop_primary_ratio()
+                .is_some_and(|ratio| ratio < Self::PER_PACKET_PRIMARY_RATIO_THRESHOLD)
+        {
+            return EcmpKind::PerPacket;
+        }
+
+        if unique_flow_primaries > 1 {
+            return EcmpKind::PerFlow;
+        }
+
+        EcmpKind::None
+    }
+
+    /// Check if ECMP is detected.
+    pub fn has_ecmp(&self) -> bool {
+        self.ecmp_kind() != EcmpKind::None
     }
 
     /// Get list of (flow_id, primary_responder) pairs for ECMP display
@@ -1122,14 +1205,17 @@ impl Hop {
 
     /// Get number of unique paths detected (unique responders across flows)
     pub fn path_count(&self) -> usize {
-        let unique_responders: std::collections::HashSet<_> = self
-            .flow_paths
-            .values()
-            .filter_map(|fp| fp.primary_responder)
-            .collect();
-        unique_responders
-            .len()
-            .max(if self.primary.is_some() { 1 } else { 0 })
+        let flow_primary_count = self.unique_flow_primary_count();
+        match self.ecmp_kind() {
+            EcmpKind::PerPacket => self
+                .responders
+                .len()
+                .max(flow_primary_count)
+                .max(if self.primary.is_some() { 1 } else { 0 }),
+            EcmpKind::PerFlow | EcmpKind::None => {
+                flow_primary_count.max(if self.primary.is_some() { 1 } else { 0 })
+            }
+        }
     }
 
     /// Record a NAT detection result for this hop
@@ -1881,6 +1967,7 @@ mod tests {
 
         // Now ECMP is detected
         assert!(hop.has_ecmp());
+        assert_eq!(hop.ecmp_kind(), EcmpKind::PerFlow);
         assert_eq!(hop.path_count(), 2);
         let paths = hop.ecmp_paths();
         assert_eq!(paths.len(), 2);
@@ -1903,8 +1990,114 @@ mod tests {
 
         // Same responder on all flows = no ECMP
         assert!(!hop.has_ecmp());
+        assert_eq!(hop.ecmp_kind(), EcmpKind::None);
         assert_eq!(hop.path_count(), 1);
         assert_eq!(hop.ecmp_paths().len(), 4); // 4 flows, but all same responder
+    }
+
+    #[test]
+    fn test_hop_per_packet_ecmp_single_flow() {
+        let mut hop = Hop::new(4);
+        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
+        // Alternate responders on one flow to emulate per-packet load balancing
+        for i in 0..20 {
+            let ip = if i % 2 == 0 { ip1 } else { ip2 };
+            hop.record_response_with_mpls(ip, Duration::from_millis(10 + i), None);
+            hop.record_flow_sent(0);
+            hop.record_flow_response(0, ip, Duration::from_millis(10 + i));
+        }
+
+        assert_eq!(hop.ecmp_kind(), EcmpKind::PerPacket);
+        assert!(hop.has_ecmp());
+        assert_eq!(hop.path_count(), 2);
+    }
+
+    #[test]
+    fn test_hop_per_packet_ecmp_single_flow_threshold_is_strict() {
+        let mut hop = Hop::new(5);
+        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
+        // Ratio is exactly 0.70 (7/10), which should NOT classify as per-packet ECMP.
+        for i in 0..10 {
+            let ip = if i < 7 { ip1 } else { ip2 };
+            hop.record_response_with_mpls(ip, Duration::from_millis(10 + i), None);
+        }
+
+        assert_eq!(hop.ecmp_kind(), EcmpKind::None);
+        assert!(!hop.has_ecmp());
+    }
+
+    #[test]
+    fn test_hop_per_packet_ecmp_single_flow_min_samples_boundary() {
+        let mut hop = Hop::new(5);
+        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
+        // Exactly minimum sample size (8), with low primary ratio (5/8 = 0.625).
+        for i in 0..8 {
+            let ip = if i < 5 { ip1 } else { ip2 };
+            hop.record_response_with_mpls(ip, Duration::from_millis(10 + i), None);
+        }
+
+        assert_eq!(hop.ecmp_kind(), EcmpKind::PerPacket);
+        assert!(hop.has_ecmp());
+    }
+
+    #[test]
+    fn test_hop_per_packet_ecmp_multi_flow_threshold_is_strict() {
+        let mut hop = Hop::new(6);
+        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
+        // Both flows are sampled and each has primary ratio 0.70, so this should
+        // remain per-flow ECMP (not per-packet).
+        for _ in 0..7 {
+            hop.record_response_with_mpls(ip1, Duration::from_millis(10), None);
+            hop.record_flow_sent(0);
+            hop.record_flow_response(0, ip1, Duration::from_millis(10));
+        }
+        for _ in 0..3 {
+            hop.record_response_with_mpls(ip2, Duration::from_millis(10), None);
+            hop.record_flow_sent(0);
+            hop.record_flow_response(0, ip2, Duration::from_millis(10));
+        }
+        for _ in 0..7 {
+            hop.record_response_with_mpls(ip2, Duration::from_millis(10), None);
+            hop.record_flow_sent(1);
+            hop.record_flow_response(1, ip2, Duration::from_millis(10));
+        }
+        for _ in 0..3 {
+            hop.record_response_with_mpls(ip1, Duration::from_millis(10), None);
+            hop.record_flow_sent(1);
+            hop.record_flow_response(1, ip1, Duration::from_millis(10));
+        }
+
+        assert_eq!(hop.ecmp_kind(), EcmpKind::PerFlow);
+        assert!(hop.has_ecmp());
+    }
+
+    #[test]
+    fn test_hop_per_packet_ecmp_multi_flow() {
+        let mut hop = Hop::new(6);
+        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
+        // Each flow sees both responders, so per-flow primaries are not concentrated.
+        for flow_id in 0..4 {
+            for i in 0..8 {
+                let ip = if (flow_id + i) % 2 == 0 { ip1 } else { ip2 };
+                hop.record_response_with_mpls(ip, Duration::from_millis(20 + i as u64), None);
+                hop.record_flow_sent(flow_id as u8);
+                hop.record_flow_response(flow_id as u8, ip, Duration::from_millis(20 + i as u64));
+            }
+        }
+
+        assert_eq!(hop.ecmp_kind(), EcmpKind::PerPacket);
+        assert!(hop.has_ecmp());
+        assert_eq!(hop.path_count(), 2);
     }
 
     #[test]

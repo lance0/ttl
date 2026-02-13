@@ -5,7 +5,7 @@
 **mtr is the de facto standard** for interactive traceroute but hasn't seen major feature development in years. **trippy** (Rust) is the main modern alternative but focuses on a different feature set.
 
 **Key advantages ttl already has:**
-- ECMP path enumeration (Paris/Dublin traceroute with `--flows`)
+- ECMP path enumeration with per-flow/per-packet classification (`--flows`)
 - NAT detection (source port rewrite analysis)
 - ICMP rate limit detection (distinguish rate limiting from real loss)
 - Route flap and asymmetric routing detection
@@ -60,7 +60,7 @@
 - [x] Update notifications (checks GitHub releases, install-method-aware)
 - [x] FreeBSD support (experimental, raw sockets)
 
-## Completed (v0.15.x - v0.17.x)
+## Completed (v0.15.x - v0.18.x)
 
 - [x] Animated replay (`--replay file --animate`) with speed control
 - [x] Probe event recording for replay accuracy
@@ -72,6 +72,11 @@
 - [x] Last RTT column in main table (mtr parity — `Loss% Snt Last Avg Min Max StdDev`)
 - [x] JAvg and JMax columns in Wide display mode
 - [x] Wider ASN column for full AS name visibility
+- [x] ECMP classification: per-flow vs per-packet detection with primary_ratio heuristic (#46)
+- [x] Paths column reflects actual responder count for per-packet ECMP (#46)
+- [x] `E` indicator for ECMP detected vs `!` for route flap (#46)
+- [x] Effective flow capability: `--flows` + ICMP warns and collapses to single-flow (#46)
+- [x] Receiver flow attribution hardening: unknown flows only match when unambiguous (#46)
 
 ---
 
@@ -81,20 +86,20 @@
 
 **Why this matters:** Per-packet load balancing (common on Arista, Juniper, Cisco) is undercounted by the current flow-primary model. Users see 8 responders in the detail view but "Paths: 1" in the main table. Related: #46
 
-- [ ] Detect per-packet vs per-flow ECMP (primary_ratio heuristic per flow)
-- [ ] Paths column reflects actual responder count for per-packet ECMP
-- [ ] Separate indicators: `E` for ECMP detected vs `!` for route flap
-- [ ] Warn when `--flows > 1` with effective ICMP probing (`-p icmp`, or `-p auto` when auto-select resolves to ICMP)
-- [ ] Define `-p auto` warning semantics for multi-target/mixed-family runs (warn if any target resolves to effective ICMP, avoid duplicate spam)
-- [ ] Track effective flow capability at runtime (requested `--flows` vs effective protocol) and use it for flap detection + NAT/Paths column visibility
-- [ ] Add CLI/TUI hint that flow-based ECMP detection is meaningful with UDP/TCP probes
-- [ ] Keep Paths value + highlight + host indicator driven by one shared ECMP classification (avoid count/style drift)
-- [ ] Handle out-of-range returned src ports as unknown flow (not forced flow 0) to avoid false per-flow attribution behind NAT/CGNAT
-- [ ] Update indicator/UI budget for new `E` marker (host width autosize currently assumes `" !~^"`)
-- [ ] Update user-facing indicator docs/help (`E` vs `!`) in CLI help + docs pages
-- [ ] Add tests for per-packet ECMP classification, `-p auto` ICMP warning behavior, and out-of-range src-port flow attribution
-- [ ] #46 acceptance: per-packet ECMP no longer presents as misleading `Paths: 1` when many responders are observed
-- [ ] #46 acceptance: `E` (ECMP) and `!` (route flap) are no longer conflated in the same scenario
+- [x] Detect per-packet vs per-flow ECMP (primary_ratio heuristic per flow)
+- [x] Paths column reflects actual responder count for per-packet ECMP
+- [x] Separate indicators: `E` for ECMP detected vs `!` for route flap
+- [x] Warn when `--flows > 1` with effective ICMP probing (`-p icmp`, or `-p auto` when auto-select resolves to ICMP)
+- [x] Define `-p auto` warning semantics for multi-target/mixed-family runs (warn if any target resolves to effective ICMP, avoid duplicate spam)
+- [x] Track effective flow capability at runtime (requested `--flows` vs effective protocol) and use it for flap detection + NAT/Paths column visibility
+- [x] Add CLI/TUI hint that flow-based ECMP detection is meaningful with UDP/TCP probes
+- [x] Keep Paths value + highlight + host indicator driven by one shared ECMP classification (avoid count/style drift)
+- [x] Handle out-of-range returned src ports as unknown flow (not forced flow 0) to avoid false per-flow attribution behind NAT/CGNAT
+- [x] Update indicator/UI budget for new `E` marker (host width autosize currently assumes `" !~^"`)
+- [x] Update user-facing indicator docs/help (`E` vs `!`) in CLI help + docs pages
+- [x] Add tests for per-packet ECMP classification, `-p auto` ICMP warning behavior, and out-of-range src-port flow attribution
+- [x] #46 acceptance: per-packet ECMP no longer presents as misleading `Paths: 1` when many responders are observed
+- [x] #46 acceptance: `E` (ECMP) and `!` (route flap) are no longer conflated in the same scenario
 - [ ] Paris strategy for UDP (`--strategy paris` — fixed 5-tuple, checksum encodes sequence) *(follow-on after #46 core fix)*
 - [ ] Dublin strategy for UDP (`--strategy dublin` — IP ID field encodes sequence) *(follow-on after #46 core fix)*
 
@@ -137,9 +142,9 @@
 ### Quick Wins (low effort, high impact)
 - [ ] **Progress indicator in replay** — show position in timeline during animated replay
 - [ ] **Interactive replay** — step through events, jump to time
-- [ ] **Last metric semantics** — decide and document whether `Last` is hop-most-recent (any responder) or primary-responder-most-recent; align TUI/CSV behavior and labels
-- [ ] **IPv6 RAW payload fallback tests** — unit tests for IPv6 Echo Reply and Time Exceeded parsing
-- [ ] **Main table layout tests** — verify header/cell/width count parity across Auto/Compact/Wide × single-flow/multi-flow modes
+- [x] **Last metric semantics** — documented as primary-responder-most-recent; TUI/CSV aligned
+- [x] **IPv6 RAW payload fallback tests** — unit tests for IPv6 Echo Reply and Time Exceeded parsing
+- [x] **Main table layout tests** — verify header/cell/width count parity across Auto/Compact/Wide × single-flow/multi-flow modes
 
 ### Medium Effort (moderate effort, high impact)
 - [ ] **PCAP export** — write probe/response packets to .pcap for Wireshark analysis
@@ -210,7 +215,7 @@
 | trippy | Rust | Yes (UDP) | No | No | Yes | Active |
 | traceroute | C | No | Yes | No | No | Maintenance |
 | tracepath | C | No | Yes | No | No | Maintenance |
-| **ttl** | Rust | Yes | Yes | Yes | Yes | Active |
+| **ttl** | Rust | Yes (per-flow + per-packet) | Yes | Yes | Yes | Active |
 
 ---
 

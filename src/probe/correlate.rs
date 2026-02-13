@@ -2079,6 +2079,84 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_parse_echo_reply_v6_raw_payload_fallback() {
+        // IPv6 RAW receive path on Linux uses ICMPv6 payload without outer IPv6 header.
+        let responder = IpAddr::V6(std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x1));
+        let our_id = 0x1234;
+
+        // ICMPv6 Echo Reply: 8-byte header + 4-byte payload fallback
+        let mut packet = vec![0u8; 12];
+        packet[0] = 129; // Echo Reply
+        packet[1] = 0; // Code
+        packet[4] = 0xFF; // Wrong identifier high
+        packet[5] = 0xFF; // Wrong identifier low
+
+        let probe_id = ProbeId::new(9, 4);
+        let seq = probe_id.to_sequence();
+        packet[6] = (seq >> 8) as u8;
+        packet[7] = (seq & 0xFF) as u8;
+
+        // Payload with correct identifier/sequence for fallback.
+        packet[8] = 0x12;
+        packet[9] = 0x34;
+        packet[10] = (seq >> 8) as u8;
+        packet[11] = (seq & 0xFF) as u8;
+
+        let result = parse_icmp_response(&packet, responder, our_id, false); // RAW path
+        assert!(result.is_some());
+
+        let parsed = result.unwrap();
+        assert_eq!(parsed.probe_id.ttl, 9);
+        assert_eq!(parsed.probe_id.seq, 4);
+        assert_eq!(parsed.response_type, IcmpResponseType::EchoReply);
+    }
+
+    #[test]
+    fn test_parse_time_exceeded_v6_raw_payload_fallback() {
+        let responder = IpAddr::V6(std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x2));
+        let our_id = 0x1234;
+
+        // ICMPv6 Time Exceeded (8) + original IPv6 (40) + original ICMPv6 (12)
+        // Include 4 bytes of quoted payload to exercise fallback path.
+        let mut packet = vec![0u8; 60];
+        packet[0] = 3; // Time Exceeded
+        packet[1] = 0; // Hop limit exceeded
+
+        // Original IPv6 header (offset 8)
+        packet[8] = 0x60; // Version 6
+        packet[14] = 58; // Next Header: ICMPv6
+        packet[15] = 1; // Quoted hop limit
+
+        // Original ICMPv6 Echo Request (offset 48)
+        packet[48] = 128; // Echo Request
+        packet[49] = 0; // Code
+        packet[52] = 0xFF; // Wrong identifier high
+        packet[53] = 0xFF; // Wrong identifier low
+
+        let probe_id = ProbeId::new(6, 7);
+        let seq = probe_id.to_sequence();
+        packet[54] = (seq >> 8) as u8;
+        packet[55] = (seq & 0xFF) as u8;
+
+        // Quoted ICMPv6 payload fallback (offset 56)
+        packet[56] = 0x12; // Correct identifier high
+        packet[57] = 0x34; // Correct identifier low
+        packet[58] = (seq >> 8) as u8;
+        packet[59] = (seq & 0xFF) as u8;
+
+        let result = parse_icmp_response(&packet, responder, our_id, false); // RAW path
+        assert!(result.is_some());
+
+        let parsed = result.unwrap();
+        assert_eq!(parsed.probe_id.ttl, 6);
+        assert_eq!(parsed.probe_id.seq, 7);
+        assert!(matches!(
+            parsed.response_type,
+            IcmpResponseType::TimeExceeded(0)
+        ));
+    }
+
     // ========================================================================
     // Property-based tests (proptest)
     // ========================================================================

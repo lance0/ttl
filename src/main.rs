@@ -21,7 +21,7 @@ mod tui;
 mod update;
 
 use cli::Args;
-use config::Config;
+use config::{Config, ProbeProtocol};
 use export::{export_csv, export_json, generate_report};
 use lookup::asn::{AsnLookup, run_asn_worker};
 use lookup::geo::{GeoLookup, run_geo_worker};
@@ -29,8 +29,8 @@ use lookup::ix::{IxLookup, run_ix_worker};
 use lookup::rdns::{DnsLookup, run_dns_worker};
 use prefs::{DisplayMode, Prefs};
 use probe::{
-    InterfaceInfo, check_permissions, detect_default_gateway, get_local_addr_with_interface,
-    validate_interface,
+    InterfaceInfo, check_permissions, create_send_socket_with_interface, detect_default_gateway,
+    get_local_addr_with_interface, validate_interface,
 };
 use state::{Session, Target, run_ratelimit_worker};
 use trace::engine::ProbeEngine;
@@ -90,6 +90,8 @@ async fn main() -> Result<()> {
     let mut targets: Vec<IpAddr> = Vec::new();
     let mut sessions_map: HashMap<IpAddr, Arc<RwLock<Session>>> = HashMap::new();
     let config = Config::from(&args);
+    let mut effective_flows_v4 = None;
+    let mut effective_flows_v6 = None;
 
     // Resolve info for TUI status message
     let resolve_info = if args.resolve_all {
@@ -100,7 +102,16 @@ async fn main() -> Result<()> {
         for (resolved_ip, primary, aliases) in result.targets {
             let mut target = Target::new(primary, resolved_ip);
             target.aliases = aliases;
-            let mut session = Session::new(target, config.clone());
+            // Resolve effective flow capability once per IP family at startup so
+            // engine, receiver, and UI all use the same flow semantics.
+            let target_config = config_for_target_effective_flows(
+                &config,
+                resolved_ip,
+                interface_info.as_ref(),
+                &mut effective_flows_v4,
+                &mut effective_flows_v6,
+            );
+            let mut session = Session::new(target, target_config);
 
             // Set source IP and gateway for display in TUI
             let ipv6 = resolved_ip.is_ipv6();
@@ -146,7 +157,16 @@ async fn main() -> Result<()> {
             }
 
             let target = Target::new(target_str.clone(), resolved_ip);
-            let mut session = Session::new(target, config.clone());
+            // Resolve effective flow capability once per IP family at startup so
+            // engine, receiver, and UI all use the same flow semantics.
+            let target_config = config_for_target_effective_flows(
+                &config,
+                resolved_ip,
+                interface_info.as_ref(),
+                &mut effective_flows_v4,
+                &mut effective_flows_v6,
+            );
+            let mut session = Session::new(target, target_config);
 
             // Set source IP and gateway for display in TUI
             let ipv6 = resolved_ip.is_ipv6();
@@ -251,6 +271,37 @@ async fn main() -> Result<()> {
         }
     }
 
+    let warn_effective_icmp = if config.flows <= 1 {
+        false
+    } else {
+        match config.protocol {
+            ProbeProtocol::Icmp => true,
+            ProbeProtocol::Auto => {
+                let mut any_icmp = false;
+                for target in &targets {
+                    if effective_flow_count_for_ip_cached(
+                        &config,
+                        *target,
+                        interface_info.as_ref(),
+                        &mut effective_flows_v4,
+                        &mut effective_flows_v6,
+                    ) == 1
+                    {
+                        any_icmp = true;
+                        break;
+                    }
+                }
+                any_icmp
+            }
+            ProbeProtocol::Udp | ProbeProtocol::Tcp => false,
+        }
+    };
+    if warn_effective_icmp {
+        eprintln!(
+            "Warning: --flows > 1 with effective ICMP probing; ICMP uses flow 0, so flow-based ECMP detection is limited. Use -p udp or -p tcp for meaningful multi-flow ECMP analysis."
+        );
+    }
+
     // Run in appropriate mode
     let result = if args.is_batch_mode() {
         run_batch_mode(
@@ -298,6 +349,55 @@ async fn main() -> Result<()> {
     }
 
     result
+}
+
+fn effective_flow_count_for_family(
+    config: &Config,
+    ipv6: bool,
+    interface: Option<&InterfaceInfo>,
+) -> u8 {
+    if config.flows <= 1 {
+        return config.flows;
+    }
+
+    match config.protocol {
+        ProbeProtocol::Icmp => 1,
+        ProbeProtocol::Auto => {
+            if create_send_socket_with_interface(ipv6, interface).is_ok() {
+                1
+            } else {
+                config.flows
+            }
+        }
+        ProbeProtocol::Udp | ProbeProtocol::Tcp => config.flows,
+    }
+}
+
+fn effective_flow_count_for_ip_cached(
+    config: &Config,
+    ip: IpAddr,
+    interface: Option<&InterfaceInfo>,
+    cached_v4: &mut Option<u8>,
+    cached_v6: &mut Option<u8>,
+) -> u8 {
+    if ip.is_ipv6() {
+        *cached_v6.get_or_insert_with(|| effective_flow_count_for_family(config, true, interface))
+    } else {
+        *cached_v4.get_or_insert_with(|| effective_flow_count_for_family(config, false, interface))
+    }
+}
+
+fn config_for_target_effective_flows(
+    base: &Config,
+    target: IpAddr,
+    interface: Option<&InterfaceInfo>,
+    cached_v4: &mut Option<u8>,
+    cached_v6: &mut Option<u8>,
+) -> Config {
+    let mut config = base.clone();
+    config.flows =
+        effective_flow_count_for_ip_cached(base, target, interface, cached_v4, cached_v6);
+    config
 }
 
 /// Load a session from a JSON file
@@ -543,6 +643,21 @@ fn resolve_target(target: &str, force_ipv4: bool, force_ipv6: bool) -> Result<Ip
 
 /// Spawn one or two receiver threads based on which IP families are present in targets.
 /// Returns a vec of join handles (1 for single-family, 2 for mixed IPv4+IPv6).
+fn session_effective_flows_for_family(
+    sessions: &SessionMap,
+    targets: &[IpAddr],
+    ipv6: bool,
+    default_flows: u8,
+) -> u8 {
+    let sessions_read = sessions.read();
+    targets
+        .iter()
+        .find(|t| t.is_ipv6() == ipv6)
+        .and_then(|target| sessions_read.get(target))
+        .map(|session| session.read().config.flows)
+        .unwrap_or(default_flows)
+}
+
 fn spawn_receivers(
     sessions: &SessionMap,
     pending: &PendingMap,
@@ -553,6 +668,12 @@ fn spawn_receivers(
 ) -> Vec<std::thread::JoinHandle<Result<()>>> {
     let has_ipv4 = targets.iter().any(|t| t.is_ipv4());
     let has_ipv6 = targets.iter().any(|t| t.is_ipv6());
+    // Pull effective flow counts from the session configs created at startup.
+    // This keeps receiver flow semantics aligned with engine/UI without re-probing sockets.
+    let effective_flows_v4 =
+        session_effective_flows_for_family(sessions, targets, false, config.flows);
+    let effective_flows_v6 =
+        session_effective_flows_for_family(sessions, targets, true, config.flows);
     let mut handles = Vec::new();
 
     if has_ipv4 {
@@ -560,7 +681,7 @@ fn spawn_receivers(
             timeout: config.timeout,
             ipv6: false,
             src_port_base: config.src_port_base,
-            num_flows: config.flows,
+            num_flows: effective_flows_v4,
             interface: interface.clone(),
             recv_any: config.recv_any,
         };
@@ -577,7 +698,7 @@ fn spawn_receivers(
             timeout: config.timeout,
             ipv6: true,
             src_port_base: config.src_port_base,
-            num_flows: config.flows,
+            num_flows: effective_flows_v6,
             interface: interface.clone(),
             recv_any: config.recv_any,
         };
@@ -635,8 +756,9 @@ async fn run_interactive_mode(
         let sessions_read = sessions.read();
         for target_ip in &targets {
             if let Some(state) = sessions_read.get(target_ip) {
+                let target_config = state.read().config.clone();
                 let engine = ProbeEngine::new(
-                    config.clone(),
+                    target_config,
                     *target_ip,
                     state.clone(),
                     pending.clone(),
@@ -841,8 +963,9 @@ async fn run_batch_mode(
         let sessions_read = sessions.read();
         for target_ip in &targets {
             if let Some(state) = sessions_read.get(target_ip) {
+                let target_config = state.read().config.clone();
                 let engine = ProbeEngine::new(
-                    config.clone(),
+                    target_config,
                     *target_ip,
                     state.clone(),
                     pending.clone(),
@@ -1054,8 +1177,9 @@ async fn run_streaming_mode(
         let sessions_read = sessions.read();
         for target_ip in &targets {
             if let Some(state) = sessions_read.get(target_ip) {
+                let target_config = state.read().config.clone();
                 let engine = ProbeEngine::new(
-                    config.clone(),
+                    target_config,
                     *target_ip,
                     state.clone(),
                     pending.clone(),
@@ -1270,5 +1394,99 @@ fn shutdown_trace_enabled() -> bool {
 fn shutdown_log(message: &str) {
     if shutdown_trace_enabled() {
         eprintln!("[shutdown] {message}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+    use std::net::Ipv6Addr;
+
+    #[test]
+    fn test_effective_flows_icmp_forces_single_flow() {
+        let config = Config {
+            protocol: ProbeProtocol::Icmp,
+            flows: 8,
+            ..Config::default()
+        };
+        assert_eq!(effective_flow_count_for_family(&config, false, None), 1);
+        assert_eq!(effective_flow_count_for_family(&config, true, None), 1);
+    }
+
+    #[test]
+    fn test_effective_flows_udp_keeps_requested_flows() {
+        let config = Config {
+            protocol: ProbeProtocol::Udp,
+            flows: 8,
+            ..Config::default()
+        };
+        assert_eq!(effective_flow_count_for_family(&config, false, None), 8);
+    }
+
+    #[test]
+    fn test_effective_flows_tcp_keeps_requested_flows() {
+        let config = Config {
+            protocol: ProbeProtocol::Tcp,
+            flows: 6,
+            ..Config::default()
+        };
+        assert_eq!(effective_flow_count_for_family(&config, true, None), 6);
+    }
+
+    #[test]
+    fn test_effective_flows_single_flow_passthrough() {
+        let config = Config {
+            protocol: ProbeProtocol::Auto,
+            flows: 1,
+            ..Config::default()
+        };
+        assert_eq!(effective_flow_count_for_family(&config, false, None), 1);
+    }
+
+    fn make_session_map(entries: &[(IpAddr, u8)]) -> SessionMap {
+        let mut map: HashMap<IpAddr, Arc<RwLock<Session>>> = HashMap::new();
+        for (target_ip, flows) in entries {
+            let mut target = Target::new(target_ip.to_string(), *target_ip);
+            target.hostname = Some(format!("host-{}", target_ip));
+            let config = Config {
+                flows: *flows,
+                ..Config::default()
+            };
+            map.insert(
+                *target_ip,
+                Arc::new(RwLock::new(Session::new(target, config))),
+            );
+        }
+        Arc::new(RwLock::new(map))
+    }
+
+    #[test]
+    fn test_session_effective_flows_for_family_uses_session_config() {
+        let ipv4 = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        let ipv6 = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        let sessions = make_session_map(&[(ipv4, 4), (ipv6, 1)]);
+        let targets = vec![ipv4, ipv6];
+
+        assert_eq!(
+            session_effective_flows_for_family(&sessions, &targets, false, 8),
+            4
+        );
+        assert_eq!(
+            session_effective_flows_for_family(&sessions, &targets, true, 8),
+            1
+        );
+    }
+
+    #[test]
+    fn test_session_effective_flows_for_family_falls_back_to_default_when_family_missing() {
+        let ipv4 = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        let sessions = make_session_map(&[(ipv4, 3)]);
+        let targets = vec![ipv4];
+
+        assert_eq!(
+            session_effective_flows_for_family(&sessions, &targets, true, 7),
+            7
+        );
     }
 }

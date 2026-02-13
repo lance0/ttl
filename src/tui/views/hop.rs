@@ -4,7 +4,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
-use crate::state::Hop;
+use crate::state::{EcmpKind, Hop};
 use crate::tui::theme::Theme;
 use crate::tui::widgets::sparkline_string;
 
@@ -443,51 +443,69 @@ impl HopDetailView<'_> {
                 }
             }
 
-            // Per-flow paths (Paris/Dublin traceroute ECMP detection)
-            if !self.hop.flow_paths.is_empty() && self.hop.has_ecmp() {
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![Span::styled(
-                    "  Per-Flow Paths (ECMP detected):",
-                    Style::default().fg(self.theme.warning),
-                )]));
+            // ECMP detail
+            match self.hop.ecmp_kind() {
+                EcmpKind::PerFlow => {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![Span::styled(
+                        "  Per-Flow Paths (ECMP detected):",
+                        Style::default().fg(self.theme.warning),
+                    )]));
 
-                let ecmp_paths = self.hop.ecmp_paths();
-                let num_paths = self.hop.path_count();
-                for (flow_id, responder_ip) in &ecmp_paths {
-                    // Look up hostname from responders map
-                    let hostname = self
-                        .hop
-                        .responders
-                        .get(responder_ip)
-                        .and_then(|s| s.hostname.as_ref())
-                        .map(|h| format!(" ({})", h))
-                        .unwrap_or_default();
+                    let ecmp_paths = self.hop.ecmp_paths();
+                    let num_paths = self.hop.path_count();
+                    for (flow_id, responder_ip) in &ecmp_paths {
+                        // Look up hostname from responders map
+                        let hostname = self
+                            .hop
+                            .responders
+                            .get(responder_ip)
+                            .and_then(|s| s.hostname.as_ref())
+                            .map(|h| format!(" ({})", h))
+                            .unwrap_or_default();
 
-                    // Mark if this is a unique path
-                    let is_unique = ecmp_paths
-                        .iter()
-                        .filter(|(_, ip)| ip == responder_ip)
-                        .count()
-                        == 1;
-                    let marker = if is_unique && num_paths > 1 {
-                        " ← alt path"
-                    } else {
-                        ""
-                    };
+                        // Mark if this is a unique path
+                        let is_unique = ecmp_paths
+                            .iter()
+                            .filter(|(_, ip)| ip == responder_ip)
+                            .count()
+                            == 1;
+                        let marker = if is_unique && num_paths > 1 {
+                            " ← alt path"
+                        } else {
+                            ""
+                        };
 
+                        lines.push(Line::from(vec![
+                            Span::raw(format!("    Flow {}: ", flow_id)),
+                            Span::raw(format!("{}{}", responder_ip, hostname)),
+                            Span::styled(marker, Style::default().fg(self.theme.shortcut)),
+                        ]));
+                    }
+                }
+                EcmpKind::PerPacket => {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![Span::styled(
+                        "  Per-Packet ECMP detected",
+                        Style::default().fg(self.theme.warning),
+                    )]));
                     lines.push(Line::from(vec![
-                        Span::raw(format!("    Flow {}: ", flow_id)),
-                        Span::raw(format!("{}{}", responder_ip, hostname)),
-                        Span::styled(marker, Style::default().fg(self.theme.shortcut)),
+                        Span::styled("  Responders: ", Style::default().fg(self.theme.text_dim)),
+                        Span::raw(format!("{}", self.hop.responders.len())),
+                        Span::styled("  Paths shown: ", Style::default().fg(self.theme.text_dim)),
+                        Span::raw(format!("{}", self.hop.path_count())),
                     ]));
                 }
-            } else if !self.hop.flow_paths.is_empty() && self.hop.flow_paths.len() > 1 {
-                // Show flows even without ECMP (all same path)
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled("  Flows: ", Style::default().fg(self.theme.text_dim)),
-                    Span::raw(format!("{} (single path)", self.hop.flow_paths.len())),
-                ]));
+                EcmpKind::None => {
+                    if !self.hop.flow_paths.is_empty() && self.hop.flow_paths.len() > 1 {
+                        // Show flows even without ECMP (all same path)
+                        lines.push(Line::from(""));
+                        lines.push(Line::from(vec![
+                            Span::styled("  Flows: ", Style::default().fg(self.theme.text_dim)),
+                            Span::raw(format!("{} (single path)", self.hop.flow_paths.len())),
+                        ]));
+                    }
+                }
             }
 
             // Other responders (aggregate view)

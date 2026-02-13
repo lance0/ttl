@@ -60,6 +60,17 @@ ECMP routers hash on the 5-tuple: (src_ip, dst_ip, src_port, dst_port, protocol)
 - The TUI shows a "Paths" column when `--flows > 1`
 - Paths are highlighted when multiple responders are detected
 
+### ECMP Classification
+
+ttl distinguishes two types of ECMP:
+
+- **Per-flow ECMP**: Each flow consistently maps to one next-hop. Different flows take different paths. The Paths column shows unique flow primaries.
+- **Per-packet ECMP**: Responses rotate between responders regardless of flow. The Paths column shows the actual number of observed responders.
+
+Classification uses a primary concentration heuristic: if no single responder dominates a flow's responses (below 70% threshold), it's per-packet. The `E` indicator appears in the main table when ECMP is detected at a hop.
+
+**Note:** `--flows` requires UDP or TCP probing (`-p udp` or `-p tcp`). ICMP probes have no port to vary, so flows are always 1 in ICMP mode. ttl warns at startup if `--flows > 1` resolves to effective ICMP probing.
+
 ### Paris vs Dublin
 
 - **Paris traceroute**: Varies source port to enumerate paths
@@ -113,9 +124,10 @@ Trace all IP addresses that a hostname resolves to. Useful for:
 
 ttl detects route instability when the primary responder IP changes at a hop:
 
-- Main table shows "!" indicator after hostname when route changes detected
+- Main table shows `!` indicator after hostname when route changes detected
+- `!` is suppressed when ECMP is detected at the hop (`E` shown instead) — per-packet load balancing is expected multi-path behavior, not instability
 - Hop detail view (Enter key) shows route change history with timestamps
-- Uses hysteresis (margin of 2 responses) to avoid false positives from per-packet load balancing
+- Uses hysteresis (margin of 2 responses) to avoid false positives
 - Requires 5+ responses before recording changes (avoids startup noise)
 - History capped at 50 changes per hop
 - Only active in single-flow mode (disabled when `--flows > 1` since ECMP expects path variation)

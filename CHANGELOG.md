@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-02-13
+
+### Added
+- **ECMP classification**: Detects per-flow vs per-packet ECMP using primary concentration heuristics. Paths column now accurately reflects observed responder count for per-packet load balancing (#46)
+- **`E` indicator**: New ECMP indicator in main table replaces misleading `!` (route flap) when ECMP is the actual cause
+- **Effective flow capability**: Runtime detection of protocol flow support. `--flows > 1` with ICMP now warns and collapses to single-flow instead of silently doing nothing
+- **Receiver flow attribution hardening**: Out-of-range source ports (NAT/CGNAT) no longer force-attributed to flow 0. Unknown-flow responses only match pending probes when unambiguous
+- **Hop detail view**: Per-packet ECMP section shows responder count and path count; per-flow ECMP section unchanged
+- **Last RTT semantics documented**: `Last` column tracks primary responder's most recent RTT (code docs + KNOWN_ISSUES)
+- **Main table layout guard tests**: Header/cell/width count parity verified across Auto/Compact/Wide x single-flow/multi-flow
+- **IPv6 RAW payload fallback tests**: Echo Reply and Time Exceeded parsing tests for IPv6
+
+### Changed
+- **Flap detection suppressed during ECMP**: `!` indicator no longer fires when per-packet ECMP is detected at a hop
+- **Probe engines use per-session config**: Each target's engine sees the effective flow count, not the raw CLI value
+
 ## [0.17.0] - 2026-02-12
 
 ### Added

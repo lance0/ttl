@@ -35,6 +35,7 @@ See [Installation](#installation) below for setup instructions.
 - **Fast continuous path monitoring** with detailed hop statistics
 - **Multiple simultaneous targets** - trace to several destinations at once
 - **Paris/Dublin traceroute** - multi-flow probing for ECMP path enumeration
+- **ECMP classification** - distinguishes per-flow vs per-packet load balancing
 - **Path MTU discovery** - binary search for maximum unfragmented size
 - **NAT detection** - identify when NAT devices rewrite source ports
 - **Route flap detection** - alert on path changes indicating routing instability
@@ -215,7 +216,7 @@ Unstable BGP or failover issues cause intermittent problems that are hard to cat
 sudo ttl -i 0.5 production-server.com
 ```
 
-TTL tracks when the responding IP at a hop changes. The `!` indicator flags route flaps, and hop details show change history.
+TTL tracks when the responding IP at a hop changes. The `!` indicator flags route flaps, and hop details show change history. ECMP load balancing shows `E` instead, so you can distinguish real instability from expected multi-path behavior.
 
 ### Detect Transparent Proxies
 

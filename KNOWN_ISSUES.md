@@ -78,7 +78,7 @@ This document tracks known limitations and edge cases that are documented but no
 
 ### `--flows` Has No Effect with ICMP Protocol
 
-ICMP probes have no source/destination port to vary, so all probes are sent as flow 0 regardless of the `--flows` value. Multi-flow ECMP detection requires `--protocol udp` or `--protocol tcp`. A runtime warning will be added in a future release (#46).
+ICMP probes have no source/destination port to vary, so all probes are sent as flow 0 regardless of the `--flows` value. Multi-flow ECMP detection requires `--protocol udp` or `--protocol tcp`. ttl warns at runtime when `--flows > 1` resolves to effective ICMP probing.
 
 ### macOS Requires Root
 
@@ -104,7 +104,7 @@ Linux delivers ICMPv6 Echo Reply only to the socket that sent the request, not t
 
 ### Last RTT Not Persisted in JSON
 
-`last_rtt` is intentionally `#[serde(skip)]` — it represents the most recent probe response and is inherently a live-only metric. The `Last` column in TUI and `last_ms` in CSV will show "-"/empty for replayed sessions. All other RTT and jitter stats are persisted and display correctly.
+`last_rtt` is intentionally `#[serde(skip)]` — it represents a live-only sample. The `Last` column in TUI and `last_ms` in CSV are sourced from the current primary responder's `last_rtt`, and will show "-"/empty for replayed sessions. All other RTT and jitter stats are persisted and display correctly.
 
 ### TCP Bitrate Not Paced
 

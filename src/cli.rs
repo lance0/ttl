@@ -32,7 +32,8 @@ DETECTION INDICATORS:
     [RL?]  - Router rate-limiting ICMP (loss may be artificial)
     [ASYM] - Asymmetric routing detected (return path differs)
     [TTL!] - TTL manipulation detected (middlebox modifying TTL)
-    !      - Route flap at this hop (path instability)
+    E      - ECMP detected at this hop (single-flow marker; see Paths in multi-flow)
+    !      - Route flap at this hop (path instability, when ECMP not indicated)
     ~      - Asymmetric routing suspected at this hop
     ^      - TTL manipulation suspected at this hop
 

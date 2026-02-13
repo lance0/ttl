@@ -23,6 +23,7 @@ How ttl compares to other traceroute and network diagnostic tools.
 | IX detection | :white_check_mark: | :x: | :x: | :x: | :x: |
 | **ECMP** ||||||
 | Multi-path detection | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: |
+| Per-flow/per-packet classification | :white_check_mark: | :x: | :x: | :x: | :x: |
 | Paris traceroute | :white_check_mark: | :white_check_mark: | :x: | :x: | :x: |
 | **TUI** ||||||
 | Interactive | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: | :x: |

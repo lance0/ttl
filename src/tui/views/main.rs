@@ -24,6 +24,102 @@ struct ColumnWidths {
     asn: u16,
 }
 
+fn expected_column_count(is_wide: bool, multi_flow: bool) -> usize {
+    let mut count = 12; // base columns including sparkline
+    if is_wide {
+        count += 2; // JAvg, JMax
+    }
+    if multi_flow {
+        count += 2; // NAT, Paths
+    }
+    count
+}
+
+fn build_header_cells(is_wide: bool, multi_flow: bool) -> Vec<Cell<'static>> {
+    let mut header_cells = vec![
+        Cell::from("#").style(Style::default().bold()),
+        Cell::from("Host").style(Style::default().bold()),
+        Cell::from("ASN").style(Style::default().bold()),
+        Cell::from("Loss%").style(Style::default().bold()),
+        Cell::from("Sent").style(Style::default().bold()),
+        Cell::from("Last").style(Style::default().bold()),
+        Cell::from("Avg").style(Style::default().bold()),
+        Cell::from("Min").style(Style::default().bold()),
+        Cell::from("Max").style(Style::default().bold()),
+        Cell::from("StdDev").style(Style::default().bold()),
+        Cell::from("Jitter").style(Style::default().bold()),
+    ];
+    if is_wide {
+        header_cells.push(Cell::from("JAvg").style(Style::default().bold()));
+        header_cells.push(Cell::from("JMax").style(Style::default().bold()));
+    }
+    if multi_flow {
+        header_cells.push(Cell::from("NAT").style(Style::default().bold()));
+        header_cells.push(Cell::from("Paths").style(Style::default().bold()));
+    }
+    header_cells.push(Cell::from("").style(Style::default().bold())); // Sparkline
+    header_cells
+}
+
+fn build_widths(col_widths: &ColumnWidths, is_wide: bool, multi_flow: bool) -> Vec<Constraint> {
+    let mut widths: Vec<Constraint> = vec![
+        Constraint::Length(3),                  // #
+        Constraint::Min(col_widths.host),       // Host (dynamic)
+        Constraint::Length(col_widths.asn + 1), // ASN (dynamic, +1 for padding)
+        Constraint::Length(7),                  // Loss%
+        Constraint::Length(5),                  // Sent
+        Constraint::Length(7),                  // Last
+        Constraint::Length(7),                  // Avg
+        Constraint::Length(7),                  // Min
+        Constraint::Length(7),                  // Max
+        Constraint::Length(7),                  // StdDev
+        Constraint::Length(7),                  // Jitter
+    ];
+    if is_wide {
+        widths.push(Constraint::Length(7)); // JAvg
+        widths.push(Constraint::Length(7)); // JMax
+    }
+    if multi_flow {
+        widths.push(Constraint::Length(4)); // NAT
+        widths.push(Constraint::Length(6)); // Paths
+    }
+    widths.push(Constraint::Length(11)); // Sparkline
+    widths
+}
+
+fn build_hop_indicators(
+    multi_flow: bool,
+    has_ecmp: bool,
+    has_route_changes: bool,
+    has_asymmetry: bool,
+    has_ttl_manip: bool,
+) -> String {
+    let show_ecmp_marker = !multi_flow && has_ecmp;
+    let has_flap = !multi_flow && has_route_changes && !has_ecmp;
+    let has_asym = !multi_flow && has_asymmetry;
+    let has_ttl = has_ttl_manip;
+
+    let mut ind = String::new();
+    if show_ecmp_marker {
+        ind.push('E');
+    }
+    if has_flap {
+        ind.push('!');
+    }
+    if has_asym {
+        ind.push('~');
+    }
+    if has_ttl {
+        ind.push('^');
+    }
+
+    if ind.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", ind)
+    }
+}
+
 /// Truncate a string to max_len characters, adding ellipsis if truncated
 fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
     if s.chars().count() <= max_len {
@@ -111,7 +207,7 @@ impl<'a> MainView<'a> {
                             .as_ref()
                             .map(|h| h.chars().count())
                             .unwrap_or_else(|| stats.ip.to_string().len())
-                            + 4; // space for " !~^"
+                            + 4; // space for " E~^" / " !~^"
                         max_host = max_host.max(host_len);
 
                         // ASN column shows "AS##### name", account for full format
@@ -265,30 +361,9 @@ impl Widget for MainView<'_> {
         let multi_flow = self.session.config.flows > 1;
         let is_wide = matches!(self.display_mode, DisplayMode::Wide);
 
-        // Build header - add "Paths" column if multi-flow enabled
-        let mut header_cells = vec![
-            Cell::from("#").style(Style::default().bold()),
-            Cell::from("Host").style(Style::default().bold()),
-            Cell::from("ASN").style(Style::default().bold()),
-            Cell::from("Loss%").style(Style::default().bold()),
-            Cell::from("Sent").style(Style::default().bold()),
-            Cell::from("Last").style(Style::default().bold()),
-            Cell::from("Avg").style(Style::default().bold()),
-            Cell::from("Min").style(Style::default().bold()),
-            Cell::from("Max").style(Style::default().bold()),
-            Cell::from("StdDev").style(Style::default().bold()),
-            Cell::from("Jitter").style(Style::default().bold()),
-        ];
-        if is_wide {
-            header_cells.push(Cell::from("JAvg").style(Style::default().bold()));
-            header_cells.push(Cell::from("JMax").style(Style::default().bold()));
-        }
-        if multi_flow {
-            header_cells.push(Cell::from("NAT").style(Style::default().bold()));
-            header_cells.push(Cell::from("Paths").style(Style::default().bold()));
-        }
-        header_cells.push(Cell::from("").style(Style::default().bold())); // Sparkline
-
+        // Build header - add conditional columns for wide and multi-flow modes.
+        let header_cells = build_header_cells(is_wide, multi_flow);
+        let header_cell_count = header_cells.len();
         let header = Row::new(header_cells).height(1);
 
         // Build rows - only show hops up to the destination
@@ -321,28 +396,17 @@ impl Widget for MainView<'_> {
                         String::new()
                     };
                     // Add indicators:
-                    // ! = route flap (single-flow only)
+                    // E = ECMP detected (single-flow only)
+                    // ! = route flap (single-flow only, suppressed when ECMP is detected)
                     // ~ = asymmetric routing (single-flow only)
                     // ^ = TTL manipulation (all flow modes)
-                    let has_flap = !multi_flow && !hop.route_changes.is_empty();
-                    let has_asym = !multi_flow && hop.has_asymmetry();
-                    let has_ttl = hop.has_ttl_manip();
-                    // Build indicator string
-                    let mut ind = String::new();
-                    if has_flap {
-                        ind.push('!');
-                    }
-                    if has_asym {
-                        ind.push('~');
-                    }
-                    if has_ttl {
-                        ind.push('^');
-                    }
-                    let indicators = if ind.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" {}", ind)
-                    };
+                    let indicators = build_hop_indicators(
+                        multi_flow,
+                        hop.has_ecmp(),
+                        !hop.route_changes.is_empty(),
+                        hop.has_asymmetry(),
+                        hop.has_ttl_manip(),
+                    );
                     // Use computed host width for truncation
                     let max_len = (col_widths.host as usize).saturating_sub(indicators.len());
                     let truncated = truncate_with_ellipsis(&display, max_len);
@@ -504,33 +568,57 @@ impl Widget for MainView<'_> {
             .collect();
 
         // Build column widths - use computed widths from display mode
-        let mut widths: Vec<Constraint> = vec![
-            Constraint::Length(3),                  // #
-            Constraint::Min(col_widths.host),       // Host (dynamic)
-            Constraint::Length(col_widths.asn + 1), // ASN (dynamic, +1 for padding)
-            Constraint::Length(7),                  // Loss%
-            Constraint::Length(5),                  // Sent
-            Constraint::Length(7),                  // Last
-            Constraint::Length(7),                  // Avg
-            Constraint::Length(7),                  // Min
-            Constraint::Length(7),                  // Max
-            Constraint::Length(7),                  // StdDev
-            Constraint::Length(7),                  // Jitter
-        ];
-        if is_wide {
-            widths.push(Constraint::Length(7)); // JAvg
-            widths.push(Constraint::Length(7)); // JMax
-        }
-        if multi_flow {
-            widths.push(Constraint::Length(4)); // NAT
-            widths.push(Constraint::Length(6)); // Paths
-        }
-        widths.push(Constraint::Length(11)); // Sparkline
+        let widths = build_widths(&col_widths, is_wide, multi_flow);
+
+        debug_assert_eq!(
+            header_cell_count,
+            expected_column_count(is_wide, multi_flow),
+            "header cell count mismatch for mode"
+        );
+        debug_assert_eq!(
+            widths.len(),
+            expected_column_count(is_wide, multi_flow),
+            "width constraint count mismatch for mode"
+        );
 
         let table = Table::new(rows, widths)
             .header(header)
             .row_highlight_style(Style::default().bg(self.theme.highlight_bg));
 
         table.render(inner, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_column_count_matrix() {
+        assert_eq!(expected_column_count(false, false), 12);
+        assert_eq!(expected_column_count(true, false), 14);
+        assert_eq!(expected_column_count(false, true), 14);
+        assert_eq!(expected_column_count(true, true), 16);
+    }
+
+    #[test]
+    fn test_header_and_width_counts_match_in_all_modes() {
+        let col_widths = ColumnWidths { host: 20, asn: 12 };
+        for &(is_wide, multi_flow) in &[(false, false), (true, false), (false, true), (true, true)]
+        {
+            let header = build_header_cells(is_wide, multi_flow);
+            let widths = build_widths(&col_widths, is_wide, multi_flow);
+            assert_eq!(header.len(), widths.len());
+            assert_eq!(header.len(), expected_column_count(is_wide, multi_flow));
+        }
+    }
+
+    #[test]
+    fn test_build_hop_indicators_single_flow_ecmp_suppresses_flap() {
+        let indicators = build_hop_indicators(true, true, true, true, true);
+        assert_eq!(indicators, " ^", "multi-flow hides E/!/~ markers");
+
+        let indicators = build_hop_indicators(false, true, true, true, true);
+        assert_eq!(indicators, " E~^", "ECMP suppresses route flap marker");
     }
 }
