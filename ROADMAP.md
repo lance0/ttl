@@ -137,7 +137,9 @@
 ### Quick Wins (low effort, high impact)
 - [ ] **Progress indicator in replay** — show position in timeline during animated replay
 - [ ] **Interactive replay** — step through events, jump to time
+- [ ] **Last metric semantics** — decide and document whether `Last` is hop-most-recent (any responder) or primary-responder-most-recent; align TUI/CSV behavior and labels
 - [ ] **IPv6 RAW payload fallback tests** — unit tests for IPv6 Echo Reply and Time Exceeded parsing
+- [ ] **Main table layout tests** — verify header/cell/width count parity across Auto/Compact/Wide × single-flow/multi-flow modes
 
 ### Medium Effort (moderate effort, high impact)
 - [ ] **PCAP export** — write probe/response packets to .pcap for Wireshark analysis
