@@ -140,6 +140,8 @@
 *Prioritized by effort vs user impact. Quick wins first, then bigger lifts.*
 
 ### Quick Wins (low effort, high impact)
+- [ ] **Update checker: non-blocking receive** — keep `mpsc::Receiver` alive in TUI state and `try_recv()` each tick instead of `recv_timeout(1s)`. Fixes silent notification drops when GitHub API is slow (>1s TLS/DNS).
+- [ ] **Update checker: first-run immediate check** — `update-informer` with a non-zero interval skips the network on first run (writes current version to cache, waits for interval expiry). Use `interval(Duration::ZERO)` with manual staleness check, or switch to a direct `ureq` call with our own cache file.
 - [ ] **Progress indicator in replay** — show position in timeline during animated replay
 - [ ] **Interactive replay** — step through events, jump to time
 - [x] **Last metric semantics** — documented as primary-responder-most-recent; TUI/CSV aligned
