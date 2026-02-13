@@ -76,6 +76,10 @@ This document tracks known limitations and edge cases that are documented but no
 
 ## By Design
 
+### `--flows` Has No Effect with ICMP Protocol
+
+ICMP probes have no source/destination port to vary, so all probes are sent as flow 0 regardless of the `--flows` value. Multi-flow ECMP detection requires `--protocol udp` or `--protocol tcp`. A runtime warning will be added in a future release (#46).
+
 ### macOS Requires Root
 
 macOS DGRAM ICMP sockets cannot receive Time Exceeded messages from intermediate routers, so a RAW receive socket is required. RAW sockets need root privileges on macOS.

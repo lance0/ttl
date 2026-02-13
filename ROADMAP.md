@@ -77,7 +77,18 @@
 
 ## Planned Features
 
-### Next — Trace Diffing & Streaming
+### Next — ECMP Improvements
+
+**Why this matters:** Per-packet load balancing (common on Arista, Juniper, Cisco) is undercounted by the current flow-primary model. Users see 8 responders in the detail view but "Paths: 1" in the main table. Related: #46
+
+- [ ] Detect per-packet vs per-flow ECMP (primary_ratio heuristic per flow)
+- [ ] Paths column reflects actual responder count for per-packet ECMP
+- [ ] Separate indicators: `E` for ECMP detected vs `!` for route flap
+- [ ] Warn when `--flows > 1` with ICMP (no port to vary, flows have no effect)
+- [ ] Paris strategy for UDP (`--strategy paris` — fixed 5-tuple, checksum encodes sequence)
+- [ ] Dublin strategy for UDP (`--strategy dublin` — IP ID field encodes sequence)
+
+### Trace Diffing & Streaming
 
 **Why this matters:** Users frequently need to compare traces taken at different times (before/after a change, during/after an incident). Streaming output enables integration with monitoring pipelines.
 
@@ -125,6 +136,7 @@
 - [ ] **Docker Hub image** — pre-built container for CI/monitoring pipelines
 
 ### Larger Projects (high effort, high impact)
+- [ ] **ICMP checksum flow variation** — Paris traceroute for ICMP (vary checksum to create distinct flows). Neither ttl nor trippy implements this today. Requires platform-specific raw socket work (kernel checksum offloading on Linux, IP_HDRINCL).
 - [ ] **BGP & routing integration** — looking glass queries, AS path display, RPKI/ROA validation
 - [ ] **Baseline comparison** — save baseline, alert on latency/loss/path deviations
 - [ ] **Continuous logging mode** — log path changes over hours/days
@@ -183,7 +195,7 @@
 | Tool | Language | ECMP | MTU Discovery | Rate Limit Detection | TUI | Active Development |
 |------|----------|------|---------------|---------------------|-----|-------------------|
 | mtr | C | No | No | No | Yes | Maintenance |
-| trippy | Rust | No | No | No | Yes | Active |
+| trippy | Rust | Yes (UDP) | No | No | Yes | Active |
 | traceroute | C | No | Yes | No | No | Maintenance |
 | tracepath | C | No | Yes | No | No | Maintenance |
 | **ttl** | Rust | Yes | Yes | Yes | Yes | Active |
