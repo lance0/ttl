@@ -155,7 +155,7 @@
 - [ ] **Docker Hub image** — pre-built container for CI/monitoring pipelines
 
 ### Larger Projects (high effort, high impact)
-- [ ] **ICMP checksum flow variation** — Paris traceroute for ICMP (vary checksum to create distinct flows). Neither ttl nor trippy implements this today. Requires platform-specific raw socket work (kernel checksum offloading on Linux, IP_HDRINCL).
+- [ ] **ICMP checksum flow variation** — Paris traceroute for ICMP (vary checksum to create distinct flows). Neither ttl nor trippy implements this today. Requires platform-specific raw socket work (kernel checksum offloading on Linux, IP_HDRINCL). **Note:** Real-world value may be limited — Arista hardware flow-hashing platforms don't use ICMP checksum as entropy, so this approach won't create distinct flows on most switch hardware. TCP/UDP remain the reliable methods for multi-path detection. May still be useful on software load balancers.
 - [ ] **BGP & routing integration** — looking glass queries, AS path display, RPKI/ROA validation
 - [ ] **Baseline comparison** — save baseline, alert on latency/loss/path deviations
 - [ ] **Continuous logging mode** — log path changes over hours/days
