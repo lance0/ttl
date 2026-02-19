@@ -18,7 +18,7 @@ Network diagnostic tool that goes beyond traceroute: MTU discovery, NAT detectio
 ```bash
 # Basic usage
 ttl 8.8.8.8                          # Linux (after setcap)
-sudo ttl 8.8.8.8                     # macOS (always needs sudo)
+sudo ttl 8.8.8.8                     # macOS/BSD (always needs sudo)
 
 # Common options
 ttl -p udp google.com                # UDP probes
@@ -288,12 +288,13 @@ ttl 1.1.1.1 --theme dracula    # Start with theme
 | macOS (Tahoe 26+) | Full support |
 | macOS (Sequoia 15) | Build from source* |
 | FreeBSD | Experimental** |
+| NetBSD | Experimental** |
 | Windows (WSL2) | Full support |
 | Windows (native) | Not supported |
 
 *Pre-built binaries are built on `macos-latest` (Tahoe). Older macOS versions may have display issues - use `cargo install ttl` to compile from source.
 
-**FreeBSD support is untested. Requires `sudo`. Interface binding (`-i`) is not supported. Please report issues at https://github.com/lance0/ttl/issues
+**FreeBSD/NetBSD support is experimental. Requires `sudo`. Interface binding (`-i`) is not supported. IPv4 PMTUD is unavailable on NetBSD (no `IP_DONTFRAG`). Please report issues at https://github.com/lance0/ttl/issues
 
 ### Windows via WSL2
 
@@ -324,7 +325,7 @@ sudo ttl 8.8.8.8
 
 ### Permissions
 - Linux: Requires `CAP_NET_RAW` capability or root (see [Permissions](#permissions-linux))
-- macOS/FreeBSD: Requires root (`sudo ttl target`) - RAW sockets are needed to receive ICMP Time Exceeded messages from intermediate routers
+- macOS/FreeBSD/NetBSD: Requires root (`sudo ttl target`) - RAW sockets are needed to receive ICMP Time Exceeded messages from intermediate routers
 
 ### Protocol Limitations
 - ICMP probes: Some networks filter ICMP, try `-p udp` or `-p tcp`

@@ -57,7 +57,7 @@ If you're coming from a Windows environment, you're probably familiar with `path
 | **Enrichment** | ASN, GeoIP, IX, DNS | DNS only |
 | **Analysis** | Rate limit detection, NAT detection, route flaps | Basic loss stats |
 | **Cost** | Free, open source | Built into Windows |
-| **Platforms** | Linux, macOS | Windows only |
+| **Platforms** | Linux, macOS, FreeBSD, NetBSD | Windows only |
 
 **Why switch from pathping?**
 - No more waiting 5+ minutes for results - ttl shows stats immediately

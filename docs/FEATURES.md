@@ -212,6 +212,8 @@ By default, PMTUD uses 1500 bytes as the upper bound (standard ethernet MTU). Us
 
 PMTUD runs in the background after the destination is discovered, without interrupting normal tracing.
 
+**Note:** IPv4 PMTUD is unavailable on NetBSD (no `IP_DONTFRAG` socket option). IPv6 PMTUD works normally.
+
 ### JSON Output with PMTUD
 
 ```bash

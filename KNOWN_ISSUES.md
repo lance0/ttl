@@ -90,9 +90,13 @@ Linux users can run without sudo by setting `cap_net_raw` capability or configur
 
 When `--resolve-all` produces both IPv4 and IPv6 targets, `--source-ip` cannot be used because a source IP is inherently single-family. An error is shown suggesting `-4` or `-6` to constrain the family.
 
-### macOS/FreeBSD Minimum Inter-Probe Delay
+### macOS/FreeBSD/NetBSD Minimum Inter-Probe Delay
 
-A 500µs minimum delay between probes is automatically applied on macOS and FreeBSD. BSD-derived kernels batch rapid `setsockopt(IP_TTL)` calls, causing packets to be sent with stale TTL values. This delay ensures each TTL change takes effect before the next send.
+A 500µs minimum delay between probes is automatically applied on macOS, FreeBSD, and NetBSD. BSD-derived kernels batch rapid `setsockopt(IP_TTL)` calls, causing packets to be sent with stale TTL values. This delay ensures each TTL change takes effect before the next send.
+
+### NetBSD IPv4 PMTUD Unavailable
+
+NetBSD lacks the `IP_DONTFRAG` socket option, so the Don't Fragment flag cannot be set on IPv4 sockets. IPv4 PMTUD (`--pmtud`) will print a warning and skip DF-dependent probes. IPv6 PMTUD works normally via `IPV6_DONTFRAG`.
 
 ### Rate Limit Detection Skipped at Destination
 

@@ -65,14 +65,14 @@ pub fn check_permissions() -> Result<SocketCapability> {
 }
 
 /// Check socket permissions and return capability level
-/// On FreeBSD, uses RAW sockets for both sending and receiving
-/// (FreeBSD does not support SOCK_DGRAM + IPPROTO_ICMP)
-#[cfg(target_os = "freebsd")]
+/// On FreeBSD/NetBSD, uses RAW sockets for both sending and receiving
+/// (these BSDs do not support SOCK_DGRAM + IPPROTO_ICMP)
+#[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
 pub fn check_permissions() -> Result<SocketCapability> {
     if create_raw_icmp_socket(false).is_err() {
         return Err(anyhow!(
             "Insufficient permissions for ICMP sockets.\n\n\
-             On FreeBSD, raw sockets are required for traceroute.\n\n\
+             Raw sockets are required for traceroute.\n\n\
              Fix: Run with sudo: sudo ttl <target>"
         ));
     }
@@ -86,7 +86,7 @@ pub fn check_permissions() -> Result<SocketCapability> {
 
 /// Check socket permissions and return capability level
 /// On Linux, requires RAW sockets for traceroute functionality
-#[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
+#[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd")))]
 pub fn check_permissions() -> Result<SocketCapability> {
     // RAW sockets required - DGRAM can't receive Time Exceeded from intermediate routers
     if create_raw_icmp_socket(false).is_ok() {
@@ -184,9 +184,9 @@ pub fn create_send_socket(ipv6: bool) -> Result<SocketInfo> {
         });
     }
 
-    #[cfg(target_os = "freebsd")]
+    #[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
     {
-        // FreeBSD: Use RAW directly (SOCK_DGRAM + IPPROTO_ICMP not supported)
+        // FreeBSD/NetBSD: Use RAW directly (SOCK_DGRAM + IPPROTO_ICMP not supported)
         let socket = create_raw_icmp_socket(ipv6)?;
         return Ok(SocketInfo {
             socket,
@@ -194,7 +194,7 @@ pub fn create_send_socket(ipv6: bool) -> Result<SocketInfo> {
         });
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
+    #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd")))]
     {
         // Linux: Prefer RAW, fall back to DGRAM for unprivileged
         if let Ok(socket) = create_raw_icmp_socket(ipv6) {
@@ -217,9 +217,9 @@ pub fn create_send_socket(ipv6: bool) -> Result<SocketInfo> {
 /// (DGRAM sockets only receive Echo Reply, not error messages from intermediate routers)
 /// On Linux, tries RAW first, falls back to DGRAM for unprivileged ICMP
 pub fn create_recv_socket(ipv6: bool) -> Result<SocketInfo> {
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    #[cfg(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd"))]
     {
-        // macOS/FreeBSD: Must use RAW (DGRAM can't receive Time Exceeded from routers)
+        // macOS/FreeBSD/NetBSD: Must use RAW (DGRAM can't receive Time Exceeded from routers)
         let socket = create_raw_icmp_socket(ipv6)?;
         if let Err(e) = socket.set_recv_buffer_size(1024 * 1024) {
             eprintln!("Warning: Could not set receive buffer to 1MB: {}", e);
@@ -230,7 +230,7 @@ pub fn create_recv_socket(ipv6: bool) -> Result<SocketInfo> {
         });
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
+    #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd")))]
     {
         // Linux: Try RAW first, fall back to DGRAM for unprivileged ICMP
         if let Ok(socket) = create_raw_icmp_socket(ipv6) {
@@ -324,6 +324,39 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
     Ok(())
 }
 
+/// Set Don't Fragment flag for Path MTU Discovery (NetBSD)
+/// - IPv4: Returns error (NetBSD lacks IP_DONTFRAG; PMTUD unsupported for IPv4)
+/// - IPv6: Sets IPV6_DONTFRAG = 1
+#[cfg(target_os = "netbsd")]
+pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    if ipv6 {
+        const IPV6_DONTFRAG: libc::c_int = 62;
+        let val: libc::c_int = 1;
+        let ret = unsafe {
+            libc::setsockopt(
+                socket.as_raw_fd(),
+                libc::IPPROTO_IPV6,
+                IPV6_DONTFRAG,
+                &val as *const _ as *const libc::c_void,
+                std::mem::size_of_val(&val) as libc::socklen_t,
+            )
+        };
+        if ret != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    } else {
+        // IPv4: NetBSD has no IP_DONTFRAG — return error so PMTUD callers don't
+        // proceed thinking DF is set (packets would fragment instead of triggering
+        // ICMP Frag Needed, producing bogus MTU results)
+        Err(anyhow!(
+            "IP_DONTFRAG not supported on NetBSD; IPv4 PMTUD unavailable"
+        ))
+    }
+}
+
 /// Set Don't Fragment flag for Path MTU Discovery (macOS/FreeBSD)
 /// - IPv4: Sets IP_DONTFRAG = 1
 /// - IPv6: Sets IPV6_DONTFRAG = 1
@@ -410,6 +443,10 @@ pub fn enable_recv_ttl(socket: &Socket, ipv6: bool) -> Result<()> {
     #[cfg(target_os = "freebsd")]
     const IP_RECVTTL: libc::c_int = 65;
     #[cfg(target_os = "freebsd")]
+    const IPV6_RECVHOPLIMIT: libc::c_int = 37;
+    #[cfg(target_os = "netbsd")]
+    const IP_RECVTTL: libc::c_int = 23;
+    #[cfg(target_os = "netbsd")]
     const IPV6_RECVHOPLIMIT: libc::c_int = 37;
 
     let (level, optname) = if ipv6 {
@@ -508,6 +545,17 @@ fn extract_ttl_from_cmsg(msg: &libc::msghdr, ipv6: bool) -> Option<u8> {
         // Accept both IP_TTL (4) and IP_RECVTTL (65) since FreeBSD may deliver either
         cmsg_type == 4 || cmsg_type == 65
     }
+    #[cfg(target_os = "netbsd")]
+    fn is_ip_ttl_type(cmsg_type: libc::c_int) -> bool {
+        // Accept both IP_TTL (4) and IP_RECVTTL (23) since NetBSD may deliver either
+        cmsg_type == 4 || cmsg_type == 23
+    }
+
+    // IPV6_HOPLIMIT: use libc where available, define locally for NetBSD
+    #[cfg(not(target_os = "netbsd"))]
+    let ipv6_hoplimit = libc::IPV6_HOPLIMIT;
+    #[cfg(target_os = "netbsd")]
+    let ipv6_hoplimit: libc::c_int = 47;
 
     unsafe {
         let mut cmsg = libc::CMSG_FIRSTHDR(msg);
@@ -516,7 +564,7 @@ fn extract_ttl_from_cmsg(msg: &libc::msghdr, ipv6: bool) -> Option<u8> {
 
             if ipv6 {
                 // IPV6_HOPLIMIT
-                if hdr.cmsg_level == libc::IPPROTO_IPV6 && hdr.cmsg_type == libc::IPV6_HOPLIMIT {
+                if hdr.cmsg_level == libc::IPPROTO_IPV6 && hdr.cmsg_type == ipv6_hoplimit {
                     let data_ptr = libc::CMSG_DATA(cmsg);
                     let ttl = *(data_ptr as *const i32);
                     return Some(ttl as u8);
