@@ -98,6 +98,8 @@ pub struct UiState {
     pub target_list_index: usize,
     /// Update available notification (version string)
     pub update_available: Option<String>,
+    /// Receiver for background update check result
+    pub update_rx: Option<std::sync::mpsc::Receiver<Option<String>>>,
     /// Replay animation state (None = live mode or static replay)
     pub replay_state: Option<ReplayState>,
     /// Cached target list info (populated when overlay is open, refreshed every 30 ticks)
@@ -129,7 +131,7 @@ pub async fn run_tui(
     initial_prefs: Prefs,
     resolve_info: Option<ResolveInfo>,
     ix_lookup: Option<Arc<IxLookup>>,
-    update_available: Option<String>,
+    update_rx: Option<std::sync::mpsc::Receiver<Option<String>>>,
     replay_state: Option<ReplayState>,
 ) -> Result<Prefs> {
     // Setup terminal
@@ -160,7 +162,7 @@ pub async fn run_tui(
         theme_index: initial_index,
         display_mode,
         settings: SettingsState::new(initial_index, display_mode, api_key),
-        update_available,
+        update_rx,
         replay_state,
         ..Default::default()
     };
@@ -302,6 +304,21 @@ where
 
         // Clear old status messages
         ui_state.clear_old_status();
+
+        // Poll for update check result (non-blocking)
+        // Drop receiver once we get any result (Some or None) or sender disconnects
+        if let (None, Some(rx)) = (&ui_state.update_available, &ui_state.update_rx) {
+            match rx.try_recv() {
+                Ok(result) => {
+                    ui_state.update_available = result;
+                    ui_state.update_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    ui_state.update_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
 
         // Process replay animation tick
         if let Some(ref mut replay) = ui_state.replay_state

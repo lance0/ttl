@@ -453,6 +453,18 @@ Settings are saved to `~/.config/ttl/config.toml` when exiting the TUI.
 
 Theme selection is persisted to `~/.config/ttl/config.toml`.
 
+## Update Notifications
+
+ttl checks GitHub releases for new versions in a background thread at startup. The check is non-blocking and doesn't delay startup or probing.
+
+- **TUI banner**: Yellow banner appears at the top of the screen when an update is available
+- **Dismiss**: Press `u` to dismiss the banner for the current session
+- **Install-aware**: The help overlay (`?`) shows the appropriate update command based on how ttl was installed:
+  - Homebrew: `brew upgrade ttl`
+  - Cargo: `cargo install ttl`
+  - Pre-built binary: link to GitHub releases
+- **Non-interactive mode**: Update notice is printed to stderr after the run completes (JSON/CSV/report modes)
+
 ## Output Formats
 
 ### JSON

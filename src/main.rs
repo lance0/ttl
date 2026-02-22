@@ -863,14 +863,8 @@ async fn run_interactive_mode(
     // Spawn rate limit detection worker (always enabled, lightweight analysis)
     let ratelimit_handle = tokio::spawn(run_ratelimit_worker(sessions.clone(), cancel.clone()));
 
-    // Check for update result - background check runs during target resolution
-    // Use short timeout since check should already be complete; don't delay startup
-    let update_available = update_rx
-        .recv_timeout(Duration::from_secs(1))
-        .ok()
-        .flatten();
-
     // Run TUI (with target list for cycling)
+    // Pass update_rx directly — TUI polls it non-blocking each tick
     let final_prefs = run_tui(
         sessions.clone(),
         targets.clone(),
@@ -878,7 +872,7 @@ async fn run_interactive_mode(
         prefs,
         resolve_info,
         ix_lookup.clone(),
-        update_available,
+        Some(update_rx),
         None, // replay_state (live mode)
     )
     .await?;

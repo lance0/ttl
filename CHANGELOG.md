@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.1] - 2026-02-22
+
+### Added
+- **NetBSD platform support** (experimental): Raw sockets, IPv6 PMTUD, BSD minimum inter-probe delay. IPv4 PMTUD unavailable (no `IP_DONTFRAG`). Interface binding (`-i`) not supported. (#47)
+
+### Fixed
+- **Update checker reliability**: Changed from blocking `recv_timeout(1s)` to non-blocking `try_recv()` polling in TUI event loop. Update notifications no longer silently drop when GitHub API response exceeds 1 second
+- **Update checker first-run**: Set `update-informer` interval to `Duration::ZERO` so first launch performs an immediate network check instead of writing a cache file and waiting for the next run
+
+### Dependencies
+- Updated clap (4.5.58→4.5.60), libc (0.2.181→0.2.182), futures (0.3.31→0.3.32), maxminddb (0.27.1→0.27.3), toml_parser (1.0.7→1.0.9), anyhow (1.0.101→1.0.102), plus transitive deps
+
 ## [0.18.0] - 2026-02-13
 
 ### Added

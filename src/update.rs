@@ -52,17 +52,19 @@ impl InstallMethod {
     }
 }
 
-/// Check GitHub for a newer version (cached, checks at most once per 24h)
+/// Check GitHub for a newer version
 ///
-/// Returns Some(new_version) if an update is available and the cache has expired.
-/// Returns None if no update available, check failed, or within cache interval.
+/// Returns Some(new_version) if an update is available.
+/// Returns None if no update available or check failed.
+/// Uses interval(ZERO) to always perform a network check — we only call this
+/// once per process lifetime (in a background thread), so cache-based rate
+/// limiting is unnecessary.
 pub fn check_for_update() -> Option<String> {
     use std::time::Duration;
     use update_informer::Check;
 
-    // Cache for 1 hour to avoid GitHub rate limits while still being responsive
     let informer = update_informer::new(GitHub, "lance0/ttl", env!("CARGO_PKG_VERSION"))
-        .interval(Duration::from_secs(3600));
+        .interval(Duration::ZERO);
 
     informer
         .check_version()

@@ -60,7 +60,7 @@
 - [x] Update notifications (checks GitHub releases, install-method-aware)
 - [x] FreeBSD support (experimental, raw sockets)
 
-## Completed (v0.15.x - v0.18.x)
+## Completed (v0.15.x - v0.18.1)
 
 - [x] Animated replay (`--replay file --animate`) with speed control
 - [x] Probe event recording for replay accuracy
@@ -77,6 +77,9 @@
 - [x] `E` indicator for ECMP detected vs `!` for route flap (#46)
 - [x] Effective flow capability: `--flows` + ICMP warns and collapses to single-flow (#46)
 - [x] Receiver flow attribution hardening: unknown flows only match when unambiguous (#46)
+- [x] NetBSD platform support (experimental, raw sockets, IPv6 PMTUD only) (#47)
+- [x] Update checker: non-blocking `try_recv()` polling in TUI (replaces blocking `recv_timeout(1s)`)
+- [x] Update checker: first-run immediate network check (`interval(Duration::ZERO)`)
 
 ---
 
@@ -140,8 +143,6 @@
 *Prioritized by effort vs user impact. Quick wins first, then bigger lifts.*
 
 ### Quick Wins (low effort, high impact)
-- [ ] **Update checker: non-blocking receive** — keep `mpsc::Receiver` alive in TUI state and `try_recv()` each tick instead of `recv_timeout(1s)`. Fixes silent notification drops when GitHub API is slow (>1s TLS/DNS).
-- [ ] **Update checker: first-run immediate check** — `update-informer` with a non-zero interval skips the network on first run (writes current version to cache, waits for interval expiry). Use `interval(Duration::ZERO)` with manual staleness check, or switch to a direct `ureq` call with our own cache file.
 - [ ] **Progress indicator in replay** — show position in timeline during animated replay
 - [ ] **Interactive replay** — step through events, jump to time
 - [x] **Last metric semantics** — documented as primary-responder-most-recent; TUI/CSV aligned
