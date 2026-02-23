@@ -132,6 +132,24 @@ pub fn create_udp_dgram_socket_bound_full(
     Ok(socket)
 }
 
+/// Detect the local source IP the kernel would use to reach a given target.
+/// Creates a temporary UDP socket, connects to the target, and reads back
+/// the source address via getsockname. Required on NetBSD where DGRAM sockets
+/// bound to 0.0.0.0 fail with EHOSTUNREACH.
+pub fn detect_source_ip(target: IpAddr) -> Result<IpAddr> {
+    let ipv6 = target.is_ipv6();
+    let domain = if ipv6 { Domain::IPV6 } else { Domain::IPV4 };
+    let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+    // Connect to target on a dummy port — no packets are sent for UDP
+    let addr = SocketAddr::new(target, 80);
+    socket.connect(&SockAddr::from(addr))?;
+    let local = socket.local_addr()?;
+    let local_addr: SocketAddr = local
+        .as_socket()
+        .ok_or_else(|| anyhow::anyhow!("Failed to get local socket address"))?;
+    Ok(local_addr.ip())
+}
+
 /// Send a UDP probe to target
 pub fn send_udp_probe(socket: &Socket, payload: &[u8], target: IpAddr, port: u16) -> Result<usize> {
     let addr = SocketAddr::new(target, port);
@@ -187,5 +205,52 @@ mod tests {
         let payload = vec![0x0F, 0x2A, 0x54]; // Only 3 bytes
         let extracted = extract_probe_id_from_udp_payload(&payload);
         assert!(extracted.is_none());
+    }
+
+    #[test]
+    fn test_detect_source_ip_ipv4() {
+        // Detect source IP for a well-known IPv4 target (Google DNS)
+        // This exercises the connect+getsockname path.
+        // In restricted/offline environments, ENETUNREACH/EHOSTUNREACH is acceptable.
+        let ip = detect_source_ip(IpAddr::V4(std::net::Ipv4Addr::new(8, 8, 8, 8)));
+        match ip {
+            Ok(ip) => {
+                assert!(ip.is_ipv4(), "detected source should be IPv4");
+                // Should not be unspecified (0.0.0.0) or loopback
+                assert!(
+                    !ip.is_unspecified(),
+                    "detected source should not be 0.0.0.0"
+                );
+                assert!(!ip.is_loopback(), "detected source should not be loopback");
+            }
+            Err(e) => {
+                let allowed = e.downcast_ref::<std::io::Error>().is_some_and(|io| {
+                    matches!(
+                        io.kind(),
+                        std::io::ErrorKind::NetworkUnreachable
+                            | std::io::ErrorKind::HostUnreachable
+                    )
+                });
+                assert!(
+                    allowed,
+                    "unexpected detect_source_ip IPv4 error in test: {e}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_detect_source_ip_ipv6() {
+        // Detect source IP for a well-known IPv6 target (Google DNS)
+        // May fail if the host has no IPv6 connectivity — that's expected
+        let ip = detect_source_ip(IpAddr::V6(std::net::Ipv6Addr::new(
+            0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888,
+        )));
+        if let Ok(ip) = ip {
+            assert!(ip.is_ipv6(), "detected source should be IPv6");
+            assert!(!ip.is_unspecified(), "detected source should not be [::]");
+            assert!(!ip.is_loopback(), "detected source should not be ::1");
+        }
+        // Err is acceptable if host has no IPv6 route
     }
 }

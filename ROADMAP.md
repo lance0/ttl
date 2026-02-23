@@ -60,7 +60,7 @@
 - [x] Update notifications (checks GitHub releases, install-method-aware)
 - [x] FreeBSD support (experimental, raw sockets)
 
-## Completed (v0.15.x - v0.18.1)
+## Completed (v0.15.x - v0.18.2)
 
 - [x] Animated replay (`--replay file --animate`) with speed control
 - [x] Probe event recording for replay accuracy
@@ -78,6 +78,7 @@
 - [x] Effective flow capability: `--flows` + ICMP warns and collapses to single-flow (#46)
 - [x] Receiver flow attribution hardening: unknown flows only match when unambiguous (#46)
 - [x] NetBSD platform support (experimental, raw sockets, IPv6 PMTUD only) (#47)
+- [x] NetBSD UDP source IP auto-detection (fixes EHOSTUNREACH on DGRAM sockets) (#47)
 - [x] Update checker: non-blocking `try_recv()` polling in TUI (replaces blocking `recv_timeout(1s)`)
 - [x] Update checker: first-run immediate network check (`interval(Duration::ZERO)`)
 

@@ -11,9 +11,9 @@ use crate::probe::{
     bind_to_source_ip, build_echo_request, build_tcp_syn_sized, build_udp_payload_sized,
     create_send_socket_with_interface, create_tcp_socket_with_interface, create_udp_dgram_socket,
     create_udp_dgram_socket_bound_full, create_udp_dgram_socket_bound_with_interface,
-    enable_recv_ttl, get_identifier, get_local_addr_with_interface, parse_icmp_response,
-    recv_icmp_with_ttl, send_icmp, send_tcp_probe, send_udp_probe, set_dont_fragment, set_dscp,
-    set_ttl,
+    detect_source_ip, enable_recv_ttl, get_identifier, get_local_addr_with_interface,
+    parse_icmp_response, recv_icmp_with_ttl, send_icmp, send_tcp_probe, send_udp_probe,
+    set_dont_fragment, set_dscp, set_ttl,
 };
 use crate::state::{IcmpResponseType, PmtudPhase, ProbeId, Session};
 use crate::trace::pending::{PendingMap, PendingProbe};
@@ -324,6 +324,16 @@ impl ProbeEngine {
         let ipv6 = self.target.is_ipv6();
         let num_flows = self.config.flows;
 
+        // On NetBSD, DGRAM sockets bound to 0.0.0.0 fail with EHOSTUNREACH.
+        // Auto-detect the source IP the kernel would use for this target.
+        let source_ip = if self.config.source_ip.is_some() {
+            self.config.source_ip
+        } else if cfg!(target_os = "netbsd") {
+            Some(detect_source_ip(self.target)?)
+        } else {
+            None
+        };
+
         // Create sockets for each flow (Paris/Dublin traceroute multi-flow support)
         // Each socket is bound to a different source port for flow identification
         let mut sockets = Vec::with_capacity(num_flows as usize);
@@ -333,7 +343,7 @@ impl ProbeEngine {
                 ipv6,
                 src_port,
                 self.interface.as_ref(),
-                self.config.source_ip,
+                source_ip,
             )?;
 
             // Set DSCP if configured (set once per socket)
@@ -638,6 +648,26 @@ impl ProbeEngine {
         })
     }
 
+    /// Handle DF flag setup failures during PMTUD probing.
+    ///
+    /// On NetBSD IPv4, DF is unsupported (no IP_DONTFRAG). In that case we
+    /// stop PMTUD probing immediately so we don't retry and spam the same error
+    /// every probe round.
+    fn handle_pmtud_df_error(&self, unsupported_ipv4_df: bool, err: &anyhow::Error) {
+        if unsupported_ipv4_df {
+            let mut state = self.state.write();
+            if let Some(ref mut pmtud) = state.pmtud {
+                pmtud.phase = PmtudPhase::Complete;
+                pmtud.discovered_mtu = None;
+            }
+            eprintln!(
+                "PMTUD: IPv4 PMTUD unavailable on NetBSD (missing IP_DONTFRAG); skipping PMTUD probes."
+            );
+        } else {
+            eprintln!("PMTUD: Failed to set DF flag: {}", err);
+        }
+    }
+
     /// Send an ICMP PMTUD probe at the specified TTL with the given packet size
     /// Returns true if probe was sent successfully
     async fn send_pmtud_probe_icmp(
@@ -677,7 +707,8 @@ impl ProbeEngine {
 
         // Set Don't Fragment flag (critical for PMTUD)
         if let Err(e) = set_dont_fragment(socket, self.target.is_ipv6()) {
-            eprintln!("PMTUD: Failed to set DF flag: {}", e);
+            let unsupported_ipv4_df = cfg!(target_os = "netbsd") && !self.target.is_ipv6();
+            self.handle_pmtud_df_error(unsupported_ipv4_df, &e);
             return false;
         }
 
@@ -861,5 +892,58 @@ impl ProbeEngine {
 
         // Restore blocking mode for sending
         let _ = socket.set_nonblocking(false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Target;
+    use crate::trace::pending::new_pending_map;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn make_test_engine(pmtud: bool) -> ProbeEngine {
+        let mut config = Config::default();
+        config.pmtud = pmtud;
+        let target = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        let session = Arc::new(RwLock::new(Session::new(
+            Target::new("test".to_string(), target),
+            config.clone(),
+        )));
+        if pmtud {
+            let mut state = session.write();
+            if let Some(ref mut p) = state.pmtud {
+                p.phase = PmtudPhase::Searching;
+            }
+        }
+        ProbeEngine::new(
+            config,
+            target,
+            session,
+            new_pending_map(),
+            CancellationToken::new(),
+            None,
+        )
+    }
+
+    #[test]
+    fn test_handle_pmtud_df_error_marks_complete_for_unsupported_df() {
+        let engine = make_test_engine(true);
+        engine.handle_pmtud_df_error(true, &anyhow::anyhow!("df unavailable"));
+
+        let state = engine.state.read();
+        let pmtud = state.pmtud.as_ref().expect("PMTUD state should exist");
+        assert_eq!(pmtud.phase, PmtudPhase::Complete);
+        assert!(pmtud.discovered_mtu.is_none());
+    }
+
+    #[test]
+    fn test_handle_pmtud_df_error_keeps_searching_for_general_errors() {
+        let engine = make_test_engine(true);
+        engine.handle_pmtud_df_error(false, &anyhow::anyhow!("temporary setsockopt error"));
+
+        let state = engine.state.read();
+        let pmtud = state.pmtud.as_ref().expect("PMTUD state should exist");
+        assert_eq!(pmtud.phase, PmtudPhase::Searching);
     }
 }

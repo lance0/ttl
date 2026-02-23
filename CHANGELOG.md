@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.2] - 2026-02-23
+
+### Fixed
+- **NetBSD UDP probes**: Auto-detect source IP for UDP DGRAM sockets on NetBSD. Fixes "No route to host" (EHOSTUNREACH) when sending UDP probes without `--source-ip` (#47)
+- **NetBSD IPv4 PMTUD retry spam**: PMTUD now terminates immediately on first DF flag failure instead of retrying every probe round. Prints a single warning when `IP_DONTFRAG` is unavailable (#47)
+
 ## [0.18.1] - 2026-02-22
 
 ### Added

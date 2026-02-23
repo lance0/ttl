@@ -94,9 +94,13 @@ When `--resolve-all` produces both IPv4 and IPv6 targets, `--source-ip` cannot b
 
 A 500µs minimum delay between probes is automatically applied on macOS, FreeBSD, and NetBSD. BSD-derived kernels batch rapid `setsockopt(IP_TTL)` calls, causing packets to be sent with stale TTL values. This delay ensures each TTL change takes effect before the next send.
 
+### NetBSD UDP Source IP Auto-Detection
+
+NetBSD's kernel returns EHOSTUNREACH when sending from a UDP DGRAM socket bound to `0.0.0.0` (unspecified source). This differs from Linux and macOS which handle source address selection transparently. ttl auto-detects the correct source IP on NetBSD using `connect()` + `getsockname()` before binding UDP sockets. If auto-detection fails, the error is surfaced to the user.
+
 ### NetBSD IPv4 PMTUD Unavailable
 
-NetBSD lacks the `IP_DONTFRAG` socket option, so the Don't Fragment flag cannot be set on IPv4 sockets. IPv4 PMTUD (`--pmtud`) will print a warning and skip DF-dependent probes. IPv6 PMTUD works normally via `IPV6_DONTFRAG`.
+NetBSD lacks the `IP_DONTFRAG` socket option, so the Don't Fragment flag cannot be set on IPv4 sockets. When `--pmtud` is used, PMTUD terminates immediately on the first DF failure with a single warning message, rather than retrying every probe round. IPv6 PMTUD works normally via `IPV6_DONTFRAG`.
 
 ### Rate Limit Detection Skipped at Destination
 
