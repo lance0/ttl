@@ -81,6 +81,14 @@ yay -S ttl-bin
 emerge net-analyzer/ttl
 ```
 
+### NetBSD (pkgsrc)
+
+```bash
+pkgin install ttl
+```
+
+Or from source: `cd /usr/pkgsrc/net/ttl && make install`
+
 ### Pre-built Binaries
 
 Download from [GitHub Releases](https://github.com/lance0/ttl/releases):
