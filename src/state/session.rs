@@ -1383,6 +1383,54 @@ impl Session {
         }
     }
 
+    /// Apply a recorded replay event to this session.
+    ///
+    /// This is used by the TUI replay engine and tests to ensure replay
+    /// behavior stays consistent with runtime event application.
+    pub fn apply_replay_event(&mut self, event: &ProbeEvent) {
+        let target_ip = self.target.resolved;
+        let single_flow = self.config.flows == 1;
+
+        if let Some(hop) = self.hop_mut(event.ttl) {
+            match &event.outcome {
+                ProbeOutcome::Reply { addr, rtt_us } => {
+                    hop.record_sent();
+                    let rtt = Duration::from_micros(*rtt_us);
+                    if single_flow {
+                        hop.record_response_detecting_flaps(*addr, rtt, None);
+                    } else {
+                        hop.record_response_with_mpls(*addr, rtt, None);
+                    }
+                    hop.record_flow_response(event.flow_id, *addr, rtt);
+
+                    if *addr == target_ip {
+                        self.complete = true;
+                        if self.dest_ttl.is_none_or(|d| event.ttl < d) {
+                            self.dest_ttl = Some(event.ttl);
+                        }
+                    }
+                    self.total_sent += 1;
+                }
+                ProbeOutcome::Timeout => {
+                    hop.record_sent();
+                    hop.record_timeout();
+                    hop.record_flow_timeout(event.flow_id);
+                    self.total_sent += 1;
+                }
+                ProbeOutcome::LateReply { addr, rtt_us } => {
+                    // Late reply arrives after timeout accounting already happened.
+                    let rtt = Duration::from_micros(*rtt_us);
+                    if single_flow {
+                        hop.record_response_detecting_flaps(*addr, rtt, None);
+                    } else {
+                        hop.record_response_with_mpls(*addr, rtt, None);
+                    }
+                    hop.record_flow_response(event.flow_id, *addr, rtt);
+                }
+            }
+        }
+    }
+
     /// Get discovered hops (those that have received at least one response)
     #[allow(dead_code)]
     pub fn discovered_hops(&self) -> impl Iterator<Item = &Hop> {

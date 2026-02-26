@@ -10,11 +10,20 @@ use crate::update::InstallMethod;
 /// Help overlay
 pub struct HelpView<'a> {
     theme: &'a Theme,
+    is_replay: bool,
 }
 
 impl<'a> HelpView<'a> {
     pub fn new(theme: &'a Theme) -> Self {
-        Self { theme }
+        Self {
+            theme,
+            is_replay: false,
+        }
+    }
+
+    pub fn with_replay(mut self, is_replay: bool) -> Self {
+        self.is_replay = is_replay;
+        self
     }
 }
 
@@ -22,7 +31,8 @@ impl Widget for HelpView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Calculate centered popup area
         let popup_width = 50.min(area.width.saturating_sub(4));
-        let popup_height = 24.min(area.height.saturating_sub(4));
+        let base_height: u16 = if self.is_replay { 31 } else { 24 };
+        let popup_height = base_height.min(area.height.saturating_sub(4));
         let popup_x = (area.width - popup_width) / 2 + area.x;
         let popup_y = (area.height - popup_height) / 2 + area.y;
         let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
@@ -38,7 +48,7 @@ impl Widget for HelpView<'_> {
         let inner = block.inner(popup_area);
         block.render(popup_area, buf);
 
-        let lines = vec![
+        let mut lines = vec![
             Line::from(""),
             Line::from(vec![
                 Span::styled("  q       ", Style::default().fg(self.theme.shortcut)),
@@ -106,15 +116,40 @@ impl Widget for HelpView<'_> {
                 Span::raw("Close popup / Deselect"),
             ]),
             Line::from(""),
-            Line::from(vec![Span::styled(
-                format!("  Update: {}", InstallMethod::cached().update_command()),
-                Style::default().fg(self.theme.text_dim),
-            )]),
-            Line::from(vec![Span::styled(
-                "  Press any key to close",
-                Style::default().fg(self.theme.text_dim),
-            )]),
         ];
+
+        if self.is_replay {
+            lines.push(Line::from(vec![Span::styled(
+                "  Replay Controls:",
+                Style::default().fg(self.theme.header),
+            )]));
+            lines.push(Line::from(vec![
+                Span::styled("  Left/Right ", Style::default().fg(self.theme.shortcut)),
+                Span::raw("Seek 0.5s"),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  [ / ]      ", Style::default().fg(self.theme.shortcut)),
+                Span::raw("Seek 5s"),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  + / -      ", Style::default().fg(self.theme.shortcut)),
+                Span::raw("Speed up / slow down"),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  Home / End ", Style::default().fg(self.theme.shortcut)),
+                Span::raw("Seek to start / end"),
+            ]));
+            lines.push(Line::from(""));
+        }
+
+        lines.push(Line::from(vec![Span::styled(
+            format!("  Update: {}", InstallMethod::cached().update_command()),
+            Style::default().fg(self.theme.text_dim),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            "  Press any key to close",
+            Style::default().fg(self.theme.text_dim),
+        )]));
 
         let paragraph = Paragraph::new(lines);
         paragraph.render(inner, buf);

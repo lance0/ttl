@@ -903,8 +903,10 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
     fn make_test_engine(pmtud: bool) -> ProbeEngine {
-        let mut config = Config::default();
-        config.pmtud = pmtud;
+        let config = Config {
+            pmtud,
+            ..Config::default()
+        };
         let target = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
         let session = Arc::new(RwLock::new(Session::new(
             Target::new("test".to_string(), target),

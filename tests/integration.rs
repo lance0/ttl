@@ -8,7 +8,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 use ttl::config::Config;
-use ttl::state::session::{PmtudPhase, PmtudState, Session, Target};
+use ttl::state::session::{PmtudPhase, PmtudState, ProbeEvent, ProbeOutcome, Session, Target};
 
 /// Create a test session for 8.8.8.8 with default config
 fn test_session() -> Session {
@@ -803,4 +803,234 @@ fn test_session_json_file_roundtrip() {
 
     // Cleanup
     let _ = fs::remove_file(&temp_path);
+}
+
+#[test]
+fn test_concurrent_multi_target_state_isolation() {
+    // Create 5 sessions with different targets
+    let targets: Vec<(IpAddr, IpAddr)> = vec![
+        (
+            IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+        ),
+        (
+            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 1, 1)),
+        ),
+        (
+            IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 2, 1)),
+        ),
+        (
+            IpAddr::V4(Ipv4Addr::new(208, 67, 222, 222)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 3, 1)),
+        ),
+        (
+            IpAddr::V4(Ipv4Addr::new(4, 2, 2, 1)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 4, 1)),
+        ),
+    ];
+
+    let mut sessions: Vec<Session> = targets
+        .iter()
+        .map(|(target_ip, _)| {
+            let target = Target::new(target_ip.to_string(), *target_ip);
+            Session::new(target, Config::default())
+        })
+        .collect();
+
+    // Record different amounts of data per session
+    for (i, (session, (target_ip, router_ip))) in
+        sessions.iter_mut().zip(targets.iter()).enumerate()
+    {
+        let num_probes = (i + 1) * 3; // 3, 6, 9, 12, 15
+        for seq in 0..num_probes {
+            if let Some(hop) = session.hop_mut(1) {
+                hop.record_sent();
+                hop.record_response(*router_ip, Duration::from_micros(1000 * (i as u64 + 1)));
+                hop.record_flow_response(
+                    0,
+                    *router_ip,
+                    Duration::from_micros(1000 * (i as u64 + 1)),
+                );
+            }
+            if let Some(hop) = session.hop_mut(2) {
+                hop.record_sent();
+                if seq % 3 == 0 {
+                    hop.record_timeout();
+                } else {
+                    hop.record_response(*target_ip, Duration::from_micros(5000 * (i as u64 + 1)));
+                }
+            }
+            session.total_sent += 2;
+        }
+    }
+
+    // Verify complete isolation
+    for (i, (session, (target_ip, router_ip))) in sessions.iter().zip(targets.iter()).enumerate() {
+        let num_probes = (i + 1) * 3;
+        let expected_timeouts = (num_probes / 3) as u64;
+        let expected_received = num_probes as u64 - expected_timeouts;
+
+        // Correct sent count per session
+        assert_eq!(
+            session.total_sent,
+            num_probes as u64 * 2,
+            "Session {} total_sent",
+            i
+        );
+
+        // Hop 1: all responses from this session's router
+        let hop1 = session.hop(1).unwrap();
+        assert_eq!(hop1.sent, num_probes as u64, "Session {} hop1 sent", i);
+        assert_eq!(
+            hop1.received, num_probes as u64,
+            "Session {} hop1 received",
+            i
+        );
+        assert_eq!(
+            hop1.primary,
+            Some(*router_ip),
+            "Session {} hop1 primary responder",
+            i
+        );
+
+        // Hop 2: correct timeout ratio
+        let hop2 = session.hop(2).unwrap();
+        assert_eq!(hop2.sent, num_probes as u64, "Session {} hop2 sent", i);
+        assert_eq!(
+            hop2.timeouts, expected_timeouts,
+            "Session {} hop2 timeouts",
+            i
+        );
+        assert_eq!(
+            hop2.received, expected_received,
+            "Session {} hop2 received",
+            i
+        );
+        assert_eq!(
+            hop2.primary,
+            Some(*target_ip),
+            "Session {} hop2 primary responder",
+            i
+        );
+    }
+}
+
+#[test]
+fn test_replay_event_roundtrip() {
+    let mut session = test_session();
+    let target_ip = session.target.resolved;
+    let router = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+
+    let events = vec![
+        ProbeEvent {
+            offset_ms: 0,
+            ttl: 1,
+            seq: 0,
+            flow_id: 0,
+            outcome: ProbeOutcome::Reply {
+                addr: router,
+                rtt_us: 5000,
+            },
+        },
+        ProbeEvent {
+            offset_ms: 100,
+            ttl: 2,
+            seq: 0,
+            flow_id: 0,
+            outcome: ProbeOutcome::Timeout,
+        },
+        ProbeEvent {
+            offset_ms: 200,
+            ttl: 3,
+            seq: 0,
+            flow_id: 0,
+            outcome: ProbeOutcome::Reply {
+                addr: target_ip,
+                rtt_us: 15000,
+            },
+        },
+        ProbeEvent {
+            offset_ms: 1000,
+            ttl: 1,
+            seq: 1,
+            flow_id: 0,
+            outcome: ProbeOutcome::Reply {
+                addr: router,
+                rtt_us: 4800,
+            },
+        },
+        ProbeEvent {
+            offset_ms: 1100,
+            ttl: 2,
+            seq: 1,
+            flow_id: 0,
+            outcome: ProbeOutcome::Timeout,
+        },
+    ];
+
+    // Apply replay events using production replay logic
+    for event in &events {
+        session.apply_replay_event(event);
+    }
+
+    // Verify state matches expectations
+    assert_eq!(session.total_sent, 5);
+    assert!(session.complete);
+    assert_eq!(session.dest_ttl, Some(3));
+
+    // Hop 1: 2 replies from router
+    let hop1 = session.hop(1).unwrap();
+    assert_eq!(hop1.sent, 2);
+    assert_eq!(hop1.received, 2);
+    assert_eq!(hop1.primary, Some(router));
+
+    // Hop 2: 2 timeouts
+    let hop2 = session.hop(2).unwrap();
+    assert_eq!(hop2.sent, 2);
+    assert_eq!(hop2.timeouts, 2);
+    assert_eq!(hop2.received, 0);
+
+    // Hop 3: 1 reply from destination
+    let hop3 = session.hop(3).unwrap();
+    assert_eq!(hop3.sent, 1);
+    assert_eq!(hop3.received, 1);
+    assert_eq!(hop3.primary, Some(target_ip));
+}
+
+#[test]
+fn test_replay_late_reply_does_not_increment_total_sent_or_timeouts() {
+    let mut session = test_session();
+    let hop_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+
+    let timeout = ProbeEvent {
+        offset_ms: 0,
+        ttl: 2,
+        seq: 0,
+        flow_id: 0,
+        outcome: ProbeOutcome::Timeout,
+    };
+    session.apply_replay_event(&timeout);
+
+    let late = ProbeEvent {
+        offset_ms: 100,
+        ttl: 2,
+        seq: 0,
+        flow_id: 0,
+        outcome: ProbeOutcome::LateReply {
+            addr: hop_ip,
+            rtt_us: 12_000,
+        },
+    };
+    session.apply_replay_event(&late);
+
+    assert_eq!(session.total_sent, 1, "LateReply must not bump total_sent");
+    let hop = session.hop(2).unwrap();
+    assert_eq!(hop.sent, 1);
+    assert_eq!(hop.timeouts, 1);
+    assert_eq!(
+        hop.received, 1,
+        "LateReply should count as a received response"
+    );
 }
