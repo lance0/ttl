@@ -246,7 +246,7 @@ ttl --replay trace.json --animate --speed 1.0
 ttl --replay trace.json --csv > trace.csv
 ```
 
-During animated replay, press Space to pause/resume.
+During animated replay, use `p`/`Space` to pause, `Left`/`Right` to seek ±0.5s, `[`/`]` to seek ±5s, `+`/`-` to adjust speed, and `Home`/`End` to jump to start/end. A progress bar shows position, speed, and event count. Press `?` for the full keybinding list.
 
 ## Exit Codes
 

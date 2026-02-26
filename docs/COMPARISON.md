@@ -34,7 +34,7 @@ How ttl compares to other traceroute and network diagnostic tools.
 | **Export** ||||||
 | JSON | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: |
 | CSV | :white_check_mark: | :white_check_mark: | :white_check_mark: | :x: | :x: |
-| Session replay | :white_check_mark: | :x: | :x: | :x: | :x: |
+| Session replay (interactive) | :white_check_mark: | :x: | :x: | :x: | :x: |
 | **Advanced** ||||||
 | Multiple targets | :white_check_mark: | :white_check_mark: | :x: | :x: | :x: |
 | PMTUD | :white_check_mark: | :x: | :x: | :x: | :x: |

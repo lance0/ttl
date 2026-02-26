@@ -144,8 +144,8 @@
 *Prioritized by effort vs user impact. Quick wins first, then bigger lifts.*
 
 ### Quick Wins (low effort, high impact)
-- [ ] **Progress indicator in replay** — show position in timeline during animated replay
-- [ ] **Interactive replay** — step through events, jump to time
+- [x] **Progress indicator in replay** — show position in timeline during animated replay
+- [x] **Interactive replay** — step through events, jump to time, speed control
 - [x] **Last metric semantics** — documented as primary-responder-most-recent; TUI/CSV aligned
 - [x] **IPv6 RAW payload fallback tests** — unit tests for IPv6 Echo Reply and Time Exceeded parsing
 - [x] **Main table layout tests** — verify header/cell/width count parity across Auto/Compact/Wide × single-flow/multi-flow modes
@@ -182,8 +182,8 @@
 - [x] Integration tests for probe-receive-state pipeline
 - [x] Property-based/fuzz tests for packet parsing (correlate.rs)
 - [x] RAW payload fallback unit tests (IPv4)
-- [ ] IPv6 RAW payload fallback unit tests
-- [ ] Concurrent multi-target stress tests
+- [x] IPv6 RAW payload fallback unit tests
+- [x] Concurrent multi-target stress tests
 
 ---
 

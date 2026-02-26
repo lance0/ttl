@@ -393,6 +393,7 @@ High jitter indicates path instability from congestion, route changes, or load b
 | `Down` / `j` | Move selection down |
 | `Enter` | Expand selected hop details |
 | `Esc` | Close popup / Deselect |
+| *Replay* | *See [Replay Controls](#replay-controls) for seek, speed, and position keys* |
 
 ## Settings Modal
 
@@ -501,8 +502,23 @@ ttl --replay results.json --report           # Text report
 ```
 
 Load a previously saved JSON session for review. Use `--animate` to replay
-the session showing hop-by-hop discovery as it happened. Press Space to
-pause/resume during animated replay.
+the session showing hop-by-hop discovery as it happened.
+
+#### Replay Controls
+
+During animated replay, a progress bar shows the current position, speed, and event count. The following controls are available:
+
+| Key | Action |
+|-----|--------|
+| `p` / `Space` | Pause/resume |
+| `Left` / `Right` | Seek ±0.5s |
+| `[` / `]` | Seek ±5s |
+| `+` / `-` | Speed ±0.5x (0.5x–5.0x) |
+| `Home` | Seek to start |
+| `End` | Seek to end |
+| `?` | Help (shows replay controls) |
+
+Backward seeking rebuilds session state from scratch for correctness — fast even on long traces.
 
 ## CLI Reference
 

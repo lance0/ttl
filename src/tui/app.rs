@@ -8,7 +8,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Style};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{LineGauge, Paragraph};
 use scopeguard::defer;
 use std::borrow::Cow;
 use std::io::stdout;
@@ -20,7 +20,9 @@ use tokio_util::sync::CancellationToken;
 use crate::export::export_json_file;
 use crate::lookup::ix::IxLookup;
 use crate::prefs::{DisplayMode, Prefs};
-use crate::state::{ProbeEvent, ProbeOutcome, Session};
+#[cfg(test)]
+use crate::state::ProbeOutcome;
+use crate::state::{ProbeEvent, Session};
 use crate::trace::receiver::SessionMap;
 use crate::tui::theme::Theme;
 use crate::tui::views::{
@@ -216,67 +218,255 @@ fn toggle_replay_pause(ui_state: &mut UiState) {
     if let Some(ref mut replay) = ui_state.replay_state {
         if replay.paused {
             // RESUMING: Restore start time from the elapsed time we recorded at pause
-            let offset_duration = std::time::Duration::from_millis(
-                (replay.paused_at_elapsed_ms as f32 / replay.speed_multiplier) as u64,
-            );
-            replay.replay_started_at = std::time::Instant::now() - offset_duration;
+            rebase_replay_start(replay, replay.paused_at_elapsed_ms);
             replay.paused = false;
             ui_state.set_status("Replay resumed");
         } else {
             // PAUSING: Record exactly how far into the replay we are (in adjusted ms)
-            let elapsed_ms = replay.replay_started_at.elapsed().as_millis() as u64;
-            replay.paused_at_elapsed_ms = (elapsed_ms as f32 * replay.speed_multiplier) as u64;
+            replay.paused_at_elapsed_ms = replay_current_ms(replay);
             replay.paused = true;
-            ui_state.set_status("Replay paused - press p or Space to resume");
+            ui_state.set_status("Replay paused. Press p or Space to resume.");
         }
     }
 }
 
-/// Apply a replay event to the session state
-fn apply_replay_event(session: &mut Session, event: &ProbeEvent) {
-    let target_ip = session.target.resolved;
-    let single_flow = session.config.flows == 1;
+/// Format milliseconds as human-readable time (e.g., "1:23.4" or "5.2s")
+fn format_replay_time(ms: u64) -> String {
+    let secs = ms / 1000;
+    let frac = (ms % 1000) / 100;
+    let mins = secs / 60;
+    let secs_rem = secs % 60;
+    if mins > 0 {
+        format!("{}:{:02}.{}", mins, secs_rem, frac)
+    } else {
+        format!("{}.{}s", secs_rem, frac)
+    }
+}
 
-    if let Some(hop) = session.hop_mut(event.ttl) {
-        match &event.outcome {
-            ProbeOutcome::Reply { addr, rtt_us } => {
-                hop.record_sent();
-                let rtt = Duration::from_micros(*rtt_us);
-                if single_flow {
-                    hop.record_response_detecting_flaps(*addr, rtt, None);
-                } else {
-                    hop.record_response_with_mpls(*addr, rtt, None);
-                }
-                hop.record_flow_response(event.flow_id, *addr, rtt);
+/// Get the current adjusted elapsed time in replay milliseconds
+fn replay_current_ms(replay: &ReplayState) -> u64 {
+    if replay.paused {
+        replay.paused_at_elapsed_ms
+    } else if replay.finished {
+        replay.events.last().map_or(0, |e| e.offset_ms)
+    } else {
+        let elapsed_ms = replay.replay_started_at.elapsed().as_secs_f64() * 1000.0;
+        let adjusted = elapsed_ms * replay.speed_multiplier as f64;
+        adjusted.clamp(0.0, u64::MAX as f64) as u64
+    }
+}
 
-                // Check if we reached the destination
-                if *addr == target_ip {
-                    session.complete = true;
-                    if session.dest_ttl.is_none_or(|d| event.ttl < d) {
-                        session.dest_ttl = Some(event.ttl);
-                    }
-                }
-                session.total_sent += 1;
+/// Convert replay timeline ms into wall-clock duration at the current speed.
+fn replay_wall_offset(replay_ms: u64, speed_multiplier: f32) -> Duration {
+    let speed = speed_multiplier.max(0.1) as f64;
+    let wall_ms = (replay_ms as f64 / speed).clamp(0.0, u64::MAX as f64);
+    Duration::from_millis(wall_ms as u64)
+}
+
+/// Rebase replay start instant so replay_current_ms() resolves to target replay ms.
+fn rebase_replay_start(replay: &mut ReplayState, replay_ms: u64) {
+    let now = std::time::Instant::now();
+    let offset = replay_wall_offset(replay_ms, replay.speed_multiplier);
+    // Guard against malformed/very-large replay timestamps.
+    replay.replay_started_at = now.checked_sub(offset).unwrap_or(now);
+}
+
+/// Compute replay event index for a requested timeline position.
+/// target_ms=0 maps to index 0 (pre-first-event) for Home key semantics.
+fn replay_event_index_for_time(events: &[ProbeEvent], target_ms: u64) -> usize {
+    if target_ms == 0 {
+        0
+    } else {
+        events.partition_point(|e| e.offset_ms <= target_ms)
+    }
+}
+
+/// Human-friendly replay position label for status messages.
+fn format_replay_position(
+    target_ms: u64,
+    total_duration: u64,
+    target_index: usize,
+    total_events: usize,
+) -> String {
+    if total_events == 0 {
+        "empty replay (0/0 events)".to_string()
+    } else if target_index == 0 {
+        format!("start (event 0/{})", total_events)
+    } else if target_index >= total_events {
+        if total_duration == 0 {
+            format!(
+                "end (event {}/{}, instant timeline)",
+                target_index, total_events
+            )
+        } else {
+            format!(
+                "end {} (event {}/{})",
+                format_replay_time(total_duration),
+                target_index,
+                total_events
+            )
+        }
+    } else {
+        format!(
+            "{} (event {}/{})",
+            format_replay_time(target_ms),
+            target_index,
+            total_events
+        )
+    }
+}
+
+/// Seek replay to an absolute time position (in replay milliseconds).
+/// Rebuilds session state from scratch for backward seeks.
+fn seek_replay_to(
+    ui_state: &mut UiState,
+    sessions: &SessionMap,
+    target_ip: IpAddr,
+    target_ms: u64,
+) {
+    // Extract what we need from replay_state, then release the borrow
+    let (total_duration, target_index, current_index, total_events) = {
+        let replay = match ui_state.replay_state.as_ref() {
+            Some(r) => r,
+            None => return,
+        };
+        let total_duration = replay.events.last().map_or(0, |e| e.offset_ms);
+        let target_ms = target_ms.min(total_duration);
+        let target_index = replay_event_index_for_time(&replay.events, target_ms);
+        (
+            total_duration,
+            target_index,
+            replay.current_index,
+            replay.events.len(),
+        )
+    };
+
+    let target_ms = target_ms.min(total_duration);
+
+    if target_index == current_index {
+        let replay = ui_state.replay_state.as_mut().unwrap();
+        replay.paused = true;
+        replay.paused_at_elapsed_ms = target_ms;
+        replay.finished = target_index >= total_events;
+        ui_state.set_status(format!(
+            "Already at {}",
+            format_replay_position(target_ms, total_duration, target_index, total_events)
+        ));
+        return;
+    }
+
+    if target_index <= current_index {
+        // Backward seek: rebuild session from scratch
+        let replay = ui_state.replay_state.as_ref().unwrap();
+        let sessions_read = sessions.read();
+        if let Some(session_lock) = sessions_read.get(&target_ip) {
+            let mut session = session_lock.write();
+            let target = session.target.clone();
+            let config = session.config.clone();
+            *session = Session::new(target, config);
+            for event in &replay.events[..target_index] {
+                session.apply_replay_event(event);
             }
-            ProbeOutcome::Timeout => {
-                hop.record_sent();
-                hop.record_timeout();
-                hop.record_flow_timeout(event.flow_id);
-                session.total_sent += 1;
-            }
-            ProbeOutcome::LateReply { addr, rtt_us } => {
-                // Late reply arrived after timeout was already recorded.
-                // Don't increment sent/total_sent - the Timeout event already did that.
-                let rtt = Duration::from_micros(*rtt_us);
-                if single_flow {
-                    hop.record_response_detecting_flaps(*addr, rtt, None);
-                } else {
-                    hop.record_response_with_mpls(*addr, rtt, None);
-                }
-                hop.record_flow_response(event.flow_id, *addr, rtt);
+        }
+    } else {
+        // Forward seek: apply events incrementally
+        let replay = ui_state.replay_state.as_ref().unwrap();
+        let sessions_read = sessions.read();
+        if let Some(session_lock) = sessions_read.get(&target_ip) {
+            let mut session = session_lock.write();
+            for event in &replay.events[current_index..target_index] {
+                session.apply_replay_event(event);
             }
         }
     }
+
+    // Now mutate replay state
+    let replay = ui_state.replay_state.as_mut().unwrap();
+    replay.paused = true;
+    replay.paused_at_elapsed_ms = target_ms;
+    replay.finished = target_index >= total_events;
+    replay.current_index = target_index;
+
+    ui_state.set_status(format!(
+        "Moved to {}",
+        format_replay_position(target_ms, total_duration, target_index, total_events)
+    ));
+}
+
+/// Seek replay to the final event position (all events applied).
+fn seek_replay_to_end(ui_state: &mut UiState, sessions: &SessionMap, target_ip: IpAddr) {
+    let (total_duration, target_index, current_index) = {
+        let replay = match ui_state.replay_state.as_ref() {
+            Some(r) => r,
+            None => return,
+        };
+        (
+            replay.events.last().map_or(0, |e| e.offset_ms),
+            replay.events.len(),
+            replay.current_index,
+        )
+    };
+
+    if target_index > current_index {
+        let replay = ui_state.replay_state.as_ref().unwrap();
+        let sessions_read = sessions.read();
+        if let Some(session_lock) = sessions_read.get(&target_ip) {
+            let mut session = session_lock.write();
+            for event in &replay.events[current_index..target_index] {
+                session.apply_replay_event(event);
+            }
+        }
+    }
+
+    let replay = ui_state.replay_state.as_mut().unwrap();
+    replay.paused = true;
+    replay.paused_at_elapsed_ms = total_duration;
+    replay.finished = true;
+    replay.current_index = target_index;
+
+    ui_state.set_status(format!(
+        "Moved to {}",
+        format_replay_position(total_duration, total_duration, target_index, target_index)
+    ));
+}
+
+/// Compute a replay target time from current position + signed delta using saturation.
+fn replay_target_ms_from_delta(current_ms: u64, delta_ms: i64) -> u64 {
+    if delta_ms >= 0 {
+        current_ms.saturating_add(delta_ms as u64)
+    } else {
+        current_ms.saturating_sub(delta_ms.unsigned_abs())
+    }
+}
+
+/// Seek replay by a relative delta (in replay milliseconds). Negative values seek backward.
+fn seek_replay(ui_state: &mut UiState, sessions: &SessionMap, target_ip: IpAddr, delta_ms: i64) {
+    let current_ms = match ui_state.replay_state.as_ref() {
+        Some(r) => replay_current_ms(r),
+        None => return,
+    };
+    let target_ms = replay_target_ms_from_delta(current_ms, delta_ms);
+    seek_replay_to(ui_state, sessions, target_ip, target_ms);
+}
+
+/// Adjust replay speed by delta, preserving current position
+fn adjust_replay_speed(ui_state: &mut UiState, delta: f32) {
+    let new_speed = {
+        let replay = match ui_state.replay_state.as_mut() {
+            Some(r) => r,
+            None => return,
+        };
+        let current_ms = replay_current_ms(replay);
+        replay.speed_multiplier = (replay.speed_multiplier + delta).clamp(0.1, 1000.0);
+
+        if !replay.paused {
+            rebase_replay_start(replay, current_ms);
+        }
+
+        replay.speed_multiplier
+    };
+
+    ui_state.set_status(format!("Speed: {:.1}x", new_speed));
 }
 
 async fn run_app<B>(
@@ -326,8 +516,7 @@ where
             && !replay.finished
         {
             // Calculate elapsed replay time (adjusted for speed)
-            let elapsed_ms = replay.replay_started_at.elapsed().as_millis() as u64;
-            let adjusted_elapsed = (elapsed_ms as f32 * replay.speed_multiplier) as u64;
+            let adjusted_elapsed = replay_current_ms(replay);
 
             // Capture target before acquiring locks to prevent race condition
             let target_ip = targets[ui_state.selected_target];
@@ -345,7 +534,7 @@ where
                 if let Some(session_lock) = sessions_read.get(&target_ip) {
                     let mut session = session_lock.write();
                     for event in &replay.events[start..end] {
-                        apply_replay_event(&mut session, event);
+                        session.apply_replay_event(event);
                     }
                 }
                 replay.current_index = end;
@@ -810,6 +999,31 @@ where
                 KeyCode::Esc => {
                     ui_state.selected = None;
                 }
+                // Replay controls
+                KeyCode::Left if ui_state.replay_state.is_some() => {
+                    seek_replay(ui_state, &sessions, current_target, -500);
+                }
+                KeyCode::Right if ui_state.replay_state.is_some() => {
+                    seek_replay(ui_state, &sessions, current_target, 500);
+                }
+                KeyCode::Char('[') if ui_state.replay_state.is_some() => {
+                    seek_replay(ui_state, &sessions, current_target, -5000);
+                }
+                KeyCode::Char(']') if ui_state.replay_state.is_some() => {
+                    seek_replay(ui_state, &sessions, current_target, 5000);
+                }
+                KeyCode::Char('+') | KeyCode::Char('>') if ui_state.replay_state.is_some() => {
+                    adjust_replay_speed(ui_state, 0.5);
+                }
+                KeyCode::Char('-') | KeyCode::Char('<') if ui_state.replay_state.is_some() => {
+                    adjust_replay_speed(ui_state, -0.5);
+                }
+                KeyCode::Home if ui_state.replay_state.is_some() => {
+                    seek_replay_to(ui_state, &sessions, current_target, 0);
+                }
+                KeyCode::End if ui_state.replay_state.is_some() => {
+                    seek_replay_to_end(ui_state, &sessions, current_target);
+                }
                 _ => {}
             }
         }
@@ -830,28 +1044,29 @@ fn draw_ui(
 ) {
     let area = f.area();
 
-    // Layout: optional update banner + main view + status bar
+    // Layout: optional update banner + main view + optional replay progress + status bar
     let has_update = ui_state.update_available.is_some();
-    let constraints = if has_update {
-        vec![
-            Constraint::Length(1), // Update banner
-            Constraint::Min(0),    // Main view
-            Constraint::Length(1), // Status bar
-        ]
-    } else {
-        vec![
-            Constraint::Min(0),    // Main view
-            Constraint::Length(1), // Status bar
-        ]
-    };
+    let has_replay = ui_state.replay_state.is_some();
+    let mut constraints = Vec::new();
+    if has_update {
+        constraints.push(Constraint::Length(1)); // Update banner
+    }
+    constraints.push(Constraint::Min(0)); // Main view
+    if has_replay {
+        constraints.push(Constraint::Length(1)); // Replay progress bar
+    }
+    constraints.push(Constraint::Length(1)); // Status bar
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(area);
 
+    // Assign chunk indices based on which optional rows are present
+    let mut idx = 0;
+
     // Update notification banner (if available)
-    let (main_chunk, status_chunk) = if has_update {
+    if has_update {
         if let Some(ref version) = ui_state.update_available {
             let update_text = format!(
                 " Update available: v{} -> {} | Press 'u' to dismiss ",
@@ -860,18 +1075,67 @@ fn draw_ui(
             );
             let update_bar = Paragraph::new(update_text)
                 .style(Style::default().fg(Color::Black).bg(Color::Yellow));
-            f.render_widget(update_bar, chunks[0]);
+            f.render_widget(update_bar, chunks[idx]);
         }
-        (chunks[1], chunks[2])
+        idx += 1;
+    }
+
+    let main_chunk = chunks[idx];
+    idx += 1;
+
+    let progress_chunk = if has_replay {
+        let chunk = chunks[idx];
+        idx += 1;
+        Some(chunk)
     } else {
-        (chunks[0], chunks[1])
+        None
     };
+
+    let status_chunk = chunks[idx];
 
     // Main view (with target indicator and display mode)
     let main_view = MainView::new(session, ui_state.selected, ui_state.paused, theme)
         .with_target_info(ui_state.selected_target + 1, num_targets)
         .with_display_mode(ui_state.display_mode);
     f.render_widget(main_view, main_chunk);
+
+    // Replay progress bar
+    if let (Some(chunk), Some(replay)) = (progress_chunk, &ui_state.replay_state) {
+        let current_ms = replay_current_ms(replay);
+        let total_ms = replay.events.last().map_or(0, |e| e.offset_ms);
+        let icon = if replay.finished {
+            "--"
+        } else if replay.paused {
+            "||"
+        } else {
+            ">>"
+        };
+        let instant_suffix = if total_ms == 0 && !replay.events.is_empty() {
+            " instant"
+        } else {
+            ""
+        };
+        let label = format!(
+            " {} {}/{} {} / {} {:.1}x{} ",
+            icon,
+            replay.current_index,
+            replay.events.len(),
+            format_replay_time(current_ms),
+            format_replay_time(total_ms),
+            replay.speed_multiplier,
+            instant_suffix,
+        );
+        let ratio = if total_ms > 0 {
+            (current_ms as f64 / total_ms as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let gauge = LineGauge::default()
+            .filled_style(Style::default().fg(theme.success).bg(theme.highlight_bg))
+            .label(label)
+            .ratio(ratio);
+        f.render_widget(gauge, chunk);
+    }
 
     // Status bar (use Cow to avoid allocation for static strings)
     // Update notification takes priority over normal status
@@ -889,6 +1153,13 @@ fn draw_ui(
     } else if let Some((ref msg, _)) = ui_state.status_message {
         (
             Cow::Borrowed(msg.as_str()),
+            Style::default().fg(theme.text_dim),
+        )
+    } else if ui_state.replay_state.is_some() {
+        (
+            Cow::Borrowed(
+                "q quit | p pause | Left/Right seek | [/] seek 5s | +/- speed | Home/End | ? help",
+            ),
             Style::default().fg(theme.text_dim),
         )
     } else if num_targets > 1 {
@@ -912,7 +1183,10 @@ fn draw_ui(
 
     // Overlays
     if ui_state.show_help {
-        f.render_widget(HelpView::new(theme), area);
+        f.render_widget(
+            HelpView::new(theme).with_replay(ui_state.replay_state.is_some()),
+            area,
+        );
     }
 
     if ui_state.show_settings {
@@ -945,5 +1219,142 @@ fn draw_ui(
             TargetListView::new(theme, infos, ui_state.target_list_index),
             area,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::state::Target;
+    use std::collections::HashMap;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::Arc;
+
+    fn make_single_session_map(target: IpAddr, session: Session) -> SessionMap {
+        let mut map = HashMap::new();
+        map.insert(target, Arc::new(parking_lot::RwLock::new(session)));
+        Arc::new(parking_lot::RwLock::new(map))
+    }
+
+    fn make_timeout_event(offset_ms: u64, ttl: u8, seq: u8) -> ProbeEvent {
+        ProbeEvent {
+            offset_ms,
+            ttl,
+            seq,
+            flow_id: 0,
+            outcome: ProbeOutcome::Timeout,
+        }
+    }
+
+    #[test]
+    fn test_replay_event_index_for_time_home_is_empty() {
+        let events = vec![make_timeout_event(0, 1, 0), make_timeout_event(100, 1, 1)];
+        assert_eq!(replay_event_index_for_time(&events, 0), 0);
+    }
+
+    #[test]
+    fn test_replay_event_index_for_time_end_includes_all() {
+        let events = vec![make_timeout_event(0, 1, 0), make_timeout_event(100, 1, 1)];
+        assert_eq!(replay_event_index_for_time(&events, 100), 2);
+    }
+
+    #[test]
+    fn test_adjust_replay_speed_clamps() {
+        let mut ui_state = UiState {
+            replay_state: Some(ReplayState::new(Vec::new(), 0.1)),
+            ..UiState::default()
+        };
+        adjust_replay_speed(&mut ui_state, -0.5);
+        assert_eq!(
+            ui_state.replay_state.as_ref().unwrap().speed_multiplier,
+            0.1
+        );
+
+        ui_state.replay_state.as_mut().unwrap().speed_multiplier = 1000.0;
+        adjust_replay_speed(&mut ui_state, 0.5);
+        assert_eq!(
+            ui_state.replay_state.as_ref().unwrap().speed_multiplier,
+            1000.0
+        );
+    }
+
+    #[test]
+    fn test_rebase_replay_start_handles_large_timestamps() {
+        let mut replay = ReplayState::new(Vec::new(), 1.0);
+        rebase_replay_start(&mut replay, u64::MAX);
+    }
+
+    #[test]
+    fn test_replay_target_ms_from_delta_saturates() {
+        assert_eq!(replay_target_ms_from_delta(1000, -500), 500);
+        assert_eq!(replay_target_ms_from_delta(1000, -5000), 0);
+        assert_eq!(replay_target_ms_from_delta(u64::MAX - 10, 100), u64::MAX);
+        assert_eq!(replay_target_ms_from_delta(u64::MAX, i64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn test_seek_replay_to_end_applies_all_zero_offset_events() {
+        let target = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+        let session = Session::new(Target::new("t".to_string(), target), Config::default());
+        let sessions = make_single_session_map(target, session);
+        let events = vec![make_timeout_event(0, 1, 0), make_timeout_event(0, 2, 1)];
+
+        let mut ui_state = UiState {
+            replay_state: Some(ReplayState {
+                events,
+                current_index: 0,
+                replay_started_at: std::time::Instant::now(),
+                speed_multiplier: 1.0,
+                paused: false,
+                finished: false,
+                paused_at_elapsed_ms: 0,
+            }),
+            ..UiState::default()
+        };
+
+        seek_replay_to_end(&mut ui_state, &sessions, target);
+
+        let session_lock = sessions.read().get(&target).cloned().unwrap();
+        let session = session_lock.read();
+        assert_eq!(session.total_sent, 2);
+        assert_eq!(session.hop(1).unwrap().timeouts, 1);
+        assert_eq!(session.hop(2).unwrap().timeouts, 1);
+
+        let replay = ui_state.replay_state.as_ref().unwrap();
+        assert!(replay.finished);
+        assert_eq!(replay.current_index, 2);
+    }
+
+    #[test]
+    fn test_seek_replay_to_same_position_is_noop_for_session_state() {
+        let target = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        let session = Session::new(Target::new("t".to_string(), target), Config::default());
+        let sessions = make_single_session_map(target, session);
+        let events = vec![make_timeout_event(100, 1, 0)];
+
+        let mut ui_state = UiState {
+            replay_state: Some(ReplayState {
+                events,
+                current_index: 0,
+                replay_started_at: std::time::Instant::now(),
+                speed_multiplier: 1.0,
+                paused: false,
+                finished: false,
+                paused_at_elapsed_ms: 0,
+            }),
+            ..UiState::default()
+        };
+
+        seek_replay_to(&mut ui_state, &sessions, target, 0);
+
+        let session_lock = sessions.read().get(&target).cloned().unwrap();
+        let session = session_lock.read();
+        assert_eq!(session.total_sent, 0);
+        assert_eq!(session.hop(1).unwrap().sent, 0);
+
+        let replay = ui_state.replay_state.as_ref().unwrap();
+        assert_eq!(replay.current_index, 0);
+        assert!(replay.paused);
     }
 }

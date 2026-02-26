@@ -46,3 +46,111 @@ pub type PendingMap = Arc<RwLock<HashMap<PendingKey, PendingProbe>>>;
 pub fn new_pending_map() -> PendingMap {
     Arc::new(RwLock::new(HashMap::new()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn test_pending_map_multi_target_isolation() {
+        let pending = new_pending_map();
+        let probe_id = ProbeId::new(5, 0);
+        let target1 = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+        let target2 = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+
+        {
+            let mut map = pending.write();
+            for target in [target1, target2] {
+                map.insert(
+                    (probe_id, 0, target, false),
+                    PendingProbe {
+                        sent_at: Instant::now(),
+                        target,
+                        flow_id: 0,
+                        original_src_port: None,
+                        packet_size: None,
+                    },
+                );
+            }
+        }
+
+        // Both targets coexist with same ProbeId
+        let map = pending.read();
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key(&(probe_id, 0, target1, false)));
+        assert!(map.contains_key(&(probe_id, 0, target2, false)));
+        drop(map);
+
+        // Removing one doesn't affect the other
+        let mut map = pending.write();
+        map.remove(&(probe_id, 0, target1, false));
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key(&(probe_id, 0, target2, false)));
+    }
+
+    #[test]
+    fn test_pending_map_flow_isolation() {
+        let pending = new_pending_map();
+        let probe_id = ProbeId::new(3, 0);
+        let target = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+
+        {
+            let mut map = pending.write();
+            for flow_id in 0..4u8 {
+                map.insert(
+                    (probe_id, flow_id, target, false),
+                    PendingProbe {
+                        sent_at: Instant::now(),
+                        target,
+                        flow_id,
+                        original_src_port: None,
+                        packet_size: None,
+                    },
+                );
+            }
+        }
+
+        let map = pending.read();
+        assert_eq!(map.len(), 4);
+        for flow_id in 0..4u8 {
+            assert!(map.contains_key(&(probe_id, flow_id, target, false)));
+        }
+    }
+
+    #[test]
+    fn test_pending_map_pmtud_isolation() {
+        let pending = new_pending_map();
+        let probe_id = ProbeId::new(7, 1);
+        let target = IpAddr::V4(Ipv4Addr::new(8, 8, 4, 4));
+
+        {
+            let mut map = pending.write();
+            map.insert(
+                (probe_id, 0, target, false),
+                PendingProbe {
+                    sent_at: Instant::now(),
+                    target,
+                    flow_id: 0,
+                    original_src_port: None,
+                    packet_size: None,
+                },
+            );
+            map.insert(
+                (probe_id, 0, target, true),
+                PendingProbe {
+                    sent_at: Instant::now(),
+                    target,
+                    flow_id: 0,
+                    original_src_port: None,
+                    packet_size: Some(1400),
+                },
+            );
+        }
+
+        let map = pending.read();
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key(&(probe_id, 0, target, false)));
+        assert!(map.contains_key(&(probe_id, 0, target, true)));
+    }
+}
