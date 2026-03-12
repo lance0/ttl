@@ -75,7 +75,7 @@ jobs:
           release: "14.2"
           usesh: true
           prepare: |
-            pkg install -y curl
+            pkg install -y ca_root_nss curl
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
           run: |
             . $HOME/.cargo/env
