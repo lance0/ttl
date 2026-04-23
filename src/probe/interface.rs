@@ -172,12 +172,12 @@ pub fn validate_interface(name: &str) -> Result<InterfaceInfo> {
                     IpAddr::V4(v4) if ipv4.is_none() && !v4.is_loopback() => {
                         ipv4 = Some(v4);
                     }
-                    IpAddr::V6(v6) if ipv6.is_none() && !v6.is_loopback() => {
-                        // Skip link-local addresses for non-loopback interfaces
-                        // (they require scope IDs and can't reach Internet targets)
-                        if !is_link_local_ipv6(&v6) {
-                            ipv6 = Some(v6);
-                        }
+                    // Skip link-local addresses for non-loopback interfaces
+                    // (they require scope IDs and can't reach Internet targets)
+                    IpAddr::V6(v6)
+                        if ipv6.is_none() && !v6.is_loopback() && !is_link_local_ipv6(&v6) =>
+                    {
+                        ipv6 = Some(v6);
                     }
                     _ => {}
                 }

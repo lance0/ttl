@@ -808,55 +808,51 @@ where
                     ui_state.show_help = true;
                 }
                 // Target switching
-                KeyCode::Tab | KeyCode::Char('n') => {
-                    if num_targets > 1 {
-                        let new_idx = (ui_state.selected_target + 1) % num_targets;
-                        let target = targets[new_idx];
-                        // Extract pause state before updating UI to avoid lock contention
-                        let paused = {
-                            let sessions_read = sessions.read();
-                            sessions_read
-                                .get(&target)
-                                .map(|state| state.read().paused)
-                                .unwrap_or(false)
-                        };
-                        ui_state.selected_target = new_idx;
-                        ui_state.selected = None;
-                        ui_state.paused = paused;
-                        ui_state.set_status(format!(
-                            "Target {}/{}: {}",
-                            new_idx + 1,
-                            num_targets,
-                            target
-                        ));
-                    }
+                KeyCode::Tab | KeyCode::Char('n') if num_targets > 1 => {
+                    let new_idx = (ui_state.selected_target + 1) % num_targets;
+                    let target = targets[new_idx];
+                    // Extract pause state before updating UI to avoid lock contention
+                    let paused = {
+                        let sessions_read = sessions.read();
+                        sessions_read
+                            .get(&target)
+                            .map(|state| state.read().paused)
+                            .unwrap_or(false)
+                    };
+                    ui_state.selected_target = new_idx;
+                    ui_state.selected = None;
+                    ui_state.paused = paused;
+                    ui_state.set_status(format!(
+                        "Target {}/{}: {}",
+                        new_idx + 1,
+                        num_targets,
+                        target
+                    ));
                 }
-                KeyCode::BackTab | KeyCode::Char('N') => {
-                    if num_targets > 1 {
-                        let new_idx = if ui_state.selected_target == 0 {
-                            num_targets - 1
-                        } else {
-                            ui_state.selected_target - 1
-                        };
-                        let target = targets[new_idx];
-                        // Extract pause state before updating UI to avoid lock contention
-                        let paused = {
-                            let sessions_read = sessions.read();
-                            sessions_read
-                                .get(&target)
-                                .map(|state| state.read().paused)
-                                .unwrap_or(false)
-                        };
-                        ui_state.selected_target = new_idx;
-                        ui_state.selected = None;
-                        ui_state.paused = paused;
-                        ui_state.set_status(format!(
-                            "Target {}/{}: {}",
-                            new_idx + 1,
-                            num_targets,
-                            target
-                        ));
-                    }
+                KeyCode::BackTab | KeyCode::Char('N') if num_targets > 1 => {
+                    let new_idx = if ui_state.selected_target == 0 {
+                        num_targets - 1
+                    } else {
+                        ui_state.selected_target - 1
+                    };
+                    let target = targets[new_idx];
+                    // Extract pause state before updating UI to avoid lock contention
+                    let paused = {
+                        let sessions_read = sessions.read();
+                        sessions_read
+                            .get(&target)
+                            .map(|state| state.read().paused)
+                            .unwrap_or(false)
+                    };
+                    ui_state.selected_target = new_idx;
+                    ui_state.selected = None;
+                    ui_state.paused = paused;
+                    ui_state.set_status(format!(
+                        "Target {}/{}: {}",
+                        new_idx + 1,
+                        num_targets,
+                        target
+                    ));
                 }
                 KeyCode::Char('p') => {
                     if ui_state.replay_state.is_some() {
@@ -909,21 +905,16 @@ where
                     );
                     ui_state.show_settings = true;
                 }
-                KeyCode::Char('l') => {
-                    // Open target list overlay (only in multi-target mode)
-                    if num_targets > 1 {
-                        ui_state.target_list_index = ui_state.selected_target;
-                        ui_state.show_target_list = true;
-                        ui_state.target_list_cache =
-                            Some(extract_target_infos(&sessions, &targets));
-                        ui_state.target_list_tick = 0;
-                    }
+                // Open target list overlay (only in multi-target mode)
+                KeyCode::Char('l') if num_targets > 1 => {
+                    ui_state.target_list_index = ui_state.selected_target;
+                    ui_state.show_target_list = true;
+                    ui_state.target_list_cache = Some(extract_target_infos(&sessions, &targets));
+                    ui_state.target_list_tick = 0;
                 }
-                KeyCode::Char('u') => {
-                    // Dismiss update notification
-                    if ui_state.update_available.is_some() {
-                        ui_state.update_available = None;
-                    }
+                // Dismiss update notification
+                KeyCode::Char('u') if ui_state.update_available.is_some() => {
+                    ui_state.update_available = None;
                 }
                 KeyCode::Char('e') => {
                     // Clone session data before releasing lock to avoid holding lock during I/O
@@ -991,10 +982,8 @@ where
                         });
                     }
                 }
-                KeyCode::Enter => {
-                    if ui_state.selected.is_some() {
-                        ui_state.show_hop_detail = true;
-                    }
+                KeyCode::Enter if ui_state.selected.is_some() => {
+                    ui_state.show_hop_detail = true;
                 }
                 KeyCode::Esc => {
                     ui_state.selected = None;

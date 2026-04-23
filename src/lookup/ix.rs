@@ -311,7 +311,7 @@ impl IxLookup {
 
         // Sort by prefix length descending for longest-prefix-match
         // This ensures more specific prefixes are checked first
-        entries.sort_by(|a, b| b.network.prefix().cmp(&a.network.prefix()));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.network.prefix()));
 
         *self.prefixes.write() = entries;
         Ok(())
@@ -664,7 +664,7 @@ mod tests {
         ];
 
         // Sort by prefix length descending (same as populate_from_cache)
-        entries.sort_by(|a, b| b.network.prefix().cmp(&a.network.prefix()));
+        entries.sort_by_key(|e| std::cmp::Reverse(e.network.prefix()));
 
         // First entry should be /24 (most specific)
         assert_eq!(entries[0].network.prefix(), 24);
