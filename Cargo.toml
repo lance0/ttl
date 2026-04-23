@@ -21,7 +21,7 @@ crossterm = "0.29"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
-clap_complete = "4.5"
+clap_complete = "4.6"
 
 # Networking
 socket2 = { version = "0.6", features = ["all"] }
