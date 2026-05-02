@@ -29,9 +29,11 @@ pub struct AsnLookup {
 
 impl AsnLookup {
     pub async fn new() -> Result<Self> {
-        // Try system DNS config first, fall back to Google DNS if unavailable
-        let resolver = match Resolver::builder_tokio() {
-            Ok(builder) => builder.build()?,
+        // Try system DNS config first, fall back to Google DNS if unavailable.
+        // Any failure in the system path (config detection or resolver build)
+        // triggers the fallback so a transient setup error doesn't kill startup.
+        let resolver = match Resolver::builder_tokio().and_then(|b| b.build()) {
+            Ok(r) => r,
             Err(_) => {
                 eprintln!("Warning: System DNS config unavailable, using Google DNS (8.8.8.8)");
                 Resolver::builder_with_config(
