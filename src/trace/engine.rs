@@ -11,11 +11,14 @@ use crate::probe::{
     bind_to_source_ip, build_echo_request, build_tcp_syn_sized, build_udp_payload_sized,
     create_send_socket_with_interface, create_tcp_socket_with_interface, create_udp_dgram_socket,
     create_udp_dgram_socket_bound_full, create_udp_dgram_socket_bound_with_interface,
-    detect_source_ip, enable_recv_ttl, get_identifier, get_local_addr_with_interface,
-    parse_icmp_response, recv_icmp_with_ttl, send_icmp, send_tcp_probe, send_udp_probe,
-    set_dont_fragment, set_dscp, set_ttl,
+    detect_source_ip, get_identifier, get_local_addr_with_interface, send_icmp, send_tcp_probe,
+    send_udp_probe, set_dont_fragment, set_dscp, set_ttl,
 };
-use crate::state::{IcmpResponseType, PmtudPhase, ProbeId, Session};
+#[cfg(target_os = "linux")]
+use crate::probe::{enable_recv_ttl, parse_icmp_response, recv_icmp_with_ttl};
+#[cfg(target_os = "linux")]
+use crate::state::IcmpResponseType;
+use crate::state::{PmtudPhase, ProbeId, Session};
 use crate::trace::pending::{PendingMap, PendingProbe};
 
 /// Safety cap for IPv6 echo-reply draining per tick.
@@ -142,6 +145,7 @@ impl ProbeEngine {
         let ipv6 = self.target.is_ipv6();
         let socket_info = create_send_socket_with_interface(ipv6, self.interface.as_ref())?;
         let socket = socket_info.socket;
+        #[cfg(target_os = "linux")]
         let is_dgram = socket_info.is_dgram;
 
         // Linux-only: Enable hop limit reception on send socket for Echo Reply polling

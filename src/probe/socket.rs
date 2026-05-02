@@ -178,20 +178,20 @@ pub fn create_send_socket(ipv6: bool) -> Result<SocketInfo> {
         // Fall back to RAW (won't support TTL but might work for something)
         eprintln!("Warning: DGRAM socket failed, using RAW. Per-probe TTL control may not work.");
         let socket = create_raw_icmp_socket(ipv6)?;
-        return Ok(SocketInfo {
+        Ok(SocketInfo {
             socket,
             is_dgram: false,
-        });
+        })
     }
 
     #[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
     {
         // FreeBSD/NetBSD: Use RAW directly (SOCK_DGRAM + IPPROTO_ICMP not supported)
         let socket = create_raw_icmp_socket(ipv6)?;
-        return Ok(SocketInfo {
+        Ok(SocketInfo {
             socket,
             is_dgram: false,
-        });
+        })
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd")))]
@@ -224,10 +224,10 @@ pub fn create_recv_socket(ipv6: bool) -> Result<SocketInfo> {
         if let Err(e) = socket.set_recv_buffer_size(1024 * 1024) {
             eprintln!("Warning: Could not set receive buffer to 1MB: {}", e);
         }
-        return Ok(SocketInfo {
+        Ok(SocketInfo {
             socket,
             is_dgram: false,
-        });
+        })
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd")))]
