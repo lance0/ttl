@@ -29,7 +29,7 @@ pnet = "0.35"
 libc = "0.2"
 
 # DNS (note: trust-dns-resolver is now hickory-resolver)
-hickory-resolver = "0.25"
+hickory-resolver = "0.26"
 
 # HTTP client for PeeringDB API
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }

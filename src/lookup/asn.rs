@@ -1,5 +1,7 @@
 use anyhow::Result;
-use hickory_resolver::config::ResolverConfig;
+use hickory_resolver::config::{GOOGLE, ResolverConfig};
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::proto::rr::RData;
 use hickory_resolver::{Resolver, TokioResolver};
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -27,16 +29,18 @@ pub struct AsnLookup {
 
 impl AsnLookup {
     pub async fn new() -> Result<Self> {
-        // Try system DNS config first, fall back to Google DNS if unavailable
-        let resolver = match Resolver::builder_tokio() {
-            Ok(builder) => builder.build(),
+        // Try system DNS config first, fall back to Google DNS if unavailable.
+        // Any failure in the system path (config detection or resolver build)
+        // triggers the fallback so a transient setup error doesn't kill startup.
+        let resolver = match Resolver::builder_tokio().and_then(|b| b.build()) {
+            Ok(r) => r,
             Err(_) => {
                 eprintln!("Warning: System DNS config unavailable, using Google DNS (8.8.8.8)");
                 Resolver::builder_with_config(
-                    ResolverConfig::google(),
-                    hickory_resolver::name_server::TokioConnectionProvider::default(),
+                    ResolverConfig::udp_and_tcp(&GOOGLE),
+                    TokioRuntimeProvider::default(),
                 )
-                .build()
+                .build()?
             }
         };
 
@@ -88,11 +92,17 @@ impl AsnLookup {
         // Parse the first TXT record
         // Format: "AS | IP | BGP Prefix | CC | Registry | Allocated"
         // Example: "15169 | 8.8.8.8 | 8.8.8.0/24 | US | arin | 1992-12-01"
-        let txt = txt_records.iter().next()?;
+        let txt = txt_records
+            .answers()
+            .iter()
+            .find_map(|record| match &record.data {
+                RData::TXT(txt) => Some(txt),
+                _ => None,
+            })?;
 
         // TXT records may be quoted or split into multiple strings - join and strip quotes
         let txt_str: String = txt
-            .txt_data()
+            .txt_data
             .iter()
             .filter_map(|bytes| std::str::from_utf8(bytes).ok())
             .collect::<Vec<_>>()
@@ -170,11 +180,17 @@ impl AsnLookup {
         let query_name = format!("AS{}.asn.cymru.com", asn);
 
         let txt_records = self.resolver.txt_lookup(&query_name).await.ok()?;
-        let txt = txt_records.iter().next()?;
+        let txt = txt_records
+            .answers()
+            .iter()
+            .find_map(|record| match &record.data {
+                RData::TXT(txt) => Some(txt),
+                _ => None,
+            })?;
 
         // TXT records may be quoted or split - join and strip quotes
         let txt_str: String = txt
-            .txt_data()
+            .txt_data
             .iter()
             .filter_map(|bytes| std::str::from_utf8(bytes).ok())
             .collect::<Vec<_>>()

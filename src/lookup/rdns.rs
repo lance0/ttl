@@ -1,5 +1,7 @@
 use anyhow::Result;
-use hickory_resolver::config::ResolverConfig;
+use hickory_resolver::config::{GOOGLE, ResolverConfig};
+use hickory_resolver::net::runtime::TokioRuntimeProvider;
+use hickory_resolver::proto::rr::RData;
 use hickory_resolver::{Resolver, TokioResolver};
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -26,16 +28,18 @@ pub struct DnsLookup {
 
 impl DnsLookup {
     pub async fn new() -> Result<Self> {
-        // Try system DNS config first, fall back to Google DNS if unavailable
-        let resolver = match Resolver::builder_tokio() {
-            Ok(builder) => builder.build(),
+        // Try system DNS config first, fall back to Google DNS if unavailable.
+        // Any failure in the system path (config detection or resolver build)
+        // triggers the fallback so a transient setup error doesn't kill startup.
+        let resolver = match Resolver::builder_tokio().and_then(|b| b.build()) {
+            Ok(r) => r,
             Err(_) => {
                 eprintln!("Warning: System DNS config unavailable, using Google DNS (8.8.8.8)");
                 Resolver::builder_with_config(
-                    ResolverConfig::google(),
-                    hickory_resolver::name_server::TokioConnectionProvider::default(),
+                    ResolverConfig::udp_and_tcp(&GOOGLE),
+                    TokioRuntimeProvider::default(),
                 )
-                .build()
+                .build()?
             }
         };
 
@@ -60,12 +64,18 @@ impl DnsLookup {
 
         // Perform lookup
         let hostname = match self.resolver.reverse_lookup(ip).await {
-            Ok(lookup) => lookup.iter().next().map(|name| {
-                let s = name.to_string();
-                // Remove trailing dot and sanitize for safe display
-                // (PTR records can contain malicious control sequences)
-                sanitize_display(s.trim_end_matches('.'))
-            }),
+            Ok(lookup) => lookup
+                .answers()
+                .iter()
+                .find_map(|record| match &record.data {
+                    RData::PTR(name) => {
+                        let s = name.to_string();
+                        // Remove trailing dot and sanitize for safe display
+                        // (PTR records can contain malicious control sequences)
+                        Some(sanitize_display(s.trim_end_matches('.')))
+                    }
+                    _ => None,
+                }),
             Err(_) => None,
         };
 
