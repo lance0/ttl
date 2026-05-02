@@ -69,6 +69,14 @@ cargo install ttl
 brew install lance0/tap/ttl
 ```
 
+### Alpine Linux
+
+```bash
+apk add ttl --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing
+```
+
+Currently in the `edge/testing` repository (community-maintained).
+
 ### Arch Linux (AUR)
 
 ```bash
@@ -88,6 +96,21 @@ pkgin install ttl
 ```
 
 Or from source: `cd /usr/pkgsrc/net/ttl && make install`
+
+### NixOS / Nix
+
+```bash
+# Imperative install
+nix-env -iA nixpkgs.ttl
+
+# NixOS configuration
+environment.systemPackages = [ pkgs.ttl ];
+
+# Temporary shell
+nix-shell -p ttl
+```
+
+Available in `nixpkgs` unstable (community-maintained).
 
 ### Pre-built Binaries
 
