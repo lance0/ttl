@@ -135,6 +135,7 @@ pub fn create_raw_icmp_socket(ipv6: bool) -> Result<Socket> {
 
 /// Create an unprivileged IPv4 ICMP socket (SOCK_DGRAM)
 /// This socket type allows IP_TTL to be set on macOS
+#[cfg(not(any(target_os = "freebsd", target_os = "netbsd")))]
 pub fn create_dgram_icmp_socket() -> Result<Socket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::ICMPV4))?;
     socket.set_nonblocking(false)?;
@@ -144,6 +145,7 @@ pub fn create_dgram_icmp_socket() -> Result<Socket> {
 
 /// Create an unprivileged IPv6 ICMPv6 socket (SOCK_DGRAM)
 /// Used on macOS for IP_TTL support, and on Linux for unprivileged ICMP fallback
+#[cfg(not(any(target_os = "freebsd", target_os = "netbsd")))]
 pub fn create_dgram_icmpv6_socket() -> Result<Socket> {
     let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::ICMPV6))?;
     socket.set_nonblocking(false)?;
@@ -153,6 +155,7 @@ pub fn create_dgram_icmpv6_socket() -> Result<Socket> {
 
 /// Create DGRAM ICMP socket for either IPv4 or IPv6
 /// Used on macOS for IP_TTL support, and on Linux for unprivileged ICMP fallback
+#[cfg(not(any(target_os = "freebsd", target_os = "netbsd")))]
 pub fn create_dgram_icmp_socket_any(ipv6: bool) -> Result<Socket> {
     if ipv6 {
         create_dgram_icmpv6_socket()
