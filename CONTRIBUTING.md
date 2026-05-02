@@ -55,8 +55,11 @@ on every commit and `cargo test --lib` on every push. Set it up once:
 
 ```bash
 # Recommended: prek (fast Rust port, drop-in compatible)
-curl -LsSf https://github.com/j178/prek/releases/latest/download/prek-installer.sh | sh
+cargo install --locked prek
 prek install
+
+# Or via standalone installer (no Rust toolchain needed)
+curl -LsSf https://github.com/j178/prek/releases/latest/download/prek-installer.sh | sh
 
 # Or with the original Python pre-commit
 pipx install pre-commit
