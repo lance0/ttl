@@ -39,14 +39,32 @@ This project uses standard Rust formatting and linting:
 cargo fmt
 
 # Run clippy with warnings as errors
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 ```
 
 All PRs must pass:
 - `cargo build`
 - `cargo test`
-- `cargo clippy -- -D warnings`
+- `cargo clippy --all-targets -- -D warnings`
 - `cargo fmt -- --check`
+
+### Pre-commit hooks
+
+We ship a `.pre-commit-config.yaml` that runs `cargo fmt` and `cargo clippy`
+on every commit and `cargo test --lib` on every push. Set it up once:
+
+```bash
+# Recommended: prek (fast Rust port, drop-in compatible)
+curl -LsSf https://github.com/j178/prek/releases/latest/download/prek-installer.sh | sh
+prek install
+
+# Or with the original Python pre-commit
+pipx install pre-commit
+pre-commit install --hook-type pre-commit --hook-type pre-push
+```
+
+After install, hooks run automatically. To run them manually against staged
+files: `prek run` (or `pre-commit run`).
 
 ## Testing
 
