@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.19.1] - 2026-05-02
 
 ### Added
 - Pre-commit hooks (`.pre-commit-config.yaml`): `cargo fmt` and `cargo clippy --all-targets -- -D warnings` on every commit, `cargo test --lib` on every push. Setup documented in CONTRIBUTING.md for both [prek](https://github.com/j178/prek) (fast Rust port) and the original Python `pre-commit`.
