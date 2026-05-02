@@ -60,7 +60,7 @@
 - [x] Update notifications (checks GitHub releases, install-method-aware)
 - [x] FreeBSD support (experimental, raw sockets)
 
-## Completed (v0.15.x - v0.19.0)
+## Completed (v0.15.x - v0.19.1)
 
 - [x] Animated replay (`--replay file --animate`) with speed control
 - [x] Probe event recording for replay accuracy
@@ -81,6 +81,10 @@
 - [x] NetBSD UDP source IP auto-detection (fixes EHOSTUNREACH on DGRAM sockets) (#47)
 - [x] Update checker: non-blocking `try_recv()` polling in TUI (replaces blocking `recv_timeout(1s)`)
 - [x] Update checker: first-run immediate network check (`interval(Duration::ZERO)`)
+- [x] Interactive replay controls (seek, speed, progress bar) shipped in v0.19.0
+- [x] Pre-commit hooks (`.pre-commit-config.yaml` for `cargo fmt`/`clippy`/`test`)
+- [x] CI: `cargo clippy --all-targets -- -D warnings` on Linux, macOS, and FreeBSD
+- [x] hickory-resolver 0.26 upgrade (closes RUSTSEC-2026-0118 and RUSTSEC-2026-0119)
 
 ---
 

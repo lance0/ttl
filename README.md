@@ -278,6 +278,12 @@ When a hostname resolves to multiple IPs (round-robin DNS, CDN load balancing), 
 | `Tab` | Next target |
 | `l` | Target list |
 | `Enter` | Expand hop |
+| `←` / `→` | Replay: seek ±0.5s |
+| `[` / `]` | Replay: seek ±5s |
+| `+` / `-` | Replay: speed ±0.5x |
+| `Home` / `End` | Replay: jump to start/end |
+
+*Replay controls are active in `--animate` replay mode only. See [docs/FEATURES.md](docs/FEATURES.md#replay-controls) for the full table.*
 
 ## Themes
 

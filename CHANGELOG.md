@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Pre-commit hooks (`.pre-commit-config.yaml`): `cargo fmt` and `cargo clippy --all-targets -- -D warnings` on every commit, `cargo test --lib` on every push. Setup documented in CONTRIBUTING.md for both [prek](https://github.com/j178/prek) (fast Rust port) and the original Python `pre-commit`.
+- CI: `cargo clippy --all-targets -- -D warnings` now runs on macOS and FreeBSD in addition to Linux. Catches platform-specific cfg-gating regressions before merge.
+- README: NetBSD pkgsrc installation instructions; replay controls listed in the Keybindings table.
+
+### Changed
+- **hickory-resolver** upgraded 0.25 → 0.26. Internal API migration in DNS/ASN lookup modules — transparent to users.
+- **toml** upgraded 0.9 → 1.x. No code changes required.
+- CI: `softprops/action-gh-release` upgraded v2 → v3 (Node.js 24 runtime).
+
+### Fixed
+- **DNS resolver fallback** (#71): Restored Google DNS fallback when the system resolver builder is constructable but its `build()` step fails. Caught in Copilot review of the hickory 0.26 migration.
+- **macOS clippy warnings** (#72): Unused imports and `is_dgram` variable on macOS-only paths, plus three `needless_return` lints in `src/probe/socket.rs`. Contributed by @SSakutaro.
+- **FreeBSD/NetBSD dead-code warnings**: DGRAM ICMP socket helpers now cfg-gated to match their call sites.
+- **clippy 1.95 lints**: `collapsible_match` in TUI key handlers and `unnecessary_sort_by` in IX prefix sorting.
+- **FreeBSD CI**: Install `ca_root_nss` before fetching crates to avoid SSL verification failures from the FreeBSD VM image.
+
+### Security
+- **hickory-proto** via hickory-resolver 0.26.1: fixes RUSTSEC-2026-0119 (O(n²) DNS name compression CPU exhaustion). RUSTSEC-2026-0118 (NSEC3 unbounded loop) also no longer applies — ttl does not validate DNSSEC.
+- **rustls-webpki** 0.103.13: cumulative fixes for RUSTSEC-2026-0049, 0098, 0099, 0104.
+- **aws-lc-sys** 0.39.0: fixes RUSTSEC-2026-0044/0045/0046/0047/0048 (CRL distribution scope, AES-CCM timing side-channel, X.509 wildcard bypass, PKCS7 validation bypass).
+- **quinn-proto** 0.11.14: fixes RUSTSEC-2026-0037 (Quinn endpoint DoS — not exploitable in ttl, which only acts as a TLS client).
+
+### Dependencies
+- libc 0.2.182 → 0.2.186, tokio 1.49 → 1.50, socket2 0.6.2 → 0.6.3, clap 4.5 → 4.6, clap_complete 4.5 → 4.6, proptest 1.10 → 1.11, chrono 0.4.43 → 0.4.44
+
 ## [0.19.0] - 2026-02-26
 
 ### Added
