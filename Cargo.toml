@@ -66,7 +66,7 @@ is-terminal = "0.4"
 # Gateway detection - Linux (netlink) and macOS (sysctl) only
 # FreeBSD excluded: getifs uses macOS-specific APIs (NET_RT_IFLIST2, rt_msghdr)
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
-getifs = "0.4"
+getifs = "0.6"
 
 [dev-dependencies]
 tokio-test = "0.4"
