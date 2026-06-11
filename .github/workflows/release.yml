@@ -152,7 +152,7 @@ jobs:
             org.opencontainers.image.description=Modern traceroute/mtr-style network path analyzer
 
       - name: Build and push image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.release
