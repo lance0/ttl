@@ -128,7 +128,7 @@ jobs:
           tar xzf artifacts/ttl-aarch64-unknown-linux-musl/ttl-aarch64-unknown-linux-musl.tar.gz -C bin/arm64
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
