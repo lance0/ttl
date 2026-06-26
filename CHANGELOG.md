@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **macOS: traces no longer collapse to a single hop on fast hardware** (#12). On macOS, `sendto` is asynchronous and the kernel stamps each queued datagram with the socket's *current* TTL at drain time, so rapid per-probe `setsockopt(IP_TTL)` calls could all be sent with the final TTL — leaving only the destination/gateway visible. The ICMP path now sends each probe from a fresh socket, which is deterministic regardless of hardware speed (the previous fixed 500µs delay only masked the race and was insufficient on some Apple Silicon machines). Confirmed via on-wire capture on macOS 26.5.1. Correlation is unaffected — the receiver matches on the probe sequence / payload-embedded identifier, not the kernel-assigned ICMP identifier.
+
 ## [0.20.0] - 2026-06-10
 
 ### Added

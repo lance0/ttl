@@ -7,12 +7,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{Config, ProbeProtocol};
 use crate::probe::{
-    DEFAULT_PAYLOAD_SIZE, DEFAULT_UDP_PAYLOAD, ICMP_HEADER_SIZE, InterfaceInfo, TCP_HEADER_SIZE,
-    bind_to_source_ip, build_echo_request, build_tcp_syn_sized, build_udp_payload_sized,
-    create_send_socket_with_interface, create_tcp_socket_with_interface, create_udp_dgram_socket,
-    create_udp_dgram_socket_bound_full, create_udp_dgram_socket_bound_with_interface,
-    detect_source_ip, get_identifier, get_local_addr_with_interface, send_icmp, send_tcp_probe,
-    send_udp_probe, set_dont_fragment, set_dscp, set_ttl,
+    DEFAULT_PAYLOAD_SIZE, DEFAULT_UDP_PAYLOAD, ICMP_HEADER_SIZE, InterfaceInfo, SocketInfo,
+    TCP_HEADER_SIZE, bind_to_source_ip, build_echo_request, build_tcp_syn_sized,
+    build_udp_payload_sized, create_send_socket_with_interface, create_tcp_socket_with_interface,
+    create_udp_dgram_socket, create_udp_dgram_socket_bound_full,
+    create_udp_dgram_socket_bound_with_interface, detect_source_ip, get_identifier,
+    get_local_addr_with_interface, send_icmp, send_tcp_probe, send_udp_probe, set_dont_fragment,
+    set_dscp, set_ttl,
 };
 #[cfg(target_os = "linux")]
 use crate::probe::{enable_recv_ttl, parse_icmp_response, recv_icmp_with_ttl};
@@ -68,13 +69,19 @@ impl ProbeEngine {
         })
     }
 
-    /// Apply rate limiting delay if configured
+    /// Apply rate limiting delay if configured.
     ///
-    /// On macOS/FreeBSD, a minimum delay is always applied even without --rate.
-    /// This is required because BSD-derived systems batch rapid setsockopt(IP_TTL) calls,
-    /// causing packets to be sent with stale TTL values. A small delay ensures
-    /// each set_ttl() takes effect before the next send().
-    /// See: https://github.com/lance0/ttl/issues/12
+    /// On macOS/FreeBSD/NetBSD a minimum delay is applied even without `--rate`. These
+    /// systems send datagrams asynchronously: `sendto` queues the packet and the kernel
+    /// stamps the IP TTL from the socket's *current* state when the packet drains, so
+    /// back-to-back sends that each call `setsockopt(IP_TTL)` can all go out with the
+    /// final TTL — collapsing the trace to one hop. See issue #12 and the Apple DTS
+    /// thread <https://developer.apple.com/forums/thread/726398>.
+    ///
+    /// macOS no longer depends on this delay for correctness: the ICMP path sends each
+    /// probe from a fresh socket (`build_send_socket`), which removes the race entirely.
+    /// The delay is retained as a small safety margin and still covers the FreeBSD/NetBSD
+    /// raw-socket send paths, which have not been converted to per-probe sockets.
     async fn apply_rate_limit(&self) {
         if let Some(delay) = self.rate_delay() {
             tokio::time::sleep(delay).await;
@@ -83,12 +90,47 @@ impl ProbeEngine {
             target_os = "freebsd",
             target_os = "netbsd"
         )) {
-            // macOS/FreeBSD/NetBSD require a minimum delay between probes to ensure
-            // setsockopt(IP_TTL) takes effect before each send().
-            // Without this, rapid probe bursts all get sent with the same TTL.
-            // 500µs provides sufficient margin for the kernel to process the sockopt change.
+            // Minimum inter-probe spacing so a queued datagram drains (and is stamped with
+            // its intended TTL) before the next send. This is a margin, not a guarantee;
+            // the deterministic fix on macOS is the per-probe socket in run_icmp.
             tokio::time::sleep(Duration::from_micros(500)).await;
         }
+    }
+
+    /// Build a fully-configured ICMP send socket: created via the platform-specific
+    /// path, bound to the requested interface, and (when a source IP is configured, or
+    /// for IPv6 where the checksum depends on it) bound to `src_ip`.
+    ///
+    /// On macOS this is called once per probe. A shared DGRAM ICMP socket emits stale
+    /// TTLs under rapid sends: `sendto` is asynchronous, so the kernel stamps each queued
+    /// datagram with whatever TTL the socket holds when the datagram drains from the send
+    /// queue — not the TTL set immediately before the `sendto` call. Under back-to-back
+    /// sends the queue doesn't drain between probes, so they all pick up the final TTL and
+    /// the trace collapses to a single hop. A fresh socket carries exactly one datagram,
+    /// so its TTL is always the intended one. See issue #12 and the Apple DTS thread
+    /// <https://developer.apple.com/forums/thread/726398>.
+    fn build_send_socket(&self, ipv6: bool, src_ip: IpAddr) -> Result<SocketInfo> {
+        let socket_info = create_send_socket_with_interface(ipv6, self.interface.as_ref())?;
+
+        // Bind to source IP if configured OR if IPv6 (required for checksum consistency).
+        // Skip binding if source is unspecified (:: or 0.0.0.0) - let kernel choose.
+        if (self.config.source_ip.is_some() || ipv6)
+            && !src_ip.is_unspecified()
+            && let Err(e) = bind_to_source_ip(&socket_info.socket, src_ip)
+        {
+            if self.config.source_ip.is_some() {
+                // User explicitly requested this source IP - hard fail
+                return Err(e);
+            }
+            // Auto-detected source IP failed to bind (e.g., link-local scope mismatch)
+            // Warn and continue - kernel will choose source, checksum may be wrong
+            eprintln!(
+                "Warning: Failed to bind to source IP {}: {}. IPv6 checksum may be incorrect.",
+                src_ip, e
+            );
+        }
+
+        Ok(socket_info)
     }
 
     /// Run the probe engine
@@ -143,7 +185,20 @@ impl ProbeEngine {
     /// Run ICMP probing mode
     async fn run_icmp(self) -> Result<()> {
         let ipv6 = self.target.is_ipv6();
-        let socket_info = create_send_socket_with_interface(ipv6, self.interface.as_ref())?;
+
+        // Determine source IP for socket binding and IPv6 checksum.
+        // For IPv6, we MUST bind to ensure the checksum matches the actual source.
+        // Computed once and reused for every send socket we build (including the
+        // per-probe sockets created in the loop on macOS).
+        let src_ip = self
+            .config
+            .source_ip
+            .unwrap_or_else(|| get_local_addr_with_interface(self.target, self.interface.as_ref()));
+
+        // Shared send socket. On macOS the per-TTL probes are sent from fresh sockets
+        // created inside the loop (see issue #12 and `build_send_socket`); this shared
+        // socket still serves the single PMTUD probe and, on Linux, Echo Reply polling.
+        let socket_info = self.build_send_socket(ipv6, src_ip)?;
         let socket = socket_info.socket;
         #[cfg(target_os = "linux")]
         let is_dgram = socket_info.is_dgram;
@@ -153,31 +208,6 @@ impl ProbeEngine {
         #[cfg(target_os = "linux")]
         if ipv6 {
             let _ = enable_recv_ttl(&socket, true);
-        }
-
-        // Determine source IP for socket binding and IPv6 checksum
-        // For IPv6, we MUST bind to ensure checksum matches the actual source
-        let src_ip = self
-            .config
-            .source_ip
-            .unwrap_or_else(|| get_local_addr_with_interface(self.target, self.interface.as_ref()));
-
-        // Bind to source IP if configured OR if IPv6 (required for checksum consistency)
-        // Skip binding if source is unspecified (:: or 0.0.0.0) - let kernel choose
-        if (self.config.source_ip.is_some() || ipv6)
-            && !src_ip.is_unspecified()
-            && let Err(e) = bind_to_source_ip(&socket, src_ip)
-        {
-            if self.config.source_ip.is_some() {
-                // User explicitly requested this source IP - hard fail
-                return Err(e);
-            }
-            // Auto-detected source IP failed to bind (e.g., link-local scope mismatch)
-            // Warn and continue - kernel will choose source, checksum may be wrong
-            eprintln!(
-                "Warning: Failed to bind to source IP {}: {}. IPv6 checksum may be incorrect.",
-                src_ip, e
-            );
         }
 
         let mut seq: u8 = 0;
@@ -223,6 +253,27 @@ impl ProbeEngine {
                         // but this prevented detecting hops that recover from rate limiting
                         // and caused sent counters to freeze on non-responding hops.
 
+                        // macOS: send each probe from a fresh socket to avoid the async-sendto
+                        // TTL batching race (issue #12). A shared DGRAM socket stamps queued
+                        // datagrams with whatever TTL it holds at drain time, so rapid sends all
+                        // pick up the last TTL set and the trace collapses to one hop. One socket
+                        // per probe carries exactly one datagram, so its TTL is always correct.
+                        // Correlation is unaffected: macOS already rewrites the ICMP identifier on
+                        // DGRAM sockets, and the receiver matches on the sequence / payload-embedded
+                        // id rather than that identifier (see correlate.rs payload fallback).
+                        #[cfg(target_os = "macos")]
+                        let probe_socket = match self.build_send_socket(ipv6, src_ip) {
+                            Ok(info) => info.socket,
+                            Err(e) => {
+                                eprintln!("Failed to create send socket for TTL {}: {}", ttl, e);
+                                continue;
+                            }
+                        };
+                        #[cfg(target_os = "macos")]
+                        let send_sock = &probe_socket;
+                        #[cfg(not(target_os = "macos"))]
+                        let send_sock = &socket;
+
                         let probe_id = ProbeId::new(ttl, seq);
 
                         // Calculate payload size from config (packet_size includes IP+ICMP headers)
@@ -247,14 +298,14 @@ impl ProbeEngine {
                         );
 
                         // Set TTL before sending
-                        if let Err(e) = set_ttl(&socket, ttl, self.target.is_ipv6()) {
+                        if let Err(e) = set_ttl(send_sock, ttl, self.target.is_ipv6()) {
                             eprintln!("Failed to set TTL {}: {}", ttl, e);
                             continue;
                         }
 
                         // Set DSCP if configured
                         if let Some(dscp) = self.config.dscp
-                            && let Err(e) = set_dscp(&socket, dscp, self.target.is_ipv6())
+                            && let Err(e) = set_dscp(send_sock, dscp, self.target.is_ipv6())
                         {
                             eprintln!("Failed to set DSCP {}: {}", dscp, e);
                         }
@@ -275,7 +326,7 @@ impl ProbeEngine {
                             });
                         }
 
-                        if let Err(e) = send_icmp(&socket, &packet, self.target) {
+                        if let Err(e) = send_icmp(send_sock, &packet, self.target) {
                             // Remove pending entry on send failure to avoid false timeouts
                             self.pending.write().remove(&(probe_id, flow_id, self.target, false));
                             eprintln!("Failed to send probe TTL {}: {}", ttl, e);
