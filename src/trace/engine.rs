@@ -1,5 +1,6 @@
 use anyhow::Result;
 use parking_lot::RwLock;
+use socket2::Socket;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -131,6 +132,45 @@ impl ProbeEngine {
         }
 
         Ok(socket_info)
+    }
+
+    /// Build a UDP send socket bound to `src_port` (and the requested interface/source
+    /// IP), with DSCP applied. Used once per flow on non-macOS and once per probe on
+    /// macOS, where a fresh socket per probe avoids the async-sendto TTL race (issue #12,
+    /// same mechanism as [`Self::build_send_socket`]). The flow's source port is preserved
+    /// across re-creations so flow identification and NAT detection still work; the socket
+    /// enables address reuse so rapid re-binding of that port does not fail.
+    fn build_udp_send_socket(
+        &self,
+        ipv6: bool,
+        src_port: u16,
+        source_ip: Option<IpAddr>,
+    ) -> Result<Socket> {
+        let socket =
+            create_udp_dgram_socket_bound_full(ipv6, src_port, self.interface.as_ref(), source_ip)?;
+        if let Some(dscp) = self.config.dscp
+            && let Err(e) = set_dscp(&socket, dscp, ipv6)
+        {
+            eprintln!("Failed to set DSCP {}: {}", dscp, e);
+        }
+        Ok(socket)
+    }
+
+    /// Build a TCP (raw) send socket bound to the configured source IP, with DSCP applied.
+    /// Used once on non-macOS and once per probe on macOS to avoid the async-sendto TTL
+    /// race (issue #12). The TCP source port lives in the crafted SYN packet rather than a
+    /// socket bind, so nothing flow-specific needs to be reapplied here.
+    fn build_tcp_send_socket(&self, ipv6: bool) -> Result<Socket> {
+        let socket = create_tcp_socket_with_interface(ipv6, self.interface.as_ref())?;
+        if let Some(source_ip) = self.config.source_ip {
+            bind_to_source_ip(&socket, source_ip)?;
+        }
+        if let Some(dscp) = self.config.dscp
+            && let Err(e) = set_dscp(&socket, dscp, ipv6)
+        {
+            eprintln!("Failed to set DSCP {}: {}", dscp, e);
+        }
+        Ok(socket)
     }
 
     /// Run the probe engine
@@ -389,27 +429,19 @@ impl ProbeEngine {
             None
         };
 
-        // Create sockets for each flow (Paris/Dublin traceroute multi-flow support)
-        // Each socket is bound to a different source port for flow identification
-        let mut sockets = Vec::with_capacity(num_flows as usize);
-        for flow_id in 0..num_flows {
-            let src_port = self.config.src_port_base + (flow_id as u16);
-            let socket = create_udp_dgram_socket_bound_full(
-                ipv6,
-                src_port,
-                self.interface.as_ref(),
-                source_ip,
-            )?;
-
-            // Set DSCP if configured (set once per socket)
-            if let Some(dscp) = self.config.dscp
-                && let Err(e) = set_dscp(&socket, dscp, ipv6)
-            {
-                eprintln!("Failed to set DSCP {} on flow {}: {}", dscp, flow_id, e);
+        // Create sockets for each flow (Paris/Dublin multi-flow support); each is bound to
+        // a distinct source port for flow identification. On macOS the per-flow sockets are
+        // instead created per-probe inside the loop (issue #12 — the async-sendto TTL race),
+        // so this shared Vec is only built on other platforms.
+        #[cfg(not(target_os = "macos"))]
+        let sockets = {
+            let mut sockets = Vec::with_capacity(num_flows as usize);
+            for flow_id in 0..num_flows {
+                let src_port = self.config.src_port_base + (flow_id as u16);
+                sockets.push(self.build_udp_send_socket(ipv6, src_port, source_ip)?);
             }
-
-            sockets.push(socket);
-        }
+            sockets
+        };
 
         // Base port for UDP probes (classic traceroute)
         let base_port = self.config.port.unwrap_or(33434);
@@ -449,11 +481,33 @@ impl ProbeEngine {
 
                     // Send probes for each flow and each TTL (Paris/Dublin traceroute)
                     for flow_id in 0..num_flows {
-                        let socket = &sockets[flow_id as usize];
                         let src_port = self.config.src_port_base + (flow_id as u16);
+
+                        // Non-macOS: reuse this flow's shared socket created above.
+                        #[cfg(not(target_os = "macos"))]
+                        let flow_socket = &sockets[flow_id as usize];
 
                         for ttl in 1..=max_probe_ttl {
                             // Always probe all TTLs up to destination (see ICMP loop comment)
+
+                            // macOS: fresh socket per probe (issue #12), re-bound to this
+                            // flow's source port so flow ID / NAT detection still work.
+                            #[cfg(target_os = "macos")]
+                            let probe_socket =
+                                match self.build_udp_send_socket(ipv6, src_port, source_ip) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        eprintln!(
+                                            "Failed to create UDP send socket for TTL {} flow {}: {}",
+                                            ttl, flow_id, e
+                                        );
+                                        continue;
+                                    }
+                                };
+                            #[cfg(target_os = "macos")]
+                            let send_sock = &probe_socket;
+                            #[cfg(not(target_os = "macos"))]
+                            let send_sock = flow_socket;
 
                             let probe_id = ProbeId::new(ttl, seq);
 
@@ -467,7 +521,7 @@ impl ProbeEngine {
                             let payload = build_udp_payload_sized(probe_id, payload_size);
 
                             // Set TTL before sending
-                            if let Err(e) = set_ttl(socket, ttl, ipv6) {
+                            if let Err(e) = set_ttl(send_sock, ttl, ipv6) {
                                 eprintln!("Failed to set TTL {}: {}", ttl, e);
                                 continue;
                             }
@@ -493,7 +547,8 @@ impl ProbeEngine {
                                 });
                             }
 
-                            if let Err(e) = send_udp_probe(socket, &payload, self.target, dst_port) {
+                            if let Err(e) = send_udp_probe(send_sock, &payload, self.target, dst_port)
+                            {
                                 self.pending.write().remove(&(probe_id, flow_id, self.target, false));
                                 eprintln!("Failed to send UDP probe TTL {} flow {}: {}", ttl, flow_id, e);
                                 continue;
@@ -526,19 +581,13 @@ impl ProbeEngine {
     /// Run TCP SYN probing mode
     async fn run_tcp(self) -> Result<()> {
         let ipv6 = self.target.is_ipv6();
-        let socket = create_tcp_socket_with_interface(ipv6, self.interface.as_ref())?;
 
-        // Bind to specific source IP if configured
-        if let Some(source_ip) = self.config.source_ip {
-            bind_to_source_ip(&socket, source_ip)?;
-        }
-
-        // Set DSCP if configured
-        if let Some(dscp) = self.config.dscp
-            && let Err(e) = set_dscp(&socket, dscp, ipv6)
-        {
-            eprintln!("Failed to set DSCP {}: {}", dscp, e);
-        }
+        // Shared raw socket reused on non-macOS. On macOS each probe is sent from a fresh
+        // socket created inside the loop (issue #12 — the async-sendto TTL race). The TCP
+        // source port is carried in the crafted SYN, not a socket bind, so nothing
+        // flow-specific is lost by recreating the socket.
+        #[cfg(not(target_os = "macos"))]
+        let socket = self.build_tcp_send_socket(ipv6)?;
 
         let num_flows = self.config.flows;
 
@@ -592,6 +641,23 @@ impl ProbeEngine {
                         for ttl in 1..=max_probe_ttl {
                             // Always probe all TTLs up to destination (see ICMP loop comment)
 
+                            // macOS: fresh socket per probe (issue #12).
+                            #[cfg(target_os = "macos")]
+                            let probe_socket = match self.build_tcp_send_socket(ipv6) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!(
+                                        "Failed to create TCP send socket for TTL {} flow {}: {}",
+                                        ttl, flow_id, e
+                                    );
+                                    continue;
+                                }
+                            };
+                            #[cfg(target_os = "macos")]
+                            let send_sock = &probe_socket;
+                            #[cfg(not(target_os = "macos"))]
+                            let send_sock = &socket;
+
                             let probe_id = ProbeId::new(ttl, seq);
 
                             // Use incrementing port per TTL to help with ECMP (unless fixed)
@@ -612,7 +678,7 @@ impl ProbeEngine {
                             let packet = build_tcp_syn_sized(probe_id, src_port, dst_port, src_ip, self.target, payload_size);
 
                             // Set TTL before sending
-                            if let Err(e) = set_ttl(&socket, ttl, self.target.is_ipv6()) {
+                            if let Err(e) = set_ttl(send_sock, ttl, self.target.is_ipv6()) {
                                 eprintln!("Failed to set TTL {}: {}", ttl, e);
                                 continue;
                             }
@@ -631,7 +697,8 @@ impl ProbeEngine {
                                 });
                             }
 
-                            if let Err(e) = send_tcp_probe(&socket, &packet, self.target, dst_port) {
+                            if let Err(e) = send_tcp_probe(send_sock, &packet, self.target, dst_port)
+                            {
                                 self.pending.write().remove(&(probe_id, flow_id, self.target, false));
                                 eprintln!("Failed to send TCP probe TTL {} flow {}: {}", ttl, flow_id, e);
                                 continue;

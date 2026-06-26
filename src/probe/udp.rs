@@ -116,6 +116,13 @@ pub fn create_udp_dgram_socket_bound_full(
         bind_socket_to_interface(&socket, info, ipv6)?;
     }
 
+    // Allow the same source port to be re-bound quickly. On macOS each probe is sent
+    // from a fresh socket (issue #12), so a flow's source port is bound, released, and
+    // re-bound many times per second; without address reuse a rapid re-bind can
+    // transiently fail with EADDRINUSE. Best-effort and harmless for the single-socket
+    // paths, which bind a given port exactly once.
+    let _ = socket.set_reuse_address(true);
+
     // Bind to the specified source port (and optionally source IP)
     let bind_addr = match source_ip {
         Some(ip) => SocketAddr::new(ip, src_port),
