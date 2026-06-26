@@ -443,6 +443,16 @@ impl ProbeEngine {
             sockets
         };
 
+        // macOS sends each probe from a fresh socket inside the loop (issue #12). Validate
+        // socket creation/binding for every flow up front with `?` so a misconfigured
+        // --source-ip, interface, or port fails fast here instead of spinning silently in
+        // the probe loop (the loop logs+continues on error to tolerate transient failures).
+        #[cfg(target_os = "macos")]
+        for flow_id in 0..num_flows {
+            let src_port = self.config.src_port_base + (flow_id as u16);
+            self.build_udp_send_socket(ipv6, src_port, source_ip)?;
+        }
+
         // Base port for UDP probes (classic traceroute)
         let base_port = self.config.port.unwrap_or(33434);
 
@@ -588,6 +598,12 @@ impl ProbeEngine {
         // flow-specific is lost by recreating the socket.
         #[cfg(not(target_os = "macos"))]
         let socket = self.build_tcp_send_socket(ipv6)?;
+
+        // macOS sends each probe from a fresh socket inside the loop (issue #12). Validate
+        // socket creation/binding up front with `?` so a misconfigured --source-ip or
+        // interface fails fast here instead of spinning silently in the probe loop.
+        #[cfg(target_os = "macos")]
+        self.build_tcp_send_socket(ipv6)?;
 
         let num_flows = self.config.flows;
 
