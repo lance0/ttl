@@ -79,8 +79,8 @@ impl ProbeEngine {
     /// final TTL — collapsing the trace to one hop. See issue #12 and the Apple DTS
     /// thread <https://developer.apple.com/forums/thread/726398>.
     ///
-    /// macOS no longer depends on this delay for correctness: the ICMP path sends each
-    /// probe from a fresh socket (`build_send_socket`), which removes the race entirely.
+    /// macOS no longer depends on this delay for correctness: every probe mode (ICMP, UDP,
+    /// and TCP) sends each probe from a fresh socket, which removes the race entirely.
     /// The delay is retained as a small safety margin and still covers the FreeBSD/NetBSD
     /// raw-socket send paths, which have not been converted to per-probe sockets.
     async fn apply_rate_limit(&self) {
@@ -92,8 +92,8 @@ impl ProbeEngine {
             target_os = "netbsd"
         )) {
             // Minimum inter-probe spacing so a queued datagram drains (and is stamped with
-            // its intended TTL) before the next send. This is a margin, not a guarantee;
-            // the deterministic fix on macOS is the per-probe socket in run_icmp.
+            // its intended TTL) before the next send. This is a margin, not a guarantee; the
+            // deterministic fix on macOS is the per-probe socket in run_icmp/run_udp/run_tcp.
             tokio::time::sleep(Duration::from_micros(500)).await;
         }
     }
