@@ -38,6 +38,7 @@ use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
+use crate::probe::bind_to_source_ip;
 use crate::probe::interface::{InterfaceInfo, bind_socket_to_interface};
 
 /// IPv4 header length with no options.
@@ -184,10 +185,17 @@ pub fn build_ipv4_packet(
 }
 
 /// Create a raw IPv4 socket with `IP_HDRINCL` enabled, optionally bound to an
-/// interface. The socket can send ICMP/UDP/TCP by setting the IP protocol field of
-/// the supplied header. Requires root / `CAP_NET_RAW`.
+/// interface and/or a source address. The socket can send ICMP/UDP/TCP by setting the
+/// IP protocol field of the supplied header. Requires root / `CAP_NET_RAW`.
+///
+/// `bind_src` is the user-configured `--source-ip`. Binding to it makes the kernel
+/// validate that it is a local address (failing with `EADDRNOTAVAIL` otherwise), so an
+/// invalid or non-local source fails fast here instead of silently producing packets
+/// with a spoofed source and mismatched transport checksums. The on-wire source still
+/// comes from the IP header we build; the bind is purely the validation/locality check.
 pub fn create_raw_hdrincl_socket_with_interface(
     interface: Option<&InterfaceInfo>,
+    bind_src: Option<Ipv4Addr>,
 ) -> Result<Socket> {
     // IPPROTO_RAW is the conventional "send any protocol via the header" choice. On
     // Linux it also implies IP_HDRINCL, but the BSDs do not, so we always set it
@@ -203,9 +211,15 @@ pub fn create_raw_hdrincl_socket_with_interface(
     socket.set_nonblocking(false)?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
 
-    // Interface binding (SO_BINDTODEVICE / IP_BOUND_IF) for --interface.
+    // Interface binding (SO_BINDTODEVICE / IP_BOUND_IF) for --interface, before the
+    // address bind.
     if let Some(info) = interface {
         bind_socket_to_interface(&socket, info, false)?;
+    }
+
+    // Bind to the configured source IP so a non-local --source-ip fails fast.
+    if let Some(src) = bind_src {
+        bind_to_source_ip(&socket, IpAddr::V4(src))?;
     }
 
     Ok(socket)
@@ -422,7 +436,7 @@ mod tests {
         // Loopback keeps the test self-contained (no network egress); the byte-order
         // validation in the kernel fires before routing regardless of destination.
         let lo = Ipv4Addr::LOCALHOST;
-        let socket = create_raw_hdrincl_socket_with_interface(None)
+        let socket = create_raw_hdrincl_socket_with_interface(None, None)
             .expect("create IP_HDRINCL raw socket (needs root)");
 
         // ICMP echo.
@@ -455,5 +469,75 @@ mod tests {
         let pkt = build_ipv4_packet(lo, lo, IPPROTO_ICMP, 8, 0, true, &icmp_df);
         send_raw_ipv4(&socket, &pkt, lo)
             .expect("kernel rejected DF IP_HDRINCL packet (ip_len/ip_off byte order?)");
+    }
+
+    // On-wire field verification (Linux): send an IPv4 ICMP echo via IP_HDRINCL to
+    // loopback and receive it on a raw ICMP socket, confirming the kernel transmits
+    // exactly the header we built — TTL, ToS, protocol, and source/dest match, and both
+    // the (kernel-filled) IP header checksum and our ICMP checksum validate on the wire.
+    // This closes the gap that the acceptance-only test leaves (it proves byte order but
+    // not the emitted field values). Linux-only (raw recv semantics); requires root.
+    #[test]
+    #[ignore = "requires root (raw socket); run via --ignored under sudo / in CI"]
+    #[cfg(target_os = "linux")]
+    fn runtime_hdrincl_onwire_fields_linux() {
+        use crate::probe::build_echo_request;
+        use socket2::{Domain, Protocol, Type};
+        use std::mem::MaybeUninit;
+
+        let lo = Ipv4Addr::LOCALHOST;
+        let ident: u16 = 0x7A7A;
+        let ttl: u8 = 42;
+        let tos: u8 = 0x28;
+
+        let send = create_raw_hdrincl_socket_with_interface(None, None)
+            .expect("create IP_HDRINCL socket (needs root)");
+        let recv = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::ICMPV4))
+            .expect("create raw ICMP recv socket (needs root)");
+        recv.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+
+        let icmp = build_echo_request(ident, 1, 16, false, None);
+        let pkt = build_ipv4_packet(lo, lo, IPPROTO_ICMP, ttl, tos, false, &icmp);
+        send_raw_ipv4(&send, &pkt, lo).expect("send IP_HDRINCL echo to loopback");
+
+        // Loopback also yields the kernel's echo reply; read until we see our request.
+        let mut buf = [MaybeUninit::<u8>::uninit(); 2048];
+        let mut found = false;
+        for _ in 0..16 {
+            let n = match recv.recv(&mut buf) {
+                Ok(n) => n,
+                Err(_) => break, // timeout
+            };
+            let data: &[u8] = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, n) };
+            if data.len() < IPV4_HEADER_SIZE + 8 || data[0] >> 4 != 4 {
+                continue;
+            }
+            let ihl = ((data[0] & 0x0f) as usize) * 4;
+            if ihl < IPV4_HEADER_SIZE || data.len() < ihl + 8 || data[9] != IPPROTO_ICMP {
+                continue;
+            }
+            let icmp_msg = &data[ihl..];
+            // ICMP Echo Request = type 8; identifier at bytes 4..6.
+            if icmp_msg[0] != 8 || u16::from_be_bytes([icmp_msg[4], icmp_msg[5]]) != ident {
+                continue;
+            }
+
+            assert_eq!(data[8], ttl, "TTL on wire");
+            assert_eq!(data[1], tos, "ToS on wire");
+            assert_eq!(&data[12..16], &lo.octets(), "source on wire");
+            assert_eq!(&data[16..20], &lo.octets(), "dest on wire");
+            assert_eq!(
+                internet_checksum(&data[..ihl]),
+                0,
+                "IP header checksum valid"
+            );
+            assert_eq!(internet_checksum(icmp_msg), 0, "ICMP checksum valid");
+            found = true;
+            break;
+        }
+        assert!(
+            found,
+            "did not receive our own IP_HDRINCL echo request on loopback"
+        );
     }
 }

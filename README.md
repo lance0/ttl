@@ -354,7 +354,7 @@ ttl 1.1.1.1 --theme dracula    # Start with theme
 
 *Pre-built binaries are built on `macos-latest` (Tahoe). Older macOS versions may have display issues - use `cargo install ttl` to compile from source.
 
-**FreeBSD/NetBSD support is experimental. Requires `sudo`. Interface binding (`-i`) is not supported. IPv4 PMTUD is unavailable on NetBSD (no `IP_DONTFRAG`). Please report issues at https://github.com/lance0/ttl/issues
+**FreeBSD/NetBSD support is experimental. Requires `sudo`. Interface binding (`-i`) is not supported. Please report issues at https://github.com/lance0/ttl/issues
 
 ### Windows via WSL2
 

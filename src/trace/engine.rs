@@ -74,19 +74,19 @@ impl ProbeEngine {
         })
     }
 
-    /// Apply rate limiting delay if configured.
+    /// Apply the inter-probe delay: the user-configured `--rate`, plus a 500µs floor on
+    /// macOS/FreeBSD/NetBSD when no rate is set.
     ///
-    /// On macOS/FreeBSD/NetBSD a minimum delay is applied even without `--rate`. These
-    /// systems send datagrams asynchronously: `sendto` queues the packet and the kernel
-    /// stamps the IP TTL from the socket's *current* state when the packet drains, so
-    /// back-to-back sends that each call `setsockopt(IP_TTL)` can all go out with the
-    /// final TTL — collapsing the trace to one hop. See issue #12 and the Apple DTS
-    /// thread <https://developer.apple.com/forums/thread/726398>.
+    /// The floor exists because those systems send datagrams asynchronously — the kernel
+    /// stamps each queued datagram with the socket's *current* TTL at drain time, so a
+    /// rapid `setsockopt(IP_TTL); send` loop on a shared socket could emit every probe
+    /// with the final TTL, collapsing the trace to one hop (issue #12; see the Apple DTS
+    /// thread <https://developer.apple.com/forums/thread/726398>).
     ///
-    /// macOS no longer depends on this delay for correctness: every probe mode (ICMP, UDP,
-    /// and TCP) sends each probe from a fresh socket, which removes the race entirely.
-    /// The delay is retained as a small safety margin and still covers the FreeBSD/NetBSD
-    /// raw-socket send paths, which have not been converted to per-probe sockets.
+    /// It now only applies to the **IPv6 shared-socket path on FreeBSD/NetBSD**. IPv4
+    /// sends via IP_HDRINCL with the TTL in the header (see [`Self::apply_rate_limit_explicit`],
+    /// which omits the floor), and IPv6 on macOS uses per-probe sockets — both
+    /// deterministic. The floor can be retired once IPv6 on FreeBSD/NetBSD is converted.
     async fn apply_rate_limit(&self) {
         if let Some(delay) = self.rate_delay() {
             tokio::time::sleep(delay).await;
@@ -96,8 +96,7 @@ impl ProbeEngine {
             target_os = "netbsd"
         )) {
             // Minimum inter-probe spacing so a queued datagram drains (and is stamped with
-            // its intended TTL) before the next send. This is a margin, not a guarantee; the
-            // deterministic fix on macOS is the per-probe socket in run_icmp/run_udp/run_tcp.
+            // its intended TTL) before the next send. A margin, not a guarantee.
             tokio::time::sleep(Duration::from_micros(500)).await;
         }
     }
@@ -778,17 +777,39 @@ impl ProbeEngine {
     // =========================================================================
 
     /// Resolve the IPv4 source address for this trace (for the IP header and the
-    /// transport-layer checksums). Falls back to UNSPECIFIED, which lets the kernel
-    /// fill the header source but yields incorrect UDP/TCP checksums — in practice
-    /// the routing lookup returns a real local address.
-    fn ipv4_src(&self) -> Ipv4Addr {
-        let src_ip = self
-            .config
-            .source_ip
-            .unwrap_or_else(|| get_local_addr_with_interface(self.target, self.interface.as_ref()));
-        match src_ip {
-            IpAddr::V4(s) => s,
-            IpAddr::V6(_) => Ipv4Addr::UNSPECIFIED,
+    /// transport-layer checksums). Errors if `--source-ip` is set to an IPv6 address for
+    /// an IPv4 target; when unset, uses the routing lookup (the bind in
+    /// [`Self::ipv4_bind_src`] is what fail-fast-validates an explicit `--source-ip`).
+    fn ipv4_src(&self) -> Result<Ipv4Addr> {
+        match self.config.source_ip {
+            Some(IpAddr::V4(s)) => Ok(s),
+            Some(IpAddr::V6(_)) => Err(anyhow::anyhow!(
+                "--source-ip is an IPv6 address but the target is IPv4"
+            )),
+            None => match get_local_addr_with_interface(self.target, self.interface.as_ref()) {
+                IpAddr::V4(s) => Ok(s),
+                // Routing returned no IPv4 source; the kernel fills the header source,
+                // though transport checksums would then be built for 0.0.0.0.
+                IpAddr::V6(_) => Ok(Ipv4Addr::UNSPECIFIED),
+            },
+        }
+    }
+
+    /// The `--source-ip` to bind the raw socket to (Some only when explicitly set, so a
+    /// non-local value fails fast at bind); None lets the kernel choose by route.
+    fn ipv4_bind_src(&self) -> Option<Ipv4Addr> {
+        match self.config.source_ip {
+            Some(IpAddr::V4(s)) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Apply only the user-configured `--rate` delay, with no platform floor. Used by the
+    /// IPv4 IP_HDRINCL loops, which have no `setsockopt(IP_TTL)` race for the macOS/BSD
+    /// floor in [`Self::apply_rate_limit`] to mask.
+    async fn apply_rate_limit_explicit(&self) {
+        if let Some(delay) = self.rate_delay() {
+            tokio::time::sleep(delay).await;
         }
     }
 
@@ -805,9 +826,10 @@ impl ProbeEngine {
         let IpAddr::V4(dst) = self.target else {
             unreachable!("run_icmp_hdrincl is IPv4-only");
         };
-        let src = self.ipv4_src();
+        let src = self.ipv4_src()?;
+        let bind_src = self.ipv4_bind_src();
         let tos = self.ipv4_tos();
-        let socket = create_raw_hdrincl_socket_with_interface(self.interface.as_ref())?;
+        let socket = create_raw_hdrincl_socket_with_interface(self.interface.as_ref(), bind_src)?;
 
         let mut seq: u8 = 0;
         let mut pmtud_seq: u8 = 0;
@@ -880,7 +902,7 @@ impl ProbeEngine {
                             }
                         }
 
-                        self.apply_rate_limit().await;
+                        self.apply_rate_limit_explicit().await;
                     }
 
                     // PMTUD: extra DF probe at the destination TTL with the current size.
@@ -891,7 +913,7 @@ impl ProbeEngine {
                             .await
                     {
                         pmtud_seq = pmtud_seq.wrapping_add(1);
-                        self.apply_rate_limit().await;
+                        self.apply_rate_limit_explicit().await;
                     }
 
                     seq = seq.wrapping_add(1);
@@ -909,11 +931,12 @@ impl ProbeEngine {
         let IpAddr::V4(dst) = self.target else {
             unreachable!("run_udp_hdrincl is IPv4-only");
         };
-        let src = self.ipv4_src();
+        let src = self.ipv4_src()?;
+        let bind_src = self.ipv4_bind_src();
         let tos = self.ipv4_tos();
         let num_flows = self.config.flows;
         let base_port = self.config.port.unwrap_or(33434);
-        let socket = create_raw_hdrincl_socket_with_interface(self.interface.as_ref())?;
+        let socket = create_raw_hdrincl_socket_with_interface(self.interface.as_ref(), bind_src)?;
 
         let mut seq: u8 = 0;
         let mut rounds_completed: u64 = 0;
@@ -994,7 +1017,7 @@ impl ProbeEngine {
                                 }
                             }
 
-                            self.apply_rate_limit().await;
+                            self.apply_rate_limit_explicit().await;
                         }
                     }
 
@@ -1013,11 +1036,12 @@ impl ProbeEngine {
         let IpAddr::V4(dst) = self.target else {
             unreachable!("run_tcp_hdrincl is IPv4-only");
         };
-        let src = self.ipv4_src();
+        let src = self.ipv4_src()?;
+        let bind_src = self.ipv4_bind_src();
         let tos = self.ipv4_tos();
         let num_flows = self.config.flows;
         let base_port = self.config.port.unwrap_or(80);
-        let socket = create_raw_hdrincl_socket_with_interface(self.interface.as_ref())?;
+        let socket = create_raw_hdrincl_socket_with_interface(self.interface.as_ref(), bind_src)?;
 
         let mut seq: u8 = 0;
         let mut rounds_completed: u64 = 0;
@@ -1103,7 +1127,7 @@ impl ProbeEngine {
                                 }
                             }
 
-                            self.apply_rate_limit().await;
+                            self.apply_rate_limit_explicit().await;
                         }
                     }
 
