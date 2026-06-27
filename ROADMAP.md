@@ -103,11 +103,11 @@
 
 ### Before next release — TTL send-path correctness (follow-ups to #12)
 
-The macOS single-hop fix (#12) removes the stale-TTL race from the probe send paths. **IPv4 is now fully unified** on `IP_HDRINCL` (the TTL is written into a hand-built IP header sent through one raw socket, ICMP/UDP/TCP), which kills the race by construction on every platform with no per-probe sockets or timing delay — validated on real Linux, macOS, and FreeBSD kernels in CI. The remaining items finish the IPv6 side and retire the now-redundant interim delay. **Targeted for completion before the next release.**
+The macOS single-hop fix (#12) removes the stale-TTL race from the probe send paths, now **complete across IPv4 and IPv6 on every platform**. IPv4 is unified on `IP_HDRINCL` (TTL written into a hand-built IP header sent through one raw socket); IPv6 sends each probe from a fresh socket on the BSD-derived platforms (`per_probe_send` = macOS/FreeBSD/NetBSD). Every send path is deterministic by construction, so the interim timing delay is gone. Validated on real Linux, macOS, and FreeBSD kernels in CI.
 
 - [x] **Unify the IPv4 send path on `IP_HDRINCL`.** TTL in the IP header; per-OS `ip_len`/`ip_off` byte order handled (host order on macOS/NetBSD, network order on Linux/FreeBSD ≥11); transport (ICMP/UDP/TCP) checksums built in; CI runs a privileged real-kernel send test on Linux/macOS/FreeBSD. Also fixes IPv4 PMTUD on NetBSD (DF set in the header, not via the missing `IP_DONTFRAG`).
-- [ ] **IPv6: make per-packet hop limit deterministic on FreeBSD/NetBSD.** There is no IPv4-style `IP_HDRINCL` for IPv6. macOS IPv6 already uses per-probe sockets; FreeBSD/NetBSD IPv6 still set the hop limit on a shared socket and rely on the 500µs delay. Either extend the per-probe-socket path to those, or use `IPV6_HOPLIMIT` ancillary data via `sendmsg` (needs a per-OS support check).
-- [ ] **Drop the macOS/BSD arm of the 500µs `apply_rate_limit` delay.** It is now redundant for IPv4 (HDRINCL) and macOS IPv6 (per-probe sockets); it still masks the shared-socket path for IPv6 on FreeBSD/NetBSD. Remove once the item above lands and the IPv4 fix is confirmed on affected hardware.
+- [x] **IPv6: deterministic per-packet hop limit on FreeBSD/NetBSD.** Extended the per-probe-socket path (previously macOS-only) to FreeBSD/NetBSD via the new `per_probe_send` cfg (`build.rs`). Linux keeps one shared socket (no race there).
+- [x] **Dropped the 500µs `apply_rate_limit` delay.** Redundant now that IPv4 uses `IP_HDRINCL` and IPv6 uses per-probe sockets on all BSD-derived platforms; only the explicit `--rate` delay remains.
 
 ### Next — ECMP Improvements
 

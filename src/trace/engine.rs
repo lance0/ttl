@@ -74,30 +74,16 @@ impl ProbeEngine {
         })
     }
 
-    /// Apply the inter-probe delay: the user-configured `--rate`, plus a 500µs floor on
-    /// macOS/FreeBSD/NetBSD when no rate is set.
+    /// Apply the user-configured `--rate` delay between probes, if any.
     ///
-    /// The floor exists because those systems send datagrams asynchronously — the kernel
-    /// stamps each queued datagram with the socket's *current* TTL at drain time, so a
-    /// rapid `setsockopt(IP_TTL); send` loop on a shared socket could emit every probe
-    /// with the final TTL, collapsing the trace to one hop (issue #12; see the Apple DTS
-    /// thread <https://developer.apple.com/forums/thread/726398>).
-    ///
-    /// It now only applies to the **IPv6 shared-socket path on FreeBSD/NetBSD**. IPv4
-    /// sends via IP_HDRINCL with the TTL in the header (see [`Self::apply_rate_limit_explicit`],
-    /// which omits the floor), and IPv6 on macOS uses per-probe sockets — both
-    /// deterministic. The floor can be retired once IPv6 on FreeBSD/NetBSD is converted.
+    /// No platform floor is needed: IPv4 sends via IP_HDRINCL (TTL in the header) and IPv6
+    /// sends each probe from a fresh socket on macOS/FreeBSD/NetBSD (`per_probe_send`), so
+    /// there is no `setsockopt(IP_TTL / hop-limit)`-before-async-`sendto` race to mask
+    /// (issue #12). Linux's `sendto` never exhibited the race. The previous 500µs floor
+    /// has therefore been retired.
     async fn apply_rate_limit(&self) {
         if let Some(delay) = self.rate_delay() {
             tokio::time::sleep(delay).await;
-        } else if cfg!(any(
-            target_os = "macos",
-            target_os = "freebsd",
-            target_os = "netbsd"
-        )) {
-            // Minimum inter-probe spacing so a queued datagram drains (and is stamped with
-            // its intended TTL) before the next send. A margin, not a guarantee.
-            tokio::time::sleep(Duration::from_micros(500)).await;
         }
     }
 
@@ -105,14 +91,14 @@ impl ProbeEngine {
     /// path, bound to the requested interface, and (when a source IP is configured, or
     /// for IPv6 where the checksum depends on it) bound to `src_ip`.
     ///
-    /// On macOS this is called once per probe. A shared DGRAM ICMP socket emits stale
-    /// TTLs under rapid sends: `sendto` is asynchronous, so the kernel stamps each queued
-    /// datagram with whatever TTL the socket holds when the datagram drains from the send
-    /// queue — not the TTL set immediately before the `sendto` call. Under back-to-back
-    /// sends the queue doesn't drain between probes, so they all pick up the final TTL and
-    /// the trace collapses to a single hop. A fresh socket carries exactly one datagram,
-    /// so its TTL is always the intended one. See issue #12 and the Apple DTS thread
-    /// <https://developer.apple.com/forums/thread/726398>.
+    /// Serves the IPv6 send path (IPv4 uses IP_HDRINCL). On `per_probe_send` platforms
+    /// (macOS/FreeBSD/NetBSD) this is called once per probe: those kernels send
+    /// asynchronously, so the TTL/hop-limit is stamped from the socket's *current* state
+    /// when a queued datagram drains — under back-to-back sends the queue doesn't drain
+    /// between probes and they all pick up the final value, collapsing the trace to one
+    /// hop. A fresh socket carries exactly one datagram, so its hop limit is always the
+    /// intended one. See issue #12 and the Apple DTS thread
+    /// <https://developer.apple.com/forums/thread/726398>. Linux reuses one shared socket.
     fn build_send_socket(&self, ipv6: bool, src_ip: IpAddr) -> Result<SocketInfo> {
         let socket_info = create_send_socket_with_interface(ipv6, self.interface.as_ref())?;
 
@@ -138,11 +124,12 @@ impl ProbeEngine {
     }
 
     /// Build a UDP send socket bound to `src_port` (and the requested interface/source
-    /// IP), with DSCP applied. Used once per flow on non-macOS and once per probe on
-    /// macOS, where a fresh socket per probe avoids the async-sendto TTL race (issue #12,
-    /// same mechanism as [`Self::build_send_socket`]). The flow's source port is preserved
-    /// across re-creations so flow identification and NAT detection still work; the socket
-    /// enables address reuse so rapid re-binding of that port does not fail.
+    /// IP), with DSCP applied. Used once per flow on Linux and once per probe on the
+    /// `per_probe_send` platforms (macOS/FreeBSD/NetBSD), where a fresh socket per probe
+    /// avoids the async-sendto TTL race (issue #12, same mechanism as
+    /// [`Self::build_send_socket`]). The flow's source port is preserved across
+    /// re-creations so flow identification and NAT detection still work; the socket enables
+    /// address reuse so rapid re-binding of that port does not fail.
     fn build_udp_send_socket(
         &self,
         ipv6: bool,
@@ -160,9 +147,10 @@ impl ProbeEngine {
     }
 
     /// Build a TCP (raw) send socket bound to the configured source IP, with DSCP applied.
-    /// Used once on non-macOS and once per probe on macOS to avoid the async-sendto TTL
-    /// race (issue #12). The TCP source port lives in the crafted SYN packet rather than a
-    /// socket bind, so nothing flow-specific needs to be reapplied here.
+    /// Used once on Linux and once per probe on the `per_probe_send` platforms
+    /// (macOS/FreeBSD/NetBSD) to avoid the async-sendto TTL race (issue #12). The TCP
+    /// source port lives in the crafted SYN packet rather than a socket bind, so nothing
+    /// flow-specific needs to be reapplied here.
     fn build_tcp_send_socket(&self, ipv6: bool) -> Result<Socket> {
         let socket = create_tcp_socket_with_interface(ipv6, self.interface.as_ref())?;
         if let Some(source_ip) = self.config.source_ip {
@@ -239,15 +227,16 @@ impl ProbeEngine {
         // Determine source IP for socket binding and IPv6 checksum.
         // For IPv6, we MUST bind to ensure the checksum matches the actual source.
         // Computed once and reused for every send socket we build (including the
-        // per-probe sockets created in the loop on macOS).
+        // per-probe sockets created in the loop on per_probe_send platforms).
         let src_ip = self
             .config
             .source_ip
             .unwrap_or_else(|| get_local_addr_with_interface(self.target, self.interface.as_ref()));
 
-        // Shared send socket. On macOS the per-TTL probes are sent from fresh sockets
-        // created inside the loop (see issue #12 and `build_send_socket`); this shared
-        // socket still serves the single PMTUD probe and, on Linux, Echo Reply polling.
+        // Shared send socket. On per_probe_send platforms (macOS/FreeBSD/NetBSD) the
+        // per-TTL probes are sent from fresh sockets created inside the loop (see issue #12
+        // and `build_send_socket`); this shared socket still serves the single PMTUD probe
+        // and, on Linux, Echo Reply polling.
         let socket_info = self.build_send_socket(ipv6, src_ip)?;
         let socket = socket_info.socket;
         #[cfg(target_os = "linux")]
@@ -303,7 +292,7 @@ impl ProbeEngine {
                         // but this prevented detecting hops that recover from rate limiting
                         // and caused sent counters to freeze on non-responding hops.
 
-                        // macOS: send each probe from a fresh socket to avoid the async-sendto
+                        // per_probe_send (macOS/FreeBSD/NetBSD): fresh socket per probe to avoid the async-sendto
                         // TTL batching race (issue #12). A shared DGRAM socket stamps queued
                         // datagrams with whatever TTL it holds at drain time, so rapid sends all
                         // pick up the last TTL set and the trace collapses to one hop. One socket
@@ -311,7 +300,7 @@ impl ProbeEngine {
                         // Correlation is unaffected: macOS already rewrites the ICMP identifier on
                         // DGRAM sockets, and the receiver matches on the sequence / payload-embedded
                         // id rather than that identifier (see correlate.rs payload fallback).
-                        #[cfg(target_os = "macos")]
+                        #[cfg(per_probe_send)]
                         let probe_socket = match self.build_send_socket(ipv6, src_ip) {
                             Ok(info) => info.socket,
                             Err(e) => {
@@ -319,9 +308,9 @@ impl ProbeEngine {
                                 continue;
                             }
                         };
-                        #[cfg(target_os = "macos")]
+                        #[cfg(per_probe_send)]
                         let send_sock = &probe_socket;
-                        #[cfg(not(target_os = "macos"))]
+                        #[cfg(not(per_probe_send))]
                         let send_sock = &socket;
 
                         let probe_id = ProbeId::new(ttl, seq);
@@ -446,10 +435,11 @@ impl ProbeEngine {
         };
 
         // Create sockets for each flow (Paris/Dublin multi-flow support); each is bound to
-        // a distinct source port for flow identification. On macOS the per-flow sockets are
-        // instead created per-probe inside the loop (issue #12 — the async-sendto TTL race),
+        // a distinct source port for flow identification. On per_probe_send platforms the
+        // per-flow sockets are instead created per-probe inside the loop (issue #12 — the
+        // async-sendto TTL race),
         // so this shared Vec is only built on other platforms.
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(per_probe_send))]
         let sockets = {
             let mut sockets = Vec::with_capacity(num_flows as usize);
             for flow_id in 0..num_flows {
@@ -459,11 +449,11 @@ impl ProbeEngine {
             sockets
         };
 
-        // macOS sends each probe from a fresh socket inside the loop (issue #12). Validate
+        // per_probe_send platforms send each probe from a fresh socket in the loop (issue #12). Validate
         // socket creation/binding for every flow up front with `?` so a misconfigured
         // --source-ip, interface, or port fails fast here instead of spinning silently in
         // the probe loop (the loop logs+continues on error to tolerate transient failures).
-        #[cfg(target_os = "macos")]
+        #[cfg(per_probe_send)]
         for flow_id in 0..num_flows {
             let src_port = self.config.src_port_base + (flow_id as u16);
             self.build_udp_send_socket(ipv6, src_port, source_ip)?;
@@ -509,16 +499,16 @@ impl ProbeEngine {
                     for flow_id in 0..num_flows {
                         let src_port = self.config.src_port_base + (flow_id as u16);
 
-                        // Non-macOS: reuse this flow's shared socket created above.
-                        #[cfg(not(target_os = "macos"))]
+                        // Linux: reuse this flow's shared socket created above.
+                        #[cfg(not(per_probe_send))]
                         let flow_socket = &sockets[flow_id as usize];
 
                         for ttl in 1..=max_probe_ttl {
                             // Always probe all TTLs up to destination (see ICMP loop comment)
 
-                            // macOS: fresh socket per probe (issue #12), re-bound to this
+                            // per_probe_send (macOS/FreeBSD/NetBSD): fresh socket per probe (issue #12), re-bound to this
                             // flow's source port so flow ID / NAT detection still work.
-                            #[cfg(target_os = "macos")]
+                            #[cfg(per_probe_send)]
                             let probe_socket =
                                 match self.build_udp_send_socket(ipv6, src_port, source_ip) {
                                     Ok(s) => s,
@@ -530,9 +520,9 @@ impl ProbeEngine {
                                         continue;
                                     }
                                 };
-                            #[cfg(target_os = "macos")]
+                            #[cfg(per_probe_send)]
                             let send_sock = &probe_socket;
-                            #[cfg(not(target_os = "macos"))]
+                            #[cfg(not(per_probe_send))]
                             let send_sock = flow_socket;
 
                             let probe_id = ProbeId::new(ttl, seq);
@@ -614,17 +604,17 @@ impl ProbeEngine {
 
         let ipv6 = self.target.is_ipv6();
 
-        // Shared raw socket reused on non-macOS. On macOS each probe is sent from a fresh
+        // Shared raw socket reused on Linux. On per_probe_send platforms each probe uses a fresh
         // socket created inside the loop (issue #12 — the async-sendto TTL race). The TCP
         // source port is carried in the crafted SYN, not a socket bind, so nothing
         // flow-specific is lost by recreating the socket.
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(per_probe_send))]
         let socket = self.build_tcp_send_socket(ipv6)?;
 
-        // macOS sends each probe from a fresh socket inside the loop (issue #12). Validate
+        // per_probe_send platforms send each probe from a fresh socket in the loop (issue #12). Validate
         // socket creation/binding up front with `?` so a misconfigured --source-ip or
         // interface fails fast here instead of spinning silently in the probe loop.
-        #[cfg(target_os = "macos")]
+        #[cfg(per_probe_send)]
         self.build_tcp_send_socket(ipv6)?;
 
         let num_flows = self.config.flows;
@@ -679,8 +669,8 @@ impl ProbeEngine {
                         for ttl in 1..=max_probe_ttl {
                             // Always probe all TTLs up to destination (see ICMP loop comment)
 
-                            // macOS: fresh socket per probe (issue #12).
-                            #[cfg(target_os = "macos")]
+                            // per_probe_send (macOS/FreeBSD/NetBSD): fresh socket per probe (issue #12).
+                            #[cfg(per_probe_send)]
                             let probe_socket = match self.build_tcp_send_socket(ipv6) {
                                 Ok(s) => s,
                                 Err(e) => {
@@ -691,9 +681,9 @@ impl ProbeEngine {
                                     continue;
                                 }
                             };
-                            #[cfg(target_os = "macos")]
+                            #[cfg(per_probe_send)]
                             let send_sock = &probe_socket;
-                            #[cfg(not(target_os = "macos"))]
+                            #[cfg(not(per_probe_send))]
                             let send_sock = &socket;
 
                             let probe_id = ProbeId::new(ttl, seq);
@@ -804,15 +794,6 @@ impl ProbeEngine {
         }
     }
 
-    /// Apply only the user-configured `--rate` delay, with no platform floor. Used by the
-    /// IPv4 IP_HDRINCL loops, which have no `setsockopt(IP_TTL)` race for the macOS/BSD
-    /// floor in [`Self::apply_rate_limit`] to mask.
-    async fn apply_rate_limit_explicit(&self) {
-        if let Some(delay) = self.rate_delay() {
-            tokio::time::sleep(delay).await;
-        }
-    }
-
     /// The ToS/DSCP byte to stamp into the IPv4 header (DSCP in the upper 6 bits).
     fn ipv4_tos(&self) -> u8 {
         self.config
@@ -902,7 +883,7 @@ impl ProbeEngine {
                             }
                         }
 
-                        self.apply_rate_limit_explicit().await;
+                        self.apply_rate_limit().await;
                     }
 
                     // PMTUD: extra DF probe at the destination TTL with the current size.
@@ -913,7 +894,7 @@ impl ProbeEngine {
                             .await
                     {
                         pmtud_seq = pmtud_seq.wrapping_add(1);
-                        self.apply_rate_limit_explicit().await;
+                        self.apply_rate_limit().await;
                     }
 
                     seq = seq.wrapping_add(1);
@@ -1017,7 +998,7 @@ impl ProbeEngine {
                                 }
                             }
 
-                            self.apply_rate_limit_explicit().await;
+                            self.apply_rate_limit().await;
                         }
                     }
 
@@ -1127,7 +1108,7 @@ impl ProbeEngine {
                                 }
                             }
 
-                            self.apply_rate_limit_explicit().await;
+                            self.apply_rate_limit().await;
                         }
                     }
 
