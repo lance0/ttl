@@ -1,12 +1,16 @@
 use anyhow::Result;
 use parking_lot::RwLock;
 use socket2::Socket;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{Config, ProbeProtocol};
+use crate::probe::rawip::{
+    IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, IPV4_HEADER_SIZE, build_ipv4_packet,
+    build_udp_datagram, create_raw_hdrincl_socket_with_interface, send_raw_ipv4,
+};
 use crate::probe::{
     DEFAULT_PAYLOAD_SIZE, DEFAULT_UDP_PAYLOAD, ICMP_HEADER_SIZE, InterfaceInfo, SocketInfo,
     TCP_HEADER_SIZE, bind_to_source_ip, build_echo_request, build_tcp_syn_sized,
@@ -224,6 +228,13 @@ impl ProbeEngine {
 
     /// Run ICMP probing mode
     async fn run_icmp(self) -> Result<()> {
+        // IPv4 uses the unified IP_HDRINCL send path (TTL written into the IP header;
+        // see issue #12 and the rawip module). IPv6 has no IPv4-style IP_HDRINCL and
+        // continues below with the per-probe-socket path.
+        if !self.target.is_ipv6() {
+            return self.run_icmp_hdrincl().await;
+        }
+
         let ipv6 = self.target.is_ipv6();
 
         // Determine source IP for socket binding and IPv6 checksum.
@@ -416,6 +427,12 @@ impl ProbeEngine {
 
     /// Run UDP probing mode
     async fn run_udp(self) -> Result<()> {
+        // IPv4 uses the unified IP_HDRINCL send path (see issue #12 and the rawip
+        // module). IPv6 continues below with the per-flow-socket path.
+        if !self.target.is_ipv6() {
+            return self.run_udp_hdrincl().await;
+        }
+
         let ipv6 = self.target.is_ipv6();
         let num_flows = self.config.flows;
 
@@ -590,6 +607,12 @@ impl ProbeEngine {
 
     /// Run TCP SYN probing mode
     async fn run_tcp(self) -> Result<()> {
+        // IPv4 uses the unified IP_HDRINCL send path (see issue #12 and the rawip
+        // module). IPv6 continues below with the shared raw-socket path.
+        if !self.target.is_ipv6() {
+            return self.run_tcp_hdrincl().await;
+        }
+
         let ipv6 = self.target.is_ipv6();
 
         // Shared raw socket reused on non-macOS. On macOS each probe is sent from a fresh
@@ -731,6 +754,355 @@ impl ProbeEngine {
                             }
 
                             // Apply rate limiting if configured
+                            self.apply_rate_limit().await;
+                        }
+                    }
+
+                    seq = seq.wrapping_add(1);
+                    rounds_completed += 1;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // IPv4 unified send path (IP_HDRINCL)
+    //
+    // For IPv4 the TTL is written directly into a hand-built IP header and sent via
+    // one raw IP_HDRINCL socket, instead of setsockopt(IP_TTL) before an asynchronous
+    // sendto. That removes the stale-TTL race (issue #12) by construction, uniformly
+    // across platforms, and needs no per-probe socket churn or inter-probe delay.
+    // IPv6 has no IPv4-style IP_HDRINCL and keeps the per-probe-socket path above.
+    // =========================================================================
+
+    /// Resolve the IPv4 source address for this trace (for the IP header and the
+    /// transport-layer checksums). Falls back to UNSPECIFIED, which lets the kernel
+    /// fill the header source but yields incorrect UDP/TCP checksums — in practice
+    /// the routing lookup returns a real local address.
+    fn ipv4_src(&self) -> Ipv4Addr {
+        let src_ip = self
+            .config
+            .source_ip
+            .unwrap_or_else(|| get_local_addr_with_interface(self.target, self.interface.as_ref()));
+        match src_ip {
+            IpAddr::V4(s) => s,
+            IpAddr::V6(_) => Ipv4Addr::UNSPECIFIED,
+        }
+    }
+
+    /// The ToS/DSCP byte to stamp into the IPv4 header (DSCP in the upper 6 bits).
+    fn ipv4_tos(&self) -> u8 {
+        self.config
+            .dscp
+            .map(|d| ((d as u32) << 2) as u8)
+            .unwrap_or(0)
+    }
+
+    /// IPv4 ICMP probing via a single raw IP_HDRINCL socket (issue #12).
+    async fn run_icmp_hdrincl(self) -> Result<()> {
+        let IpAddr::V4(dst) = self.target else {
+            unreachable!("run_icmp_hdrincl is IPv4-only");
+        };
+        let src = self.ipv4_src();
+        let tos = self.ipv4_tos();
+        let socket = create_raw_hdrincl_socket_with_interface(self.interface.as_ref())?;
+
+        let mut seq: u8 = 0;
+        let mut pmtud_seq: u8 = 0;
+        let mut rounds_completed: u64 = 0;
+        let mut interval = tokio::time::interval(self.config.interval);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = self.cancel.cancelled() => break,
+                _ = interval.tick() => {
+                    {
+                        let state = self.state.read();
+                        if state.paused {
+                            continue;
+                        }
+                    }
+
+                    if let Some(count) = self.config.count
+                        && rounds_completed >= count
+                    {
+                        self.cancel.cancel();
+                        break;
+                    }
+
+                    let max_probe_ttl = {
+                        let state = self.state.read();
+                        state.dest_ttl.unwrap_or(self.config.max_ttl)
+                    };
+
+                    for ttl in 1..=max_probe_ttl {
+                        let probe_id = ProbeId::new(ttl, seq);
+
+                        // packet_size includes the IPv4 + ICMP headers.
+                        let payload_size = self
+                            .config
+                            .packet_size
+                            .map(|s| (s as usize).saturating_sub(IPV4_HEADER_SIZE + ICMP_HEADER_SIZE))
+                            .unwrap_or(DEFAULT_PAYLOAD_SIZE);
+
+                        let icmp =
+                            build_echo_request(self.identifier, probe_id.to_sequence(), payload_size, false, None);
+                        let packet = build_ipv4_packet(src, dst, IPPROTO_ICMP, ttl, tos, false, &icmp);
+
+                        let sent_at = Instant::now();
+                        let flow_id = 0u8;
+                        {
+                            let mut pending = self.pending.write();
+                            pending.insert((probe_id, flow_id, self.target, false), PendingProbe {
+                                sent_at,
+                                target: self.target,
+                                flow_id,
+                                original_src_port: None,
+                                packet_size: None,
+                            });
+                        }
+
+                        if let Err(e) = send_raw_ipv4(&socket, &packet, dst) {
+                            self.pending.write().remove(&(probe_id, flow_id, self.target, false));
+                            eprintln!("Failed to send probe TTL {}: {}", ttl, e);
+                            continue;
+                        }
+
+                        {
+                            let mut state = self.state.write();
+                            state.total_sent += 1;
+                            if let Some(hop) = state.hop_mut(ttl) {
+                                hop.record_sent();
+                                hop.record_flow_sent(flow_id);
+                            }
+                        }
+
+                        self.apply_rate_limit().await;
+                    }
+
+                    // PMTUD: extra DF probe at the destination TTL with the current size.
+                    if let Some(dest_ttl) = self.check_pmtud_ready()
+                        && let Some(probe_size) = self.get_pmtud_probe_size()
+                        && self
+                            .send_pmtud_probe_icmp_hdrincl(&socket, src, dst, tos, dest_ttl, probe_size, pmtud_seq)
+                            .await
+                    {
+                        pmtud_seq = pmtud_seq.wrapping_add(1);
+                        self.apply_rate_limit().await;
+                    }
+
+                    seq = seq.wrapping_add(1);
+                    rounds_completed += 1;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// IPv4 UDP probing via IP_HDRINCL. Builds the full UDP datagram (the kernel does
+    /// not for HDRINCL packets) and wraps it in a hand-built IP header.
+    async fn run_udp_hdrincl(self) -> Result<()> {
+        let IpAddr::V4(dst) = self.target else {
+            unreachable!("run_udp_hdrincl is IPv4-only");
+        };
+        let src = self.ipv4_src();
+        let tos = self.ipv4_tos();
+        let num_flows = self.config.flows;
+        let base_port = self.config.port.unwrap_or(33434);
+        let socket = create_raw_hdrincl_socket_with_interface(self.interface.as_ref())?;
+
+        let mut seq: u8 = 0;
+        let mut rounds_completed: u64 = 0;
+        let mut interval = tokio::time::interval(self.config.interval);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = self.cancel.cancelled() => break,
+                _ = interval.tick() => {
+                    {
+                        let state = self.state.read();
+                        if state.paused {
+                            continue;
+                        }
+                    }
+
+                    if let Some(count) = self.config.count
+                        && rounds_completed >= count
+                    {
+                        self.cancel.cancel();
+                        break;
+                    }
+
+                    let max_probe_ttl = {
+                        let state = self.state.read();
+                        state.dest_ttl.unwrap_or(self.config.max_ttl)
+                    };
+
+                    for flow_id in 0..num_flows {
+                        let src_port = self.config.src_port_base + (flow_id as u16);
+
+                        for ttl in 1..=max_probe_ttl {
+                            let probe_id = ProbeId::new(ttl, seq);
+
+                            // packet_size includes the IPv4 + UDP headers.
+                            const UDP_HEADER_SIZE: usize = 8;
+                            let payload_size = self
+                                .config
+                                .packet_size
+                                .map(|s| (s as usize).saturating_sub(IPV4_HEADER_SIZE + UDP_HEADER_SIZE))
+                                .unwrap_or(DEFAULT_UDP_PAYLOAD);
+                            let payload = build_udp_payload_sized(probe_id, payload_size);
+
+                            let dst_port = if self.config.port_fixed {
+                                base_port
+                            } else {
+                                base_port + (ttl as u16)
+                            };
+
+                            let udp = build_udp_datagram(src, dst, src_port, dst_port, &payload);
+                            let packet = build_ipv4_packet(src, dst, IPPROTO_UDP, ttl, tos, false, &udp);
+
+                            let sent_at = Instant::now();
+                            {
+                                let mut pending = self.pending.write();
+                                pending.insert((probe_id, flow_id, self.target, false), PendingProbe {
+                                    sent_at,
+                                    target: self.target,
+                                    flow_id,
+                                    original_src_port: Some(src_port),
+                                    packet_size: None,
+                                });
+                            }
+
+                            if let Err(e) = send_raw_ipv4(&socket, &packet, dst) {
+                                self.pending.write().remove(&(probe_id, flow_id, self.target, false));
+                                eprintln!("Failed to send UDP probe TTL {} flow {}: {}", ttl, flow_id, e);
+                                continue;
+                            }
+
+                            {
+                                let mut state = self.state.write();
+                                state.total_sent += 1;
+                                if let Some(hop) = state.hop_mut(ttl) {
+                                    hop.record_sent();
+                                    hop.record_flow_sent(flow_id);
+                                }
+                            }
+
+                            self.apply_rate_limit().await;
+                        }
+                    }
+
+                    seq = seq.wrapping_add(1);
+                    rounds_completed += 1;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// IPv4 TCP SYN probing via IP_HDRINCL. The TCP segment (with its checksum) is
+    /// built as today; only the IP header is now hand-built so the TTL rides in it.
+    async fn run_tcp_hdrincl(self) -> Result<()> {
+        let IpAddr::V4(dst) = self.target else {
+            unreachable!("run_tcp_hdrincl is IPv4-only");
+        };
+        let src = self.ipv4_src();
+        let tos = self.ipv4_tos();
+        let num_flows = self.config.flows;
+        let base_port = self.config.port.unwrap_or(80);
+        let socket = create_raw_hdrincl_socket_with_interface(self.interface.as_ref())?;
+
+        let mut seq: u8 = 0;
+        let mut rounds_completed: u64 = 0;
+        let mut interval = tokio::time::interval(self.config.interval);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = self.cancel.cancelled() => break,
+                _ = interval.tick() => {
+                    {
+                        let state = self.state.read();
+                        if state.paused {
+                            continue;
+                        }
+                    }
+
+                    if let Some(count) = self.config.count
+                        && rounds_completed >= count
+                    {
+                        self.cancel.cancel();
+                        break;
+                    }
+
+                    let max_probe_ttl = {
+                        let state = self.state.read();
+                        state.dest_ttl.unwrap_or(self.config.max_ttl)
+                    };
+
+                    for flow_id in 0..num_flows {
+                        let src_port = self.config.src_port_base + (flow_id as u16);
+
+                        for ttl in 1..=max_probe_ttl {
+                            let probe_id = ProbeId::new(ttl, seq);
+
+                            let dst_port = if self.config.port_fixed {
+                                base_port
+                            } else {
+                                base_port + (ttl as u16)
+                            };
+
+                            // packet_size includes the IPv4 + TCP headers.
+                            let payload_size = self
+                                .config
+                                .packet_size
+                                .map(|s| (s as usize).saturating_sub(IPV4_HEADER_SIZE + TCP_HEADER_SIZE))
+                                .unwrap_or(0);
+
+                            let tcp = build_tcp_syn_sized(
+                                probe_id,
+                                src_port,
+                                dst_port,
+                                IpAddr::V4(src),
+                                self.target,
+                                payload_size,
+                            );
+                            let packet = build_ipv4_packet(src, dst, IPPROTO_TCP, ttl, tos, false, &tcp);
+
+                            let sent_at = Instant::now();
+                            {
+                                let mut pending = self.pending.write();
+                                pending.insert((probe_id, flow_id, self.target, false), PendingProbe {
+                                    sent_at,
+                                    target: self.target,
+                                    flow_id,
+                                    original_src_port: Some(src_port),
+                                    packet_size: None,
+                                });
+                            }
+
+                            if let Err(e) = send_raw_ipv4(&socket, &packet, dst) {
+                                self.pending.write().remove(&(probe_id, flow_id, self.target, false));
+                                eprintln!("Failed to send TCP probe TTL {} flow {}: {}", ttl, flow_id, e);
+                                continue;
+                            }
+
+                            {
+                                let mut state = self.state.write();
+                                state.total_sent += 1;
+                                if let Some(hop) = state.hop_mut(ttl) {
+                                    hop.record_sent();
+                                    hop.record_flow_sent(flow_id);
+                                }
+                            }
+
                             self.apply_rate_limit().await;
                         }
                     }
@@ -902,6 +1274,87 @@ impl ProbeEngine {
                         pmtud.successes = 0;
                         pmtud.failures = 0;
                         // Recalculate current size
+                        if pmtud.is_converged() {
+                            pmtud.discovered_mtu = Some(pmtud.min_size);
+                            pmtud.phase = PmtudPhase::Complete;
+                        } else {
+                            pmtud.current_size = pmtud.next_probe_size();
+                        }
+                    }
+                    return false;
+                }
+
+                eprintln!("PMTUD: Failed to send probe size {}: {}", packet_size, e);
+                false
+            }
+        }
+    }
+
+    /// IPv4 PMTUD probe via IP_HDRINCL: an ICMP echo at `dest_ttl` sized to
+    /// `packet_size` with the Don't Fragment bit set in the hand-built IP header.
+    /// Returns true if the probe was sent. Setting DF in the header also means IPv4
+    /// PMTUD now works on NetBSD (which lacks the IP_DONTFRAG socket option).
+    #[allow(clippy::too_many_arguments)]
+    async fn send_pmtud_probe_icmp_hdrincl(
+        &self,
+        socket: &Socket,
+        src: Ipv4Addr,
+        dst: Ipv4Addr,
+        tos: u8,
+        dest_ttl: u8,
+        packet_size: u16,
+        seq: u8,
+    ) -> bool {
+        let probe_id = ProbeId::new(dest_ttl, seq);
+        let payload_size =
+            (packet_size as usize).saturating_sub(IPV4_HEADER_SIZE + ICMP_HEADER_SIZE);
+
+        let icmp = build_echo_request(
+            self.identifier,
+            probe_id.to_sequence(),
+            payload_size,
+            false,
+            None,
+        );
+        // Don't Fragment set in the IP header so routers return Frag Needed.
+        let packet = build_ipv4_packet(src, dst, IPPROTO_ICMP, dest_ttl, tos, true, &icmp);
+
+        let sent_at = Instant::now();
+        let flow_id = 0u8;
+        {
+            let mut pending = self.pending.write();
+            pending.insert(
+                (probe_id, flow_id, self.target, true),
+                PendingProbe {
+                    sent_at,
+                    target: self.target,
+                    flow_id,
+                    original_src_port: None,
+                    packet_size: Some(packet_size),
+                },
+            );
+        }
+
+        match send_raw_ipv4(socket, &packet, dst) {
+            Ok(_) => {
+                let mut state = self.state.write();
+                state.total_sent += 1;
+                true
+            }
+            Err(e) => {
+                self.pending
+                    .write()
+                    .remove(&(probe_id, flow_id, self.target, true));
+
+                // EMSGSIZE: packet too large for the local interface; clamp PMTUD max.
+                if let Some(io_err) = e.downcast_ref::<std::io::Error>()
+                    && io_err.raw_os_error() == Some(libc::EMSGSIZE)
+                {
+                    let mut state = self.state.write();
+                    if let Some(ref mut pmtud) = state.pmtud {
+                        pmtud.max_size = packet_size.saturating_sub(1);
+                        pmtud.successes = 0;
+                        pmtud.failures = 0;
                         if pmtud.is_converged() {
                             pmtud.discovered_mtu = Some(pmtud.min_size);
                             pmtud.phase = PmtudPhase::Complete;

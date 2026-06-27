@@ -1,6 +1,7 @@
 pub mod correlate;
 pub mod icmp;
 pub mod interface;
+pub mod rawip;
 pub mod socket;
 pub mod tcp;
 pub mod udp;
