@@ -508,6 +508,7 @@ mod tests {
                 Ok(n) => n,
                 Err(_) => break, // timeout
             };
+            // SAFETY: recv() initializes the first `n` bytes of buf.
             let data: &[u8] = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, n) };
             if data.len() < IPV4_HEADER_SIZE + 8 || data[0] >> 4 != 4 {
                 continue;

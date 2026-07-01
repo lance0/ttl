@@ -486,8 +486,12 @@ pub fn recv_icmp_with_ttl(socket: &Socket, buffer: &mut [u8], ipv6: bool) -> Res
         iov_len: buffer.len(),
     };
 
-    // Allocate control message buffer (for TTL)
-    let mut cmsg_buf = [0u8; 64];
+    // Allocate control message buffer (for TTL).
+    // cmsghdr requires alignment: 8-byte on Linux/FreeBSD, 4-byte on macOS/NetBSD.
+    // Using #[repr(align(8))] ensures the buffer is suitably aligned on all platforms.
+    #[repr(align(8))]
+    struct AlignedBuf([u8; 64]);
+    let mut cmsg_buf = AlignedBuf([0u8; 64]);
 
     // Source address storage
     let mut src_storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
@@ -498,9 +502,9 @@ pub fn recv_icmp_with_ttl(socket: &Socket, buffer: &mut [u8], ipv6: bool) -> Res
     msg.msg_namelen = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
     msg.msg_iov = &mut iov;
     msg.msg_iovlen = 1;
-    msg.msg_control = cmsg_buf.as_mut_ptr() as *mut libc::c_void;
+    msg.msg_control = cmsg_buf.0.as_mut_ptr() as *mut libc::c_void;
     // msg_controllen type differs: usize on Linux, u32 on macOS
-    msg.msg_controllen = cmsg_buf.len() as _;
+    msg.msg_controllen = cmsg_buf.0.len() as _;
 
     // Receive the packet
     let len = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut msg, 0) };
@@ -557,26 +561,34 @@ fn extract_ttl_from_cmsg(msg: &libc::msghdr, ipv6: bool) -> Option<u8> {
     // IPV6_HOPLIMIT: use libc where available, define locally for NetBSD
     #[cfg(not(target_os = "netbsd"))]
     let ipv6_hoplimit = libc::IPV6_HOPLIMIT;
-    #[cfg(target_os = "netbsd")]
-    let ipv6_hoplimit: libc::c_int = 47;
-
     unsafe {
         let mut cmsg = libc::CMSG_FIRSTHDR(msg);
         while !cmsg.is_null() {
-            let hdr = &*cmsg;
+            // Read header fields with read_unaligned — CMSG pointers may not be
+            // suitably aligned for a direct reference on all platforms.
+            let cmsg_level = std::ptr::addr_of!((*cmsg).cmsg_level).read_unaligned();
+            let cmsg_type = std::ptr::addr_of!((*cmsg).cmsg_type).read_unaligned();
+            let cmsg_len = std::ptr::addr_of!((*cmsg).cmsg_len).read_unaligned();
+
+            // Validate cmsg_len is large enough to hold the TTL/hop-limit integer
+            let min_len = libc::CMSG_LEN(std::mem::size_of::<libc::c_int>() as u32) as usize;
+            if cmsg_len < min_len {
+                cmsg = libc::CMSG_NXTHDR(msg, cmsg);
+                continue;
+            }
 
             if ipv6 {
                 // IPV6_HOPLIMIT
-                if hdr.cmsg_level == libc::IPPROTO_IPV6 && hdr.cmsg_type == ipv6_hoplimit {
+                if cmsg_level == libc::IPPROTO_IPV6 && cmsg_type == ipv6_hoplimit {
                     let data_ptr = libc::CMSG_DATA(cmsg);
-                    let ttl = *(data_ptr as *const i32);
+                    let ttl = std::ptr::read_unaligned(data_ptr as *const i32);
                     return Some(ttl as u8);
                 }
             } else {
                 // IP_TTL - check platform-specific type(s)
-                if hdr.cmsg_level == libc::IPPROTO_IP && is_ip_ttl_type(hdr.cmsg_type) {
+                if cmsg_level == libc::IPPROTO_IP && is_ip_ttl_type(cmsg_type) {
                     let data_ptr = libc::CMSG_DATA(cmsg);
-                    let ttl = *(data_ptr as *const i32);
+                    let ttl = std::ptr::read_unaligned(data_ptr as *const i32);
                     return Some(ttl as u8);
                 }
             }
