@@ -114,11 +114,20 @@ impl Receiver {
         is_pmtud_response: bool,
     ) -> Option<PendingProbe> {
         if let Some(flow_id) = flow_hint {
-            if let Some(probe) = pending.remove(&(probe_id, flow_id, target, false)) {
-                return Some(probe);
-            }
-            if let Some(probe) = pending.remove(&(probe_id, flow_id, target, true)) {
-                return Some(probe);
+            if is_pmtud_response {
+                if let Some(probe) = pending.remove(&(probe_id, flow_id, target, true)) {
+                    return Some(probe);
+                }
+                if let Some(probe) = pending.remove(&(probe_id, flow_id, target, false)) {
+                    return Some(probe);
+                }
+            } else {
+                if let Some(probe) = pending.remove(&(probe_id, flow_id, target, false)) {
+                    return Some(probe);
+                }
+                if let Some(probe) = pending.remove(&(probe_id, flow_id, target, true)) {
+                    return Some(probe);
+                }
             }
             return None;
         }
@@ -695,5 +704,40 @@ mod tests {
             Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, None, false);
         assert!(removed.is_none());
         assert_eq!(pending.len(), 3);
+    }
+
+    #[test]
+    fn test_remove_pending_explicit_flow_pmtud_response_prefers_pmtud() {
+        let probe_id = ProbeId::new(4, 11);
+        let target = IpAddr::V4(std::net::Ipv4Addr::new(8, 8, 4, 4));
+        let mut pending: HashMap<(ProbeId, u8, IpAddr, bool), PendingProbe> = HashMap::new();
+
+        pending.insert(
+            (probe_id, 0, target, false),
+            PendingProbe {
+                sent_at: Instant::now(),
+                target,
+                flow_id: 0,
+                original_src_port: None,
+                packet_size: None,
+            },
+        );
+        pending.insert(
+            (probe_id, 0, target, true),
+            PendingProbe {
+                sent_at: Instant::now(),
+                target,
+                flow_id: 0,
+                original_src_port: None,
+                packet_size: Some(1400),
+            },
+        );
+
+        let removed =
+            Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, Some(0), true);
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().packet_size, Some(1400));
+        assert!(pending.contains_key(&(probe_id, 0, target, false)));
+        assert!(!pending.contains_key(&(probe_id, 0, target, true)));
     }
 }
