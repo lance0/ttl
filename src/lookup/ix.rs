@@ -21,6 +21,8 @@ use super::sanitize_display;
 use crate::state::IxInfo;
 use crate::trace::receiver::SessionMap;
 
+static CACHE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn rename_cache_file(temp: &Path, dest: &Path) -> Result<()> {
     #[cfg(windows)]
     {
@@ -457,7 +459,12 @@ impl IxLookup {
             .cache_path
             .parent()
             .ok_or_else(|| anyhow!("cache path has no parent directory"))?;
-        let temp = parent.join(format!(".peeringdb_cache.{}.tmp", std::process::id()));
+        let nonce = CACHE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let temp = parent.join(format!(
+            ".peeringdb_cache.{}.{}.tmp",
+            std::process::id(),
+            nonce
+        ));
         fs::write(&temp, &data)?;
 
         let result = rename_cache_file(&temp, &self.cache_path);
@@ -656,8 +663,8 @@ impl IxLookup {
         let this = Arc::clone(self);
         tokio::spawn(async move {
             // RAII guard ensures refreshing is reset even if the task panics
-            let _guard = scopeguard::guard((), |_| {
-                this.refreshing.store(false, Ordering::SeqCst);
+            let _guard = scopeguard::guard(Arc::clone(&this), |lookup| {
+                lookup.refreshing.store(false, Ordering::SeqCst);
             });
             let result = this.refresh_cache_inner().await;
             if let Err(_e) = result {
