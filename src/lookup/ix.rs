@@ -596,6 +596,11 @@ impl IxLookup {
     /// This spawns a background task to fetch fresh data from PeeringDB.
     /// The refreshing flag is set while the operation is in progress.
     pub fn refresh_cache(self: &Arc<Self>) {
+        if !self.try_begin_refresh() {
+            // Already refreshing
+            return;
+        }
+
         let this = Arc::clone(self);
         tokio::spawn(async move {
             // RAII guard ensures refreshing is reset even if the task panics
@@ -613,6 +618,10 @@ impl IxLookup {
                 this.last_failure.store(now, Ordering::Relaxed);
             }
         });
+    }
+
+    fn try_begin_refresh(&self) -> bool {
+        !self.refreshing.swap(true, Ordering::SeqCst)
     }
 
     /// Inner refresh logic
@@ -737,6 +746,34 @@ mod tests {
         table
             .lookup(ip.parse().unwrap())
             .map(|info| info.name.clone())
+    }
+
+    fn test_lookup() -> IxLookup {
+        IxLookup {
+            prefixes: RwLock::new(PrefixTable::new()),
+            cache_path: std::env::temp_dir()
+                .join(format!("ix_refresh_gate_{}.json", std::process::id())),
+            load_once: OnceCell::new(),
+            last_failure: AtomicU64::new(0),
+            ip_cache: RwLock::new(HashMap::new()),
+            ip_cache_ttl: Duration::from_secs(3600),
+            ip_cache_times: RwLock::new(HashMap::new()),
+            api_key: RwLock::new(None),
+            cache_fetched_at: AtomicU64::new(0),
+            refreshing: AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn test_try_begin_refresh_sets_flag_and_deduplicates() {
+        let lookup = test_lookup();
+
+        assert!(lookup.try_begin_refresh());
+        assert!(lookup.refreshing.load(Ordering::SeqCst));
+        assert!(!lookup.try_begin_refresh());
+
+        lookup.refreshing.store(false, Ordering::SeqCst);
+        assert!(lookup.try_begin_refresh());
     }
 
     #[test]
