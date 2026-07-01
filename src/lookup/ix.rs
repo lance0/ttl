@@ -28,9 +28,36 @@ fn rename_cache_file(temp: &Path, dest: &Path) -> Result<()> {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Windows rename does not replace existing destinations.
-                fs::remove_file(dest)?;
-                fs::rename(temp, dest)?;
-                Ok(())
+                let backup = dest.with_file_name(format!(
+                    ".{}.{}.bak",
+                    dest.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("ix_cache"),
+                    std::process::id()
+                ));
+                match fs::remove_file(&backup) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+
+                fs::rename(dest, &backup)?;
+                match fs::rename(temp, dest) {
+                    Ok(()) => {
+                        let _ = fs::remove_file(&backup);
+                        Ok(())
+                    }
+                    Err(replace_err) => {
+                        if let Err(restore_err) = fs::rename(&backup, dest) {
+                            return Err(anyhow!(
+                                "failed to replace cache file: {}; also failed to restore previous cache: {}",
+                                replace_err,
+                                restore_err
+                            ));
+                        }
+                        Err(replace_err.into())
+                    }
+                }
             }
             Err(e) => Err(e.into()),
         }
