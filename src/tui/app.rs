@@ -499,14 +499,15 @@ where
             break;
         }
 
-        // Targets can grow at runtime via the add-target modal
-        let num_targets = targets.len();
-
         // Clear old status messages
         ui_state.clear_old_status();
 
         // Poll for a pending add-target result (non-blocking)
         poll_add_target_result(ui_state, &mut targets);
+
+        // Targets can grow at runtime via the add-target modal.
+        // Compute count AFTER polling so newly added targets are reflected this tick.
+        let num_targets = targets.len();
 
         // Poll for update check result (non-blocking)
         // Drop receiver once we get any result (Some or None) or sender disconnects

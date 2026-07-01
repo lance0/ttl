@@ -42,35 +42,53 @@ impl SettingsState {
     /// Insert a character at the cursor position
     pub fn handle_char(&mut self, c: char) {
         self.api_key.insert(self.api_key_cursor, c);
-        self.api_key_cursor += 1;
+        self.api_key_cursor += c.len_utf8();
     }
 
     /// Delete the character before the cursor (backspace)
     pub fn handle_backspace(&mut self) {
         if self.api_key_cursor > 0 {
-            self.api_key_cursor -= 1;
-            self.api_key.remove(self.api_key_cursor);
+            // Find the start of the previous character boundary
+            let mut prev = self.api_key_cursor - 1;
+            while prev > 0 && !self.api_key.is_char_boundary(prev) {
+                prev -= 1;
+            }
+            self.api_key.remove(prev);
+            self.api_key_cursor = prev;
         }
     }
 
     /// Delete the character at the cursor position (delete key)
     pub fn handle_delete(&mut self) {
         if self.api_key_cursor < self.api_key.len() {
-            self.api_key.remove(self.api_key_cursor);
+            // Find the end of the current character
+            let mut next = self.api_key_cursor + 1;
+            while next < self.api_key.len() && !self.api_key.is_char_boundary(next) {
+                next += 1;
+            }
+            self.api_key.replace_range(self.api_key_cursor..next, "");
         }
     }
 
     /// Move cursor left
     pub fn move_cursor_left(&mut self) {
         if self.api_key_cursor > 0 {
-            self.api_key_cursor -= 1;
+            let mut prev = self.api_key_cursor - 1;
+            while prev > 0 && !self.api_key.is_char_boundary(prev) {
+                prev -= 1;
+            }
+            self.api_key_cursor = prev;
         }
     }
 
     /// Move cursor right
     pub fn move_cursor_right(&mut self) {
         if self.api_key_cursor < self.api_key.len() {
-            self.api_key_cursor += 1;
+            let mut next = self.api_key_cursor + 1;
+            while next < self.api_key.len() && !self.api_key.is_char_boundary(next) {
+                next += 1;
+            }
+            self.api_key_cursor = next;
         }
     }
 
@@ -93,7 +111,7 @@ impl SettingsState {
     pub fn move_down(&mut self, theme_count: usize) {
         if self.selected_section == 0 {
             // Theme section
-            if self.theme_index < theme_count - 1 {
+            if theme_count > 0 && self.theme_index + 1 < theme_count {
                 self.theme_index += 1;
                 // Adjust scroll if needed (show 5 themes at once)
                 let visible_themes = 5;
@@ -552,5 +570,61 @@ mod tests {
         assert_eq!(state.display_mode, DisplayMode::Auto);
         assert_eq!(state.api_key, "");
         assert_eq!(state.selected_section, 0);
+    }
+
+    #[test]
+    fn test_settings_state_multibyte_char_input() {
+        let mut state = SettingsState::new(0, DisplayMode::Auto, None);
+
+        // Insert a multi-byte character (é = 2 bytes)
+        state.handle_char('é');
+        assert_eq!(state.api_key, "é");
+        assert_eq!(state.api_key_cursor, 2); // byte offset, not char count
+
+        // Insert another multi-byte char
+        state.handle_char('ä');
+        assert_eq!(state.api_key, "éä");
+        assert_eq!(state.api_key_cursor, 4);
+
+        // Backspace removes the last char (2 bytes)
+        state.handle_backspace();
+        assert_eq!(state.api_key, "é");
+        assert_eq!(state.api_key_cursor, 2);
+
+        // Move cursor left to start
+        state.move_cursor_left();
+        assert_eq!(state.api_key_cursor, 0);
+
+        // Insert at beginning
+        state.handle_char('x');
+        assert_eq!(state.api_key, "xé");
+        assert_eq!(state.api_key_cursor, 1);
+    }
+
+    #[test]
+    fn test_settings_state_move_down_empty_themes() {
+        let mut state = SettingsState::new(0, DisplayMode::Auto, None);
+        state.selected_section = 0;
+
+        // Should not panic with theme_count == 0
+        state.move_down(0);
+        assert_eq!(state.theme_index, 0);
+    }
+
+    #[test]
+    fn test_settings_state_split_at_safe_with_multibyte() {
+        let mut state = SettingsState::new(0, DisplayMode::Auto, None);
+        state.handle_char('日');
+        state.handle_char('本');
+        state.handle_char('語');
+
+        // Move cursor to middle (after 本)
+        state.move_cursor_left(); // before 語
+        state.move_cursor_left(); // before 本
+
+        // split_at should not panic — cursor is on a char boundary
+        let (before, after) = state.api_key.split_at(state.api_key_cursor);
+        assert_eq!(before, "日");
+        assert_eq!(after, "本語");
     }
 }

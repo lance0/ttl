@@ -45,11 +45,11 @@ pub(crate) fn extract_target_infos(sessions: &SessionMap, targets: &[IpAddr]) ->
 
                 // Get loss % at destination
                 let loss = if let Some(dest_ttl) = session.dest_ttl {
-                    if let Some(hop) = session.hops.get(dest_ttl as usize - 1) {
-                        format!("{:.1}%", hop.loss_pct())
-                    } else {
-                        "--".to_string()
-                    }
+                    usize::from(dest_ttl)
+                        .checked_sub(1)
+                        .and_then(|idx| session.hops.get(idx))
+                        .map(|hop| format!("{:.1}%", hop.loss_pct()))
+                        .unwrap_or_else(|| "--".to_string())
                 } else {
                     "--".to_string()
                 };
@@ -127,9 +127,10 @@ impl Widget for TargetListView<'_> {
                 Style::default().fg(self.theme.text)
             };
 
-            // Truncate hostname to fit
-            let hostname_display = if info.hostname.len() > 18 {
-                format!("{}...", &info.hostname[..15])
+            // Truncate hostname to fit (by characters, not bytes — UTF-8 safe)
+            let hostname_display = if info.hostname.chars().count() > 18 {
+                let truncated: String = info.hostname.chars().take(15).collect();
+                format!("{truncated}...")
             } else {
                 info.hostname.clone()
             };
