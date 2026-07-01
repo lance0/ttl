@@ -73,7 +73,15 @@ impl Prefs {
                         Self::default()
                     }
                 },
-                Err(_) => Self::default(),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: could not read preferences at {}: {}",
+                        path.display(),
+                        e
+                    );
+                    Self::default()
+                }
             },
             None => Self::default(),
         }
@@ -92,6 +100,12 @@ impl Prefs {
                 use std::io::Write;
                 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
+                match fs::metadata(&path) {
+                    Ok(_) => fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+
                 let mut file = OpenOptions::new()
                     .write(true)
                     .create(true)
@@ -99,6 +113,7 @@ impl Prefs {
                     .mode(0o600)
                     .open(&path)?;
                 file.write_all(data.as_bytes())?;
+                file.sync_all()?;
 
                 // Enforce owner-only permissions for existing files too.
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
