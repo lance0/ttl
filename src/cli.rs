@@ -319,7 +319,6 @@ impl Args {
         }
         // Validate destination port + max_ttl doesn't overflow u16 (UDP/TCP modes)
         // The engine sends probes to ports base_port..base_port+max_ttl (unless --fixed-port)
-        let protocol = self.protocol.to_lowercase();
         let uses_port = matches!(protocol.as_str(), "udp" | "tcp")
             || (protocol == "auto" && self.port.is_some());
         if uses_port && !self.port_fixed {
