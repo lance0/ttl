@@ -1438,7 +1438,7 @@ impl ProbeEngine {
                     };
 
                     if let Some(probe) = probe_opt {
-                        let rtt = Instant::now().duration_since(probe.sent_at);
+                        let rtt = Instant::now().saturating_duration_since(probe.sent_at);
                         let is_pmtud_probe = probe.packet_size.is_some();
 
                         // Record response (sent counting already happened at send time)

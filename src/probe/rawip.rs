@@ -176,9 +176,14 @@ pub fn build_ipv4_packet(
     dont_fragment: bool,
     transport: &[u8],
 ) -> Vec<u8> {
-    let total_len = (IPV4_HEADER_SIZE + transport.len()) as u16;
+    let total_payload = IPV4_HEADER_SIZE + transport.len();
+    assert!(
+        total_payload <= u16::MAX as usize,
+        "IPv4 packet too large: {total_payload} bytes (max 65535)"
+    );
+    let total_len = total_payload as u16;
     let header = build_ipv4_header(src, dst, protocol, ttl, tos, total_len, 0, dont_fragment);
-    let mut packet = Vec::with_capacity(IPV4_HEADER_SIZE + transport.len());
+    let mut packet = Vec::with_capacity(total_payload);
     packet.extend_from_slice(&header);
     packet.extend_from_slice(transport);
     packet
@@ -387,6 +392,39 @@ mod tests {
                 HDRINCL_HOST_ORDER_LEN_OFF
             ),
             "total length"
+        );
+    }
+
+    #[test]
+    fn test_build_ipv4_packet_max_size() {
+        // Transport that fills exactly to u16::MAX
+        let max_transport = u16::MAX as usize - IPV4_HEADER_SIZE;
+        let transport = vec![0u8; max_transport];
+        let pkt = build_ipv4_packet(
+            Ipv4Addr::new(1, 2, 3, 4),
+            Ipv4Addr::new(5, 6, 7, 8),
+            IPPROTO_ICMP,
+            64,
+            0,
+            false,
+            &transport,
+        );
+        assert_eq!(pkt.len(), u16::MAX as usize);
+    }
+
+    #[test]
+    #[should_panic(expected = "IPv4 packet too large")]
+    fn test_build_ipv4_packet_oversized_panics() {
+        let oversized = u16::MAX as usize - IPV4_HEADER_SIZE + 1;
+        let transport = vec![0u8; oversized];
+        build_ipv4_packet(
+            Ipv4Addr::new(1, 2, 3, 4),
+            Ipv4Addr::new(5, 6, 7, 8),
+            IPPROTO_ICMP,
+            64,
+            0,
+            false,
+            &transport,
         );
     }
 

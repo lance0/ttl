@@ -135,7 +135,7 @@ impl IxCache {
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        now - self.fetched_at > Self::MAX_AGE_SECS
+        now.saturating_sub(self.fetched_at) > Self::MAX_AGE_SECS
     }
 }
 
@@ -365,7 +365,7 @@ impl IxLookup {
                 .unwrap_or_default()
                 .as_secs();
             let last_fail = self.last_failure.load(Ordering::Relaxed);
-            if last_fail > 0 && now - last_fail < LOAD_FAILURE_BACKOFF_SECS {
+            if last_fail > 0 && now.saturating_sub(last_fail) < LOAD_FAILURE_BACKOFF_SECS {
                 // Still in backoff period, skip loading
                 return None;
             }
@@ -632,7 +632,7 @@ impl IxLookup {
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            now - fetched_at > IxCache::MAX_AGE_SECS
+            now.saturating_sub(fetched_at) > IxCache::MAX_AGE_SECS
         } else {
             false
         };
@@ -924,6 +924,21 @@ mod tests {
             prefixes: vec![],
         };
         assert!(old.is_expired());
+    }
+
+    #[test]
+    fn test_ix_cache_future_fetched_at_does_not_panic() {
+        // fetched_at in the future should not panic (saturating_sub returns 0)
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let future = IxCache {
+            version: IxCache::VERSION,
+            fetched_at: now + 3600,
+            prefixes: vec![],
+        };
+        assert!(!future.is_expired());
     }
 
     #[test]

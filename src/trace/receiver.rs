@@ -258,7 +258,7 @@ impl Receiver {
                                 }
                             }
                             if let Some(probe) = found_probe {
-                                let rtt = Instant::now().duration_since(probe.sent_at);
+                                let rtt = Instant::now().saturating_duration_since(probe.sent_at);
 
                                 // Collect for batched state update
                                 batch.push(BatchedResponse {
@@ -463,7 +463,7 @@ impl Receiver {
 
                     // Key is (ProbeId, flow_id, target, is_pmtud) tuple
                     pending.retain(|key, probe| {
-                        if now.duration_since(probe.sent_at) > timeout {
+                        if now.saturating_duration_since(probe.sent_at) > timeout {
                             timed_out.push((*key, probe.clone()));
                             false
                         } else {
