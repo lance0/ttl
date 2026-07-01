@@ -6,7 +6,6 @@
 use anyhow::{Result, anyhow};
 use ipnetwork::IpNetwork;
 use parking_lot::RwLock;
-use scopeguard;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -409,8 +408,17 @@ impl IxLookup {
             .cache_path
             .parent()
             .ok_or_else(|| anyhow!("cache path has no parent directory"))?;
-        let temp = parent.join(".peeringdb_cache.tmp");
+        let temp = parent.join(format!(".peeringdb_cache.{}.tmp", std::process::id()));
         fs::write(&temp, &data)?;
+
+        // std::fs::rename does not overwrite existing files on Windows.
+        #[cfg(windows)]
+        match fs::remove_file(&self.cache_path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+
         fs::rename(&temp, &self.cache_path)?;
         Ok(())
     }

@@ -58,7 +58,7 @@ impl Prefs {
     }
 
     /// Load preferences from disk. Logs a warning on corrupt files instead of
-    /// silently resetting — the caller decides whether to surface it.
+    /// silently resetting.
     pub fn load() -> Self {
         match Self::path() {
             Some(path) => match fs::read_to_string(&path) {
@@ -86,13 +86,26 @@ impl Prefs {
                 fs::create_dir_all(parent)?;
             }
             let data = toml::to_string_pretty(self)?;
-            fs::write(&path, data)?;
-
-            // Restrict file permissions to owner-only (protect API keys)
             #[cfg(unix)]
             {
-                use std::os::unix::fs::PermissionsExt;
+                use std::fs::OpenOptions;
+                use std::io::Write;
+                use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&path)?;
+                file.write_all(data.as_bytes())?;
+
+                // Enforce owner-only permissions for existing files too.
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            }
+            #[cfg(not(unix))]
+            {
+                fs::write(&path, data)?;
             }
         }
         Ok(())

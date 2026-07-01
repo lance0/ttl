@@ -89,7 +89,7 @@ pub fn export_csv<W: Write>(session: &Session, mut writer: W) -> Result<()> {
     Ok(())
 }
 
-/// Escape a string for CSV (quote if contains comma, quote, or newline)
+/// Escape a string for CSV (quote if contains comma, quote, newline, or carriage return)
 fn escape_csv(s: &str) -> String {
     if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
         format!("\"{}\"", s.replace('"', "\"\""))
