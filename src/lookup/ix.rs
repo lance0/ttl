@@ -6,6 +6,7 @@
 use anyhow::{Result, anyhow};
 use ipnetwork::IpNetwork;
 use parking_lot::RwLock;
+use scopeguard;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -401,10 +402,16 @@ impl IxLookup {
         Ok(cache)
     }
 
-    /// Save cache to disk
+    /// Save cache to disk atomically (write to temp file, then rename)
     fn save_cache(&self, cache: &IxCache) -> Result<()> {
         let data = serde_json::to_string_pretty(cache)?;
-        fs::write(&self.cache_path, data)?;
+        let parent = self
+            .cache_path
+            .parent()
+            .ok_or_else(|| anyhow!("cache path has no parent directory"))?;
+        let temp = parent.join(".peeringdb_cache.tmp");
+        fs::write(&temp, &data)?;
+        fs::rename(&temp, &self.cache_path)?;
         Ok(())
     }
 
@@ -589,15 +596,13 @@ impl IxLookup {
     /// This spawns a background task to fetch fresh data from PeeringDB.
     /// The refreshing flag is set while the operation is in progress.
     pub fn refresh_cache(self: &Arc<Self>) {
-        if self.refreshing.swap(true, Ordering::SeqCst) {
-            // Already refreshing
-            return;
-        }
-
         let this = Arc::clone(self);
         tokio::spawn(async move {
+            // RAII guard ensures refreshing is reset even if the task panics
+            let _guard = scopeguard::guard((), |_| {
+                this.refreshing.store(false, Ordering::SeqCst);
+            });
             let result = this.refresh_cache_inner().await;
-            this.refreshing.store(false, Ordering::SeqCst);
             if let Err(_e) = result {
                 // Silent failure - IX detection is optional enrichment
                 // Store failure time for backoff

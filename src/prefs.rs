@@ -57,21 +57,43 @@ impl Prefs {
         dirs::config_dir().map(|p| p.join("ttl").join("config.toml"))
     }
 
-    /// Load preferences from disk (returns default if missing/invalid)
+    /// Load preferences from disk. Logs a warning on corrupt files instead of
+    /// silently resetting — the caller decides whether to surface it.
     pub fn load() -> Self {
-        Self::path()
-            .and_then(|p| fs::read_to_string(p).ok())
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+        match Self::path() {
+            Some(path) => match fs::read_to_string(&path) {
+                Ok(s) => match toml::from_str(&s) {
+                    Ok(prefs) => prefs,
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: could not parse preferences at {}: {}",
+                            path.display(),
+                            e
+                        );
+                        Self::default()
+                    }
+                },
+                Err(_) => Self::default(),
+            },
+            None => Self::default(),
+        }
     }
 
-    /// Save preferences to disk
+    /// Save preferences to disk with restrictive permissions (0600 on Unix).
     pub fn save(&self) -> anyhow::Result<()> {
         if let Some(path) = Self::path() {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            fs::write(path, toml::to_string_pretty(self)?)?;
+            let data = toml::to_string_pretty(self)?;
+            fs::write(&path, data)?;
+
+            // Restrict file permissions to owner-only (protect API keys)
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            }
         }
         Ok(())
     }

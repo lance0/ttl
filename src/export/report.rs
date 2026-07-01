@@ -4,10 +4,18 @@ use crate::state::Session;
 
 /// Generate a text report similar to mtr --report
 pub fn generate_report<W: Write>(session: &Session, mut writer: W) -> std::io::Result<()> {
+    // Sanitize user-supplied strings to prevent terminal output injection
+    let target_orig = session
+        .target
+        .original
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>();
+    let target_resolved = session.target.resolved.to_string();
     writeln!(
         writer,
         "ttl report for {} ({})",
-        session.target.original, session.target.resolved
+        target_orig, target_resolved
     )?;
     writeln!(
         writer,
@@ -15,7 +23,8 @@ pub fn generate_report<W: Write>(session: &Session, mut writer: W) -> std::io::R
         session.started_at.format("%Y-%m-%d %H:%M:%S UTC")
     )?;
     if let Some(ref iface) = session.config.interface {
-        writeln!(writer, "Interface: {}", iface)?;
+        let safe_iface: String = iface.chars().filter(|c| !c.is_control()).collect();
+        writeln!(writer, "Interface: {}", safe_iface)?;
     }
     writeln!(writer)?;
 
