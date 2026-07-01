@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::net::IpAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -20,6 +20,28 @@ use tokio_util::sync::CancellationToken;
 use super::sanitize_display;
 use crate::state::IxInfo;
 use crate::trace::receiver::SessionMap;
+
+fn rename_cache_file(temp: &Path, dest: &Path) -> Result<()> {
+    #[cfg(windows)]
+    {
+        match fs::rename(temp, dest) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Windows rename does not replace existing destinations.
+                fs::remove_file(dest)?;
+                fs::rename(temp, dest)?;
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        fs::rename(temp, dest)?;
+        Ok(())
+    }
+}
 
 /// PeeringDB API response wrapper
 #[derive(Debug, Deserialize)]
@@ -401,7 +423,7 @@ impl IxLookup {
         Ok(cache)
     }
 
-    /// Save cache to disk atomically (write to temp file, then rename)
+    /// Save cache to disk via temp file then rename.
     fn save_cache(&self, cache: &IxCache) -> Result<()> {
         let data = serde_json::to_string_pretty(cache)?;
         let parent = self
@@ -411,16 +433,11 @@ impl IxLookup {
         let temp = parent.join(format!(".peeringdb_cache.{}.tmp", std::process::id()));
         fs::write(&temp, &data)?;
 
-        // std::fs::rename does not overwrite existing files on Windows.
-        #[cfg(windows)]
-        match fs::remove_file(&self.cache_path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
+        let result = rename_cache_file(&temp, &self.cache_path);
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
         }
-
-        fs::rename(&temp, &self.cache_path)?;
-        Ok(())
+        result
     }
 
     /// Populate prefixes from cache
