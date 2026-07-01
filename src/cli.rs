@@ -232,6 +232,10 @@ impl Args {
             .map_err(|_| format!("{name} is too large to represent as a duration"))
     }
 
+    fn default_destination_port(protocol: &str) -> u16 {
+        if protocol == "tcp" { 80 } else { 33434 }
+    }
+
     /// Check if running in batch mode (non-interactive)
     pub fn is_batch_mode(&self) -> bool {
         self.json || self.csv || self.report
@@ -319,14 +323,13 @@ impl Args {
         let uses_port = matches!(protocol.as_str(), "udp" | "tcp")
             || (protocol == "auto" && self.port.is_some());
         if uses_port && !self.port_fixed {
-            let base = self.port.unwrap_or(33434) as u32;
+            let default_port = Self::default_destination_port(&protocol);
+            let base = self.port.unwrap_or(default_port) as u32;
             let max_dst_port = base + self.max_ttl as u32;
             if max_dst_port > u16::MAX as u32 {
                 return Err(format!(
                     "port ({}) + max-ttl ({}) would use port {} (max 65535); use --fixed-port or lower --port",
-                    self.port.unwrap_or(33434),
-                    self.max_ttl,
-                    max_dst_port
+                    base, self.max_ttl, max_dst_port
                 ));
             }
         }
@@ -509,6 +512,13 @@ mod tests {
             a.max_ttl = 30;
         });
         assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn test_default_destination_port_matches_protocol_defaults() {
+        assert_eq!(Args::default_destination_port("tcp"), 80);
+        assert_eq!(Args::default_destination_port("udp"), 33434);
+        assert_eq!(Args::default_destination_port("auto"), 33434);
     }
 
     #[test]
