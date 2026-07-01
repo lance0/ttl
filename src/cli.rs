@@ -223,6 +223,15 @@ impl Args {
         Duration::from_secs_f64(self.timeout)
     }
 
+    fn validate_duration_arg(name: &str, value: f64) -> Result<(), String> {
+        if !value.is_finite() || value <= 0.0 {
+            return Err(format!("{name} must be a positive, finite number"));
+        }
+        Duration::try_from_secs_f64(value)
+            .map(|_| ())
+            .map_err(|_| format!("{name} is too large to represent as a duration"))
+    }
+
     /// Check if running in batch mode (non-interactive)
     pub fn is_batch_mode(&self) -> bool {
         self.json || self.csv || self.report
@@ -268,13 +277,8 @@ impl Args {
             ));
         }
 
-        if !self.interval.is_finite() || self.interval <= 0.0 {
-            return Err("Interval must be a positive, finite number".into());
-        }
-
-        if !self.timeout.is_finite() || self.timeout <= 0.0 {
-            return Err("Timeout must be a positive, finite number".into());
-        }
+        Self::validate_duration_arg("Interval", self.interval)?;
+        Self::validate_duration_arg("Timeout", self.timeout)?;
 
         if self.max_ttl == 0 {
             return Err("Max TTL must be at least 1".into());
@@ -367,10 +371,9 @@ impl Args {
             // Reject early rather than failing on every probe send at runtime.
             #[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
             {
-                return Err(format!(
-                    "Interface binding (-i) is not supported on this platform. \
+                return Err("Interface binding (-i) is not supported on this platform. \
                      Use --source-ip or run on Linux/macOS for interface binding."
-                ));
+                    .to_string());
             }
             #[cfg(not(any(target_os = "freebsd", target_os = "netbsd")))]
             {
@@ -468,6 +471,22 @@ mod tests {
             a.timeout = f64::INFINITY;
         });
         assert!(args.validate().unwrap_err().contains("positive, finite"));
+    }
+
+    #[test]
+    fn test_huge_interval_rejected() {
+        let args = make_args(|a| {
+            a.interval = 1e300;
+        });
+        assert!(args.validate().unwrap_err().contains("too large"));
+    }
+
+    #[test]
+    fn test_huge_timeout_rejected() {
+        let args = make_args(|a| {
+            a.timeout = 1e300;
+        });
+        assert!(args.validate().unwrap_err().contains("too large"));
     }
 
     #[test]
