@@ -4,7 +4,7 @@ use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::proto::rr::RData;
 use hickory_resolver::{Resolver, TokioResolver};
 use parking_lot::RwLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -108,32 +108,30 @@ pub async fn run_dns_worker(dns: Arc<DnsLookup>, sessions: SessionMap, cancel: C
                 break;
             }
             _ = interval.tick() => {
-                // Collect IPs that need lookup from all sessions
-                let ips_to_lookup: Vec<IpAddr> = {
+                // Collect a bounded, first-seen batch of unique IPs that need lookup.
+                let batch: Vec<IpAddr> = {
                     let sessions = sessions.read();
-                    sessions.values()
-                        .flat_map(|state| {
-                            let session = state.read();
-                            session.hops.iter()
-                                .flat_map(|hop| hop.responders.values())
-                                .filter(|stats| stats.hostname.is_none())
-                                .map(|stats| stats.ip)
-                                .collect::<Vec<_>>()
-                        })
-                        .collect()
+                    let mut seen = HashSet::new();
+                    let mut batch = Vec::new();
+                    'sessions: for state in sessions.values() {
+                        let session = state.read();
+                        for hop in &session.hops {
+                            for stats in hop.responders.values() {
+                                if stats.hostname.is_none() && seen.insert(stats.ip) {
+                                    batch.push(stats.ip);
+                                    if batch.len() >= MAX_CONCURRENT_LOOKUPS {
+                                        break 'sessions;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    batch
                 };
 
-                if ips_to_lookup.is_empty() {
+                if batch.is_empty() {
                     continue;
                 }
-
-                // Perform parallel DNS lookups (limited batch size)
-                let batch: Vec<IpAddr> = ips_to_lookup
-                    .into_iter()
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .take(MAX_CONCURRENT_LOOKUPS)
-                    .collect();
 
                 // Spawn concurrent lookups
                 let futures: Vec<_> = batch

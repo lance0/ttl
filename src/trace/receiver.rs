@@ -13,7 +13,7 @@ use crate::probe::{
 use crate::state::{
     IcmpResponseType, MplsLabel, PmtudPhase, ProbeEvent, ProbeId, ProbeOutcome, Session,
 };
-use crate::trace::pending::{PendingMap, PendingProbe};
+use crate::trace::pending::{PendingKey, PendingMap, PendingProbe};
 
 /// Map of target IP to session, shared across multiple engines and the receiver
 pub type SessionMap = Arc<RwLock<HashMap<IpAddr, Arc<RwLock<Session>>>>>;
@@ -217,9 +217,8 @@ impl Receiver {
                             // Find matching pending probe (key includes flow_id, target, is_pmtud)
                             let mut found_probe = None;
                             {
-                                // Collect target list BEFORE acquiring the pending lock.
-                                // Lock order: sessions.read() is always acquired and released
-                                // before pending.write() to prevent deadlock.
+                                // Collect target list before acquiring pending. Avoid holding
+                                // sessions and pending locks at the same time.
                                 let fallback_targets: Vec<IpAddr> = {
                                     let sessions = self.sessions.read();
                                     sessions.keys().copied().collect()
@@ -453,73 +452,86 @@ impl Receiver {
             // This runs after draining the socket, so queued responses aren't lost
             {
                 let now = Instant::now();
-                let mut pending = self.pending.write();
-                let sessions = self.sessions.read();
                 let timeout = self.config.timeout;
-                // Key is (ProbeId, flow_id, target, is_pmtud) tuple
-                pending.retain(|(probe_id, _flow_id, target, _is_pmtud), probe| {
-                    if now.duration_since(probe.sent_at) > timeout {
-                        let is_pmtud_probe = probe.packet_size.is_some();
 
-                        if let Some(session) = sessions.get(target) {
-                            let mut state = session.write();
+                let timed_out = {
+                    let mut pending = self.pending.write();
+                    let mut timed_out = Vec::new();
 
-                            // Only record hop timeouts for normal probes, not PMTUD probes
-                            if !is_pmtud_probe {
-                                if let Some(hop) = state.hop_mut(probe_id.ttl) {
-                                    hop.record_timeout();
-                                    hop.record_flow_timeout(probe.flow_id);
-                                }
-
-                                // Record event for animated replay (monotonic timing)
-                                let offset_ms = state.offset_ms();
-                                state.record_event(ProbeEvent {
-                                    offset_ms,
-                                    ttl: probe_id.ttl,
-                                    seq: probe_id.seq,
-                                    flow_id: probe.flow_id,
-                                    outcome: ProbeOutcome::Timeout,
-                                });
-                            }
-
-                            // PMTUD: Record failure for timed out PMTUD probes
-                            // Verify packet_size matches current_size to ignore late timeouts from old sizes
-                            if let Some(probe_size) = probe.packet_size
-                                && let Some(ref mut pmtud) = state.pmtud
-                                && pmtud.phase == PmtudPhase::Searching
-                                && probe_size == pmtud.current_size
-                            {
-                                pmtud.record_failure();
-                            }
+                    // Key is (ProbeId, flow_id, target, is_pmtud) tuple
+                    pending.retain(|key, probe| {
+                        if now.duration_since(probe.sent_at) > timeout {
+                            timed_out.push((*key, probe.clone()));
+                            false
+                        } else {
+                            true
                         }
-                        false
-                    } else {
-                        true
-                    }
-                });
+                    });
+
+                    timed_out
+                };
+
+                self.record_pending_timeouts(timed_out, true, true);
             }
         }
 
         Ok(())
     }
 
-    /// Flush all remaining pending probes as timeouts on shutdown.
-    fn flush_pending_as_timeouts(&self) {
-        let mut pending = self.pending.write();
-        let sessions = self.sessions.read();
+    /// Record timeout effects after pending probes have been removed.
+    fn record_pending_timeouts(
+        &self,
+        timed_out: Vec<(PendingKey, PendingProbe)>,
+        record_events: bool,
+        update_pmtud: bool,
+    ) {
+        if timed_out.is_empty() {
+            return;
+        }
 
-        // Drain all remaining probes and record them as timeouts
-        for ((probe_id, _flow_id, target, is_pmtud), probe) in pending.drain() {
+        let sessions = self.sessions.read();
+        for ((probe_id, _flow_id, target, is_pmtud), probe) in timed_out {
             if let Some(session) = sessions.get(&target) {
                 let mut state = session.write();
 
                 // Only record hop timeouts for normal probes, not PMTUD probes
-                if !is_pmtud && let Some(hop) = state.hop_mut(probe_id.ttl) {
-                    hop.record_timeout();
-                    hop.record_flow_timeout(probe.flow_id);
+                if !is_pmtud {
+                    if let Some(hop) = state.hop_mut(probe_id.ttl) {
+                        hop.record_timeout();
+                        hop.record_flow_timeout(probe.flow_id);
+                    }
+
+                    if record_events {
+                        // Record event for animated replay (monotonic timing)
+                        let offset_ms = state.offset_ms();
+                        state.record_event(ProbeEvent {
+                            offset_ms,
+                            ttl: probe_id.ttl,
+                            seq: probe_id.seq,
+                            flow_id: probe.flow_id,
+                            outcome: ProbeOutcome::Timeout,
+                        });
+                    }
+                }
+
+                // PMTUD: Record failure for timed out PMTUD probes. Verify packet_size
+                // matches current_size to ignore late timeouts from old sizes.
+                if update_pmtud
+                    && let Some(probe_size) = probe.packet_size
+                    && let Some(ref mut pmtud) = state.pmtud
+                    && pmtud.phase == PmtudPhase::Searching
+                    && probe_size == pmtud.current_size
+                {
+                    pmtud.record_failure();
                 }
             }
         }
+    }
+
+    /// Flush all remaining pending probes as timeouts on shutdown.
+    fn flush_pending_as_timeouts(&self) {
+        let timed_out: Vec<_> = self.pending.write().drain().collect();
+        self.record_pending_timeouts(timed_out, false, false);
     }
 }
 

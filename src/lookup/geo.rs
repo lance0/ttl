@@ -1,6 +1,6 @@
 use maxminddb::{Reader, geoip2};
 use parking_lot::RwLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -145,32 +145,30 @@ pub async fn run_geo_worker(
                 break;
             }
             _ = interval.tick() => {
-                // Collect IPs that need geo lookup from all sessions
-                let ips_to_lookup: Vec<IpAddr> = {
+                // Collect a bounded, first-seen batch of unique IPs that need geo lookup.
+                let batch: Vec<IpAddr> = {
                     let sessions = sessions.read();
-                    sessions.values()
-                        .flat_map(|state| {
-                            let session = state.read();
-                            session.hops.iter()
-                                .flat_map(|hop| hop.responders.values())
-                                .filter(|stats| stats.geo.is_none())
-                                .map(|stats| stats.ip)
-                                .collect::<Vec<_>>()
-                        })
-                        .collect()
+                    let mut seen = HashSet::new();
+                    let mut batch = Vec::new();
+                    'sessions: for state in sessions.values() {
+                        let session = state.read();
+                        for hop in &session.hops {
+                            for stats in hop.responders.values() {
+                                if stats.geo.is_none() && seen.insert(stats.ip) {
+                                    batch.push(stats.ip);
+                                    if batch.len() >= MAX_CONCURRENT_LOOKUPS {
+                                        break 'sessions;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    batch
                 };
 
-                if ips_to_lookup.is_empty() {
+                if batch.is_empty() {
                     continue;
                 }
-
-                // GeoIP lookups are fast (local file), so we can do more at once
-                let batch: Vec<IpAddr> = ips_to_lookup
-                    .into_iter()
-                    .collect::<std::collections::HashSet<_>>()
-                    .into_iter()
-                    .take(MAX_CONCURRENT_LOOKUPS)
-                    .collect();
 
                 // Lookups are sync and fast, just do them in a loop
                 let results: Vec<(IpAddr, Option<GeoInfo>)> = batch
