@@ -440,7 +440,7 @@ mod tests {
             .expect("create IP_HDRINCL raw socket (needs root)");
 
         // ICMP echo.
-        let icmp = build_echo_request(0x4242, 1, 16, false, None);
+        let icmp = build_echo_request(0x4242, 1, 16, false, None, false);
         let pkt = build_ipv4_packet(lo, lo, IPPROTO_ICMP, 5, 0, false, &icmp);
         send_raw_ipv4(&socket, &pkt, lo)
             .expect("kernel rejected ICMP IP_HDRINCL packet (ip_len/ip_off byte order?)");
@@ -465,7 +465,7 @@ mod tests {
             .expect("kernel rejected TCP IP_HDRINCL packet (ip_len/ip_off byte order?)");
 
         // Also exercise the Don't Fragment path used by PMTUD.
-        let icmp_df = build_echo_request(0x4242, 2, 64, false, None);
+        let icmp_df = build_echo_request(0x4242, 2, 64, false, None, false);
         let pkt = build_ipv4_packet(lo, lo, IPPROTO_ICMP, 8, 0, true, &icmp_df);
         send_raw_ipv4(&socket, &pkt, lo)
             .expect("kernel rejected DF IP_HDRINCL packet (ip_len/ip_off byte order?)");
@@ -496,7 +496,7 @@ mod tests {
             .expect("create raw ICMP recv socket (needs root)");
         recv.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
 
-        let icmp = build_echo_request(ident, 1, 16, false, None);
+        let icmp = build_echo_request(ident, 1, 16, false, None, false);
         let pkt = build_ipv4_packet(lo, lo, IPPROTO_ICMP, ttl, tos, false, &icmp);
         send_raw_ipv4(&send, &pkt, lo).expect("send IP_HDRINCL echo to loopback");
 

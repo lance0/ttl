@@ -334,6 +334,7 @@ impl ProbeEngine {
                             payload_size,
                             self.target.is_ipv6(),
                             ipv6_addrs,
+                            false,
                         );
 
                         // Set TTL before sending
@@ -852,7 +853,7 @@ impl ProbeEngine {
                             .unwrap_or(DEFAULT_PAYLOAD_SIZE);
 
                         let icmp =
-                            build_echo_request(self.identifier, probe_id.to_sequence(), payload_size, false, None);
+                            build_echo_request(self.identifier, probe_id.to_sequence(), payload_size, false, None, false);
                         let packet = build_ipv4_packet(src, dst, IPPROTO_ICMP, ttl, tos, false, &icmp);
 
                         let sent_at = Instant::now();
@@ -1212,6 +1213,7 @@ impl ProbeEngine {
             payload_size,
             self.target.is_ipv6(),
             ipv6_addrs,
+            true,
         );
 
         // Set TTL
@@ -1320,6 +1322,7 @@ impl ProbeEngine {
             payload_size,
             false,
             None,
+            true,
         );
         // Don't Fragment set in the IP header so routers return Frag Needed.
         let packet = build_ipv4_packet(src, dst, IPPROTO_ICMP, dest_ttl, tos, true, &icmp);

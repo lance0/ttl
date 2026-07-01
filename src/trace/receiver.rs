@@ -206,13 +206,16 @@ impl Receiver {
                         ) {
                             let flow_hint = self.derive_flow_hint(parsed.src_port);
 
-                            // PMTUD responses are Frag Needed (DestUnreachable code 4)
-                            // or ICMPv6 Packet Too Big. Prefer PMTUD pending entry for these.
-                            let is_pmtud_response = matches!(
-                                parsed.response_type,
-                                IcmpResponseType::DestUnreachable(4)
-                                    | IcmpResponseType::PacketTooBig
-                            );
+                            // Determine if this response is for a PMTUD probe.
+                            // For Echo Reply: detected via PMTUD payload marker (parsed.is_pmtud).
+                            // For Frag Needed / Packet Too Big: these are always PMTUD responses
+                            // (only PMTUD probes set DF), so also route to PMTUD pending entry.
+                            let is_pmtud_response = parsed.is_pmtud
+                                || matches!(
+                                    parsed.response_type,
+                                    IcmpResponseType::DestUnreachable(4)
+                                        | IcmpResponseType::PacketTooBig
+                                );
 
                             // Find matching pending probe (key includes flow_id, target, is_pmtud)
                             let mut found_probe = None;
@@ -751,5 +754,87 @@ mod tests {
         assert_eq!(removed.unwrap().packet_size, Some(1400));
         assert!(pending.contains_key(&(probe_id, 0, target, false)));
         assert!(!pending.contains_key(&(probe_id, 0, target, true)));
+    }
+
+    #[test]
+    fn test_remove_pending_unknown_flow_pmtud_echo_reply_prefers_pmtud_entry() {
+        // Simulates the critical PMTUD success case: a PMTUD probe reaches the
+        // destination and gets an Echo Reply. Both normal and PMTUD pending entries
+        // share the same (probe_id, target) but differ in is_pmtud flag.
+        // Without the PMTUD marker, the receiver would consume the normal entry
+        // and leave the PMTUD probe to time out.
+        let probe_id = ProbeId::new(5, 3);
+        let target = IpAddr::V4(std::net::Ipv4Addr::new(1, 2, 3, 4));
+        let mut pending: HashMap<(ProbeId, u8, IpAddr, bool), PendingProbe> = HashMap::new();
+        pending.insert(
+            (probe_id, 0, target, false),
+            PendingProbe {
+                sent_at: Instant::now(),
+                target,
+                flow_id: 0,
+                original_src_port: None,
+                packet_size: None,
+            },
+        );
+        pending.insert(
+            (probe_id, 0, target, true),
+            PendingProbe {
+                sent_at: Instant::now(),
+                target,
+                flow_id: 0,
+                original_src_port: None,
+                packet_size: Some(1200),
+            },
+        );
+
+        // Echo Reply from PMTUD probe: is_pmtud_response=true via payload marker
+        let removed =
+            Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, Some(0), true);
+        assert!(removed.is_some(), "should remove PMTUD entry");
+        assert_eq!(removed.unwrap().packet_size, Some(1200));
+        // Normal entry should remain
+        assert!(pending.contains_key(&(probe_id, 0, target, false)));
+        assert!(!pending.contains_key(&(probe_id, 0, target, true)));
+    }
+
+    #[test]
+    fn test_remove_pending_unknown_flow_pmtud_echo_reply_no_flow_hint() {
+        // Same as above but with unknown flow hint (NAT rewrote the port).
+        // Each entry has a unique flow, so the PMTUD one should be preferred.
+        let probe_id = ProbeId::new(5, 4);
+        let target = IpAddr::V4(std::net::Ipv4Addr::new(5, 6, 7, 8));
+        let mut pending: HashMap<(ProbeId, u8, IpAddr, bool), PendingProbe> = HashMap::new();
+        pending.insert(
+            (probe_id, 1, target, false),
+            PendingProbe {
+                sent_at: Instant::now(),
+                target,
+                flow_id: 1,
+                original_src_port: Some(50001),
+                packet_size: None,
+            },
+        );
+        pending.insert(
+            (probe_id, 2, target, true),
+            PendingProbe {
+                sent_at: Instant::now(),
+                target,
+                flow_id: 2,
+                original_src_port: Some(50002),
+                packet_size: Some(1300),
+            },
+        );
+
+        // PMTUD Echo Reply with unknown flow: should prefer PMTUD entry
+        let removed =
+            Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, None, true);
+        assert!(
+            removed.is_some(),
+            "should remove PMTUD entry for Echo Reply"
+        );
+        assert_eq!(removed.unwrap().packet_size, Some(1300));
+        // Normal entry should remain
+        assert!(pending.contains_key(&(probe_id, 1, target, false)));
+        assert!(!pending.contains_key(&(probe_id, 2, target, true)));
     }
 }

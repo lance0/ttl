@@ -26,6 +26,8 @@ pub struct ParsedResponse {
     pub responder: IpAddr,
     pub probe_id: ProbeId,
     pub response_type: IcmpResponseType,
+    /// True if the probe was a PMTUD probe (detected via payload marker)
+    pub is_pmtud: bool,
     /// MPLS labels from ICMP extensions (RFC 4950), if present
     pub mpls_labels: Option<Vec<MplsLabel>>,
     /// Source port from original UDP/TCP packet (for flow identification in Paris/Dublin traceroute)
@@ -227,6 +229,7 @@ fn parse_icmp_response_v4(
                     responder,
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type: IcmpResponseType::EchoReply,
+                    is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
                     src_port: None,
                     mtu: None,
@@ -246,6 +249,7 @@ fn parse_icmp_response_v4(
                     responder,
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type: IcmpResponseType::EchoReply,
+                    is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
                     src_port: None,
                     mtu: None,
@@ -397,6 +401,7 @@ fn parse_icmp_response_v6(
                     responder,
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type: IcmpResponseType::EchoReply,
+                    is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
                     src_port: None,
                     mtu: None,
@@ -415,6 +420,7 @@ fn parse_icmp_response_v6(
                     responder,
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type: IcmpResponseType::EchoReply,
+                    is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
                     src_port: None,
                     mtu: None,
@@ -533,6 +539,7 @@ fn parse_icmp_error_payload_v4_with_mtu(
                     responder,
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type,
+                    is_pmtud: false,
                     mpls_labels,
                     src_port: None,
                     mtu,
@@ -556,6 +563,7 @@ fn parse_icmp_error_payload_v4_with_mtu(
                     responder,
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type,
+                    is_pmtud: false,
                     mpls_labels,
                     src_port: None,
                     mtu,
@@ -583,6 +591,7 @@ fn parse_icmp_error_payload_v4_with_mtu(
                 responder,
                 probe_id,
                 response_type,
+                is_pmtud: false,
                 mpls_labels,
                 src_port: Some(src_port),
                 mtu,
@@ -609,6 +618,7 @@ fn parse_icmp_error_payload_v4_with_mtu(
                 responder,
                 probe_id,
                 response_type,
+                is_pmtud: false,
                 mpls_labels,
                 src_port: Some(src_port),
                 mtu,
@@ -706,6 +716,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                     responder,
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type,
+                    is_pmtud: false,
                     mpls_labels,
                     src_port: None,
                     mtu,
@@ -728,6 +739,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                     responder,
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type,
+                    is_pmtud: false,
                     mpls_labels,
                     src_port: None,
                     mtu,
@@ -755,6 +767,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                 responder,
                 probe_id,
                 response_type,
+                is_pmtud: false,
                 mpls_labels,
                 src_port: Some(src_port),
                 mtu,
@@ -781,6 +794,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                 responder,
                 probe_id,
                 response_type,
+                is_pmtud: false,
                 mpls_labels,
                 src_port: Some(src_port),
                 mtu,
@@ -809,6 +823,12 @@ fn extract_id_from_payload(payload: &[u8], our_identifier: u16) -> Option<(u16, 
     } else {
         None
     }
+}
+
+/// Check if an Echo Reply payload contains the PMTUD marker at byte 8.
+/// Normal probes have 0x00 there (pattern fill index 0); PMTUD probes set 0x50.
+fn is_pmtud_payload(payload: &[u8]) -> bool {
+    payload.len() > 8 && payload[8] == crate::probe::icmp::PMTUD_MARKER
 }
 
 /// Parse IPv4 ICMP from DGRAM socket (no IP header)
@@ -841,6 +861,7 @@ fn parse_icmp_response_v4_dgram(
                     responder,
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type: IcmpResponseType::EchoReply,
+                    is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
                     src_port: None,
                     mtu: None,
@@ -860,6 +881,7 @@ fn parse_icmp_response_v4_dgram(
                     responder,
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type: IcmpResponseType::EchoReply,
+                    is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
                     src_port: None,
                     mtu: None,
@@ -948,6 +970,7 @@ fn parse_icmp_error_payload_v4_dgram(
                     responder,
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type,
+                    is_pmtud: false,
                     mpls_labels,
                     src_port: None,
                     mtu,
@@ -967,6 +990,7 @@ fn parse_icmp_error_payload_v4_dgram(
                     responder,
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type,
+                    is_pmtud: false,
                     mpls_labels,
                     src_port: None,
                     mtu,
@@ -987,6 +1011,7 @@ fn parse_icmp_error_payload_v4_dgram(
                 responder,
                 probe_id,
                 response_type,
+                is_pmtud: false,
                 mpls_labels,
                 src_port: Some(src_port),
                 mtu,
@@ -1006,6 +1031,7 @@ fn parse_icmp_error_payload_v4_dgram(
                 responder,
                 probe_id,
                 response_type,
+                is_pmtud: false,
                 mpls_labels,
                 src_port: Some(src_port),
                 mtu,
@@ -1040,6 +1066,7 @@ fn parse_icmp_response_v6_dgram(
                     responder,
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type: IcmpResponseType::EchoReply,
+                    is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
                     src_port: None,
                     mtu: None,
@@ -1058,6 +1085,7 @@ fn parse_icmp_response_v6_dgram(
                     responder,
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type: IcmpResponseType::EchoReply,
+                    is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
                     src_port: None,
                     mtu: None,
@@ -1161,6 +1189,7 @@ fn parse_icmp_error_payload_v6_dgram(
                     responder,
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type,
+                    is_pmtud: false,
                     mpls_labels,
                     src_port: None,
                     mtu,
@@ -1178,6 +1207,7 @@ fn parse_icmp_error_payload_v6_dgram(
                     responder,
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type,
+                    is_pmtud: false,
                     mpls_labels,
                     src_port: None,
                     mtu,
@@ -1198,6 +1228,7 @@ fn parse_icmp_error_payload_v6_dgram(
                 responder,
                 probe_id,
                 response_type,
+                is_pmtud: false,
                 mpls_labels,
                 src_port: Some(src_port),
                 mtu,
@@ -1217,6 +1248,7 @@ fn parse_icmp_error_payload_v6_dgram(
                 responder,
                 probe_id,
                 response_type,
+                is_pmtud: false,
                 mpls_labels,
                 src_port: Some(src_port),
                 mtu,
@@ -2288,5 +2320,110 @@ mod tests {
             let responder = IpAddr::V4(std::net::Ipv4Addr::new(1, 1, 1, 1));
             prop_assert!(parse_icmp_response(&data, responder, 0x1234, false).is_none());
         }
+    }
+
+    /// End-to-end test: build a PMTUD Echo Request, convert to Echo Reply,
+    /// parse it, and verify is_pmtud is true. This catches offset bugs
+    /// (icmp_data vs payload slice) that builder-only tests miss.
+    #[test]
+    fn test_parse_pmtud_echo_reply_v4_dgram() {
+        use crate::probe::icmp::build_echo_request;
+
+        let our_id = 0x1234;
+        let probe_id = ProbeId::new(10, 5);
+        let responder = IpAddr::V4(std::net::Ipv4Addr::new(8, 8, 8, 8));
+
+        // Build a PMTUD Echo Request via the real builder
+        let request = build_echo_request(
+            our_id,
+            probe_id.to_sequence(),
+            56,
+            false,
+            None,
+            true, // pmtud
+        );
+
+        // Convert to Echo Reply: change type from 8 (Echo Request) to 0 (Echo Reply)
+        let mut reply = request.clone();
+        reply[0] = 0; // Echo Reply type
+        // Recompute ICMP checksum
+        set_icmp_checksum(&mut reply);
+
+        // Parse as DGRAM (no IP header)
+        let result = parse_icmp_response(&reply, responder, our_id, true);
+        assert!(result.is_some(), "PMTUD Echo Reply should parse");
+        let parsed = result.unwrap();
+        assert_eq!(parsed.response_type, IcmpResponseType::EchoReply);
+        assert!(
+            parsed.is_pmtud,
+            "PMTUD Echo Reply should have is_pmtud=true"
+        );
+        assert_eq!(parsed.probe_id.ttl, 10);
+        assert_eq!(parsed.probe_id.seq, 5);
+    }
+
+    #[test]
+    fn test_parse_normal_echo_reply_v4_dgram_is_not_pmtud() {
+        use crate::probe::icmp::build_echo_request;
+
+        let our_id = 0x1234;
+        let probe_id = ProbeId::new(10, 5);
+        let responder = IpAddr::V4(std::net::Ipv4Addr::new(8, 8, 8, 8));
+
+        // Build a normal Echo Request
+        let request = build_echo_request(
+            our_id,
+            probe_id.to_sequence(),
+            56,
+            false,
+            None,
+            false, // not pmtud
+        );
+
+        // Convert to Echo Reply
+        let mut reply = request.clone();
+        reply[0] = 0;
+        set_icmp_checksum(&mut reply);
+
+        let result = parse_icmp_response(&reply, responder, our_id, true);
+        assert!(result.is_some());
+        let parsed = result.unwrap();
+        assert!(
+            !parsed.is_pmtud,
+            "Normal Echo Reply should have is_pmtud=false"
+        );
+    }
+
+    #[test]
+    fn test_parse_pmtud_echo_reply_v4_raw() {
+        use crate::probe::icmp::build_echo_request;
+
+        let our_id = 0x1234;
+        let probe_id = ProbeId::new(12, 3);
+        let responder = IpAddr::V4(std::net::Ipv4Addr::new(8, 8, 4, 4));
+
+        // Build PMTUD Echo Request
+        let icmp = build_echo_request(our_id, probe_id.to_sequence(), 56, false, None, true);
+
+        // Wrap in an IPv4 header for RAW socket parsing
+        let mut packet = vec![0u8; 20 + icmp.len()];
+        packet[0] = 0x45; // Version 4, IHL 5
+        packet[9] = 1; // Protocol: ICMP
+        packet[20..].copy_from_slice(&icmp);
+
+        // Convert ICMP type to Echo Reply
+        packet[20] = 0;
+        // Recompute ICMP checksum (starts at IP header offset 20)
+        set_icmp_checksum(&mut packet[20..]);
+
+        let result = parse_icmp_response(&packet, responder, our_id, false);
+        assert!(result.is_some(), "PMTUD Echo Reply via RAW should parse");
+        let parsed = result.unwrap();
+        assert!(
+            parsed.is_pmtud,
+            "PMTUD Echo Reply via RAW should have is_pmtud=true"
+        );
+        assert_eq!(parsed.probe_id.ttl, 12);
+        assert_eq!(parsed.probe_id.seq, 3);
     }
 }

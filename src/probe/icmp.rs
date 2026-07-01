@@ -9,6 +9,10 @@ pub const ICMP_HEADER_SIZE: usize = 8;
 pub const DEFAULT_PAYLOAD_SIZE: usize = 56;
 /// Minimum payload size (4 bytes ProbeId + 4 bytes timestamp)
 pub const MIN_PAYLOAD_SIZE: usize = 8;
+/// PMTUD marker byte written to payload[8] to distinguish PMTUD probes.
+/// Echo Replies echo the payload verbatim, so the receiver can detect
+/// PMTUD success without a separate ICMP identifier.
+pub const PMTUD_MARKER: u8 = 0x50; // 'P'
 
 /// Calculate ICMPv6 checksum including IPv6 pseudo-header.
 ///
@@ -73,13 +77,19 @@ pub fn get_identifier() -> u16 {
 /// - Bytes 0-1: identifier (backup for kernel override on macOS DGRAM sockets)
 /// - Bytes 2-3: sequence (backup for kernel override)
 /// - Bytes 4-7: timestamp (lower 32 bits)
-/// - Bytes 8+: pattern fill
+/// - Byte 8: PMTUD marker (0x50 for PMTUD probes, 0x00 for normal probes)
+/// - Bytes 9+: pattern fill
+///
+/// The PMTUD marker at byte 8 is echoed back unchanged in Echo Replies, allowing
+/// the receiver to distinguish PMTUD success from normal probe success without
+/// changing the ICMP identifier (which risks DGRAM/kernel filtering).
 pub fn build_echo_request(
     identifier: u16,
     sequence: u16,
     payload_size: usize,
     ipv6: bool,
     ipv6_addrs: Option<(Ipv6Addr, Ipv6Addr)>,
+    pmtud: bool,
 ) -> Vec<u8> {
     // Catch future callers who forget to pass addresses for IPv6
     debug_assert!(
@@ -117,8 +127,17 @@ pub fn build_echo_request(
         .as_micros() as u32;
     payload[4..8].copy_from_slice(&timestamp.to_be_bytes());
 
-    // Fill rest with pattern
+    // Byte 8: PMTUD marker (0x50='P' for PMTUD, 0x00 for normal)
+    // Normal probes set this to pattern index 0 (= 0x00) via the loop below.
+    if payload.len() > 8 && pmtud {
+        payload[8] = 0x50;
+    }
+
+    // Fill rest with pattern (byte 8 onwards; PMTUD marker already set above)
     for (i, byte) in payload[8..].iter_mut().enumerate() {
+        if pmtud && i == 0 {
+            continue; // Don't overwrite the marker
+        }
         *byte = (i & 0xFF) as u8;
     }
 
@@ -147,7 +166,7 @@ mod tests {
 
     #[test]
     fn test_build_echo_request() {
-        let packet = build_echo_request(1234, 5678, DEFAULT_PAYLOAD_SIZE, false, None);
+        let packet = build_echo_request(1234, 5678, DEFAULT_PAYLOAD_SIZE, false, None, false);
         assert_eq!(packet.len(), ICMP_HEADER_SIZE + DEFAULT_PAYLOAD_SIZE);
         assert_eq!(packet[0], 8); // Echo Request type
         assert_eq!(packet[1], 0); // Code
@@ -158,7 +177,14 @@ mod tests {
         use std::str::FromStr;
         let src = Ipv6Addr::from_str("2001:db8::1").unwrap();
         let dest = Ipv6Addr::from_str("2001:db8::2").unwrap();
-        let packet = build_echo_request(1234, 5678, DEFAULT_PAYLOAD_SIZE, true, Some((src, dest)));
+        let packet = build_echo_request(
+            1234,
+            5678,
+            DEFAULT_PAYLOAD_SIZE,
+            true,
+            Some((src, dest)),
+            false,
+        );
         assert_eq!(packet.len(), ICMP_HEADER_SIZE + DEFAULT_PAYLOAD_SIZE);
         assert_eq!(packet[0], 128); // ICMPv6 Echo Request type
         assert_eq!(packet[1], 0); // Code
@@ -169,7 +195,14 @@ mod tests {
         use std::str::FromStr;
         let src = Ipv6Addr::from_str("2001:db8::1").unwrap();
         let dest = Ipv6Addr::from_str("2001:db8::2").unwrap();
-        let packet = build_echo_request(1234, 5678, DEFAULT_PAYLOAD_SIZE, true, Some((src, dest)));
+        let packet = build_echo_request(
+            1234,
+            5678,
+            DEFAULT_PAYLOAD_SIZE,
+            true,
+            Some((src, dest)),
+            false,
+        );
         assert_eq!(packet.len(), ICMP_HEADER_SIZE + DEFAULT_PAYLOAD_SIZE);
         assert_eq!(packet[0], 128); // ICMPv6 Echo Request type
         assert_eq!(packet[1], 0); // Code
@@ -194,11 +227,40 @@ mod tests {
     #[test]
     fn test_build_echo_request_custom_size() {
         // Test larger payload
-        let packet = build_echo_request(1234, 5678, 1400, false, None);
+        let packet = build_echo_request(1234, 5678, 1400, false, None, false);
         assert_eq!(packet.len(), ICMP_HEADER_SIZE + 1400);
 
         // Test minimum payload
-        let packet = build_echo_request(1234, 5678, 0, false, None);
+        let packet = build_echo_request(1234, 5678, 0, false, None, false);
         assert_eq!(packet.len(), ICMP_HEADER_SIZE + MIN_PAYLOAD_SIZE);
+    }
+
+    #[test]
+    fn test_pmtud_marker_set_in_payload() {
+        let packet = build_echo_request(1234, 5678, DEFAULT_PAYLOAD_SIZE, false, None, true);
+        // Payload starts at byte 8 (ICMP header size)
+        // PMTUD marker should be at payload byte 8 = packet byte 16
+        assert_eq!(
+            packet[16], PMTUD_MARKER,
+            "PMTUD marker should be set at payload[8]"
+        );
+    }
+
+    #[test]
+    fn test_normal_probe_has_no_pmtud_marker() {
+        let packet = build_echo_request(1234, 5678, DEFAULT_PAYLOAD_SIZE, false, None, false);
+        // Normal probe: payload[8] should be 0x00 (pattern fill index 0)
+        assert_eq!(
+            packet[16], 0x00,
+            "Normal probe should not have PMTUD marker"
+        );
+    }
+
+    #[test]
+    fn test_pmtud_marker_with_min_payload() {
+        // MIN_PAYLOAD_SIZE is 8, so payload[8] doesn't exist; marker is skipped
+        let packet = build_echo_request(1234, 5678, 0, false, None, true);
+        assert_eq!(packet.len(), ICMP_HEADER_SIZE + MIN_PAYLOAD_SIZE);
+        // No panic, marker gracefully skipped when payload too small
     }
 }
