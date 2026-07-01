@@ -561,6 +561,8 @@ fn extract_ttl_from_cmsg(msg: &libc::msghdr, ipv6: bool) -> Option<u8> {
     // IPV6_HOPLIMIT: use libc where available, define locally for NetBSD
     #[cfg(not(target_os = "netbsd"))]
     let ipv6_hoplimit = libc::IPV6_HOPLIMIT;
+    #[cfg(target_os = "netbsd")]
+    let ipv6_hoplimit: libc::c_int = 47;
     unsafe {
         let mut cmsg = libc::CMSG_FIRSTHDR(msg);
         while !cmsg.is_null() {
@@ -568,7 +570,7 @@ fn extract_ttl_from_cmsg(msg: &libc::msghdr, ipv6: bool) -> Option<u8> {
             // suitably aligned for a direct reference on all platforms.
             let cmsg_level = std::ptr::addr_of!((*cmsg).cmsg_level).read_unaligned();
             let cmsg_type = std::ptr::addr_of!((*cmsg).cmsg_type).read_unaligned();
-            let cmsg_len = std::ptr::addr_of!((*cmsg).cmsg_len).read_unaligned();
+            let cmsg_len = std::ptr::addr_of!((*cmsg).cmsg_len).read_unaligned() as usize;
 
             // Validate cmsg_len is large enough to hold the TTL/hop-limit integer
             let min_len = libc::CMSG_LEN(std::mem::size_of::<libc::c_int>() as u32) as usize;
