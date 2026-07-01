@@ -171,6 +171,44 @@ mod duration_serde {
         D: Deserializer<'de>,
     {
         let secs = f64::deserialize(deserializer)?;
-        Ok(Duration::from_secs_f64(secs))
+        Duration::try_from_secs_f64(secs).map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::duration_serde;
+    use std::time::Duration;
+
+    fn deser(json: &str) -> Result<Duration, serde_json::Error> {
+        let mut de = serde_json::Deserializer::from_str(json);
+        duration_serde::deserialize(&mut de)
+    }
+
+    #[test]
+    fn test_duration_deserialize_valid() {
+        assert_eq!(deser("1.5").unwrap(), Duration::from_secs_f64(1.5));
+        assert_eq!(deser("0").unwrap(), Duration::ZERO);
+    }
+
+    #[test]
+    fn test_duration_deserialize_negative_rejected() {
+        assert!(deser("-1.0").is_err());
+    }
+
+    #[test]
+    fn test_duration_deserialize_nan_rejected() {
+        assert!(deser("NaN").is_err());
+    }
+
+    #[test]
+    fn test_duration_deserialize_inf_rejected() {
+        assert!(deser("Infinity").is_err());
+    }
+
+    #[test]
+    fn test_duration_deserialize_huge_rejected() {
+        // Larger than Duration::MAX — finite but out of range
+        assert!(deser("1e100").is_err());
     }
 }
