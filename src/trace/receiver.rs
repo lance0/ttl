@@ -111,6 +111,7 @@ impl Receiver {
         probe_id: ProbeId,
         target: IpAddr,
         flow_hint: Option<u8>,
+        is_pmtud_response: bool,
     ) -> Option<PendingProbe> {
         if let Some(flow_id) = flow_hint {
             if let Some(probe) = pending.remove(&(probe_id, flow_id, target, false)) {
@@ -134,6 +135,12 @@ impl Receiver {
                     normal_flows.push(flow_id);
                 }
             }
+        }
+
+        // If this is a PMTUD-related response (Frag Needed / Packet Too Big),
+        // prefer the PMTUD entry to avoid consuming a normal probe's pending slot.
+        if is_pmtud_response && pmtud_flows.len() == 1 {
+            return pending.remove(&(probe_id, pmtud_flows[0], target, true));
         }
 
         if normal_flows.len() == 1 {
@@ -188,19 +195,27 @@ impl Receiver {
                             identifier,
                             is_dgram,
                         ) {
-                            // Derive flow hint from quoted source port.
-                            // If the port is out of range (e.g., NAT rewrite), keep it unknown
-                            // and only match pending probes when unambiguous.
                             let flow_hint = self.derive_flow_hint(parsed.src_port);
+
+                            // PMTUD responses are Frag Needed (DestUnreachable code 4)
+                            // or ICMPv6 Packet Too Big. Prefer PMTUD pending entry for these.
+                            let is_pmtud_response = matches!(
+                                parsed.response_type,
+                                IcmpResponseType::DestUnreachable(4)
+                                    | IcmpResponseType::PacketTooBig
+                            );
 
                             // Find matching pending probe (key includes flow_id, target, is_pmtud)
                             let mut found_probe = None;
                             {
-                                // Read live target list before taking the pending lock
-                                // (targets can be added mid-session in interactive mode;
-                                // sessions lock is never acquired while pending is held)
-                                let fallback_targets: Vec<IpAddr> =
-                                    self.sessions.read().keys().copied().collect();
+                                // Collect target list BEFORE acquiring the pending lock.
+                                // Lock order: sessions.read() is always acquired and released
+                                // before pending.write() to prevent deadlock.
+                                let fallback_targets: Vec<IpAddr> = {
+                                    let sessions = self.sessions.read();
+                                    sessions.keys().copied().collect()
+                                };
+                                // sessions guard dropped here
 
                                 let mut pending = self.pending.write();
 
@@ -211,6 +226,7 @@ impl Receiver {
                                         parsed.probe_id,
                                         dest,
                                         flow_hint,
+                                        is_pmtud_response,
                                     );
                                 }
 
@@ -222,6 +238,7 @@ impl Receiver {
                                             parsed.probe_id,
                                             *target,
                                             flow_hint,
+                                            is_pmtud_response,
                                         ) {
                                             found_probe = Some(probe);
                                             break;
@@ -578,7 +595,8 @@ mod tests {
             },
         );
 
-        let removed = Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, None);
+        let removed =
+            Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, None, false);
         assert!(removed.is_some(), "single candidate should be removable");
         assert!(pending.is_empty());
     }
@@ -601,7 +619,8 @@ mod tests {
             );
         }
 
-        let removed = Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, None);
+        let removed =
+            Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, None, false);
         assert!(
             removed.is_none(),
             "ambiguous candidates should not be forced"
@@ -635,7 +654,8 @@ mod tests {
             },
         );
 
-        let removed = Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, None);
+        let removed =
+            Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, None, false);
         assert!(removed.is_some());
         let removed = removed.unwrap();
         assert_eq!(removed.flow_id, 1);
@@ -671,7 +691,8 @@ mod tests {
             },
         );
 
-        let removed = Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, None);
+        let removed =
+            Receiver::remove_pending_by_flow_hint(&mut pending, probe_id, target, None, false);
         assert!(removed.is_none());
         assert_eq!(pending.len(), 3);
     }

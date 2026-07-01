@@ -130,6 +130,8 @@ pub async fn run_dns_worker(dns: Arc<DnsLookup>, sessions: SessionMap, cancel: C
                 // Perform parallel DNS lookups (limited batch size)
                 let batch: Vec<IpAddr> = ips_to_lookup
                     .into_iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
                     .take(MAX_CONCURRENT_LOOKUPS)
                     .collect();
 

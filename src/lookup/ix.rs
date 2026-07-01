@@ -672,6 +672,8 @@ pub async fn run_ix_worker(
                 // Perform parallel IX lookups (limited batch size)
                 let batch: Vec<IpAddr> = ips_to_lookup
                     .into_iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
                     .take(MAX_CONCURRENT_LOOKUPS)
                     .collect();
 

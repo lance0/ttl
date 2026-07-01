@@ -167,6 +167,8 @@ pub async fn run_geo_worker(
                 // GeoIP lookups are fast (local file), so we can do more at once
                 let batch: Vec<IpAddr> = ips_to_lookup
                     .into_iter()
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
                     .take(MAX_CONCURRENT_LOOKUPS)
                     .collect();
 
