@@ -35,7 +35,7 @@ hickory-resolver = "0.26"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 # ASN/Geo databases
-maxminddb = "0.28"
+maxminddb = "0.29"
 ipnetwork = "0.21"
 
 # Serialization
