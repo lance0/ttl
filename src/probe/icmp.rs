@@ -9,7 +9,7 @@ pub const ICMP_HEADER_SIZE: usize = 8;
 pub const DEFAULT_PAYLOAD_SIZE: usize = 56;
 /// Minimum payload size (4 bytes ProbeId + 4 bytes timestamp)
 pub const MIN_PAYLOAD_SIZE: usize = 8;
-/// PMTUD marker byte written to payload[8] to distinguish PMTUD probes.
+/// PMTUD marker byte written to `payload[8]` to distinguish PMTUD probes.
 /// Echo Replies echo the payload verbatim, so the receiver can detect
 /// PMTUD success without a separate ICMP identifier.
 pub const PMTUD_MARKER: u8 = 0x50; // 'P'
