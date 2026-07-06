@@ -564,6 +564,36 @@ mod tests {
     }
 
     #[test]
+    fn test_settings_state_delete_multibyte_char() {
+        let mut state = SettingsState::new(0, DisplayMode::Auto, Some("a日b".to_string()));
+        state.api_key_cursor = 1; // Position at '日' (3-byte char)
+
+        state.handle_delete();
+
+        assert_eq!(state.api_key, "ab");
+        assert_eq!(state.api_key_cursor, 1);
+        assert!(state.api_key.is_char_boundary(state.api_key_cursor));
+    }
+
+    #[test]
+    fn test_settings_state_move_cursor_right_multibyte_char() {
+        let mut state = SettingsState::new(0, DisplayMode::Auto, Some("a日b".to_string()));
+        state.api_key_cursor = 0;
+
+        state.move_cursor_right();
+        assert_eq!(state.api_key_cursor, 1); // after 'a'
+
+        state.move_cursor_right();
+        assert_eq!(state.api_key_cursor, 4); // after '日'
+
+        state.move_cursor_right();
+        assert_eq!(state.api_key_cursor, 5); // after 'b'
+
+        state.move_cursor_right();
+        assert_eq!(state.api_key_cursor, 5); // stays at end
+    }
+
+    #[test]
     fn test_settings_state_default() {
         let state = SettingsState::default();
         assert_eq!(state.theme_index, 0);
