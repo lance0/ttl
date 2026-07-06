@@ -130,7 +130,7 @@ pub fn build_echo_request(
     // Byte 8: PMTUD marker (0x50='P' for PMTUD, 0x00 for normal)
     // Normal probes set this to pattern index 0 (= 0x00) via the loop below.
     if payload.len() > 8 && pmtud {
-        payload[8] = 0x50;
+        payload[8] = PMTUD_MARKER;
     }
 
     // Fill rest with pattern (byte 8 onwards; PMTUD marker already set above)
