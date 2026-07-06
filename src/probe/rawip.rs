@@ -175,18 +175,17 @@ pub fn build_ipv4_packet(
     tos: u8,
     dont_fragment: bool,
     transport: &[u8],
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     let total_payload = IPV4_HEADER_SIZE + transport.len();
-    assert!(
-        total_payload <= u16::MAX as usize,
-        "IPv4 packet too large: {total_payload} bytes (max 65535)"
-    );
+    if total_payload > u16::MAX as usize {
+        anyhow::bail!("IPv4 packet too large: {total_payload} bytes (max 65535)");
+    }
     let total_len = total_payload as u16;
     let header = build_ipv4_header(src, dst, protocol, ttl, tos, total_len, 0, dont_fragment);
     let mut packet = Vec::with_capacity(total_payload);
     packet.extend_from_slice(&header);
     packet.extend_from_slice(transport);
-    packet
+    Ok(packet)
 }
 
 /// Create a raw IPv4 socket with `IP_HDRINCL` enabled, optionally bound to an
@@ -383,7 +382,7 @@ mod tests {
         let src = Ipv4Addr::new(1, 2, 3, 4);
         let dst = Ipv4Addr::new(5, 6, 7, 8);
         let transport = vec![0xAAu8; 16];
-        let pkt = build_ipv4_packet(src, dst, IPPROTO_TCP, 12, 0, true, &transport);
+        let pkt = build_ipv4_packet(src, dst, IPPROTO_TCP, 12, 0, true, &transport).unwrap();
 
         assert_eq!(pkt.len(), IPV4_HEADER_SIZE + transport.len());
         assert_eq!(pkt[8], 12, "TTL in header");
@@ -416,16 +415,16 @@ mod tests {
             0,
             false,
             &transport,
-        );
+        )
+        .expect("max-size packet should build successfully");
         assert_eq!(pkt.len(), u16::MAX as usize);
     }
 
     #[test]
-    #[should_panic(expected = "IPv4 packet too large")]
-    fn test_build_ipv4_packet_oversized_panics() {
+    fn test_build_ipv4_packet_oversized_returns_err() {
         let oversized = u16::MAX as usize - IPV4_HEADER_SIZE + 1;
         let transport = vec![0u8; oversized];
-        build_ipv4_packet(
+        let result = build_ipv4_packet(
             Ipv4Addr::new(1, 2, 3, 4),
             Ipv4Addr::new(5, 6, 7, 8),
             IPPROTO_ICMP,
@@ -433,6 +432,12 @@ mod tests {
             0,
             false,
             &transport,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("too large"),
+            "error should mention 'too large': {err}"
         );
     }
 
@@ -445,7 +450,7 @@ mod tests {
         let src = Ipv4Addr::new(192, 168, 0, 1);
         let dst = Ipv4Addr::new(9, 9, 9, 9);
         let transport = vec![0u8; 12];
-        let pkt = build_ipv4_packet(src, dst, IPPROTO_ICMP, 5, 0x20, false, &transport);
+        let pkt = build_ipv4_packet(src, dst, IPPROTO_ICMP, 5, 0x20, false, &transport).unwrap();
 
         let parsed = Ipv4Packet::new(&pkt).expect("valid IPv4 packet");
         assert_eq!(parsed.get_version(), 4);
@@ -487,13 +492,13 @@ mod tests {
 
         // ICMP echo.
         let icmp = build_echo_request(0x4242, 1, 16, false, None, false);
-        let pkt = build_ipv4_packet(lo, lo, IPPROTO_ICMP, 5, 0, false, &icmp);
+        let pkt = build_ipv4_packet(lo, lo, IPPROTO_ICMP, 5, 0, false, &icmp).unwrap();
         send_raw_ipv4(&socket, &pkt, lo)
             .expect("kernel rejected ICMP IP_HDRINCL packet (ip_len/ip_off byte order?)");
 
         // UDP datagram.
         let udp = build_udp_datagram(lo, lo, 33434, 33500, b"ttl-probe");
-        let pkt = build_ipv4_packet(lo, lo, IPPROTO_UDP, 6, 0, false, &udp);
+        let pkt = build_ipv4_packet(lo, lo, IPPROTO_UDP, 6, 0, false, &udp).unwrap();
         send_raw_ipv4(&socket, &pkt, lo)
             .expect("kernel rejected UDP IP_HDRINCL packet (ip_len/ip_off byte order?)");
 
@@ -506,13 +511,13 @@ mod tests {
             IpAddr::V4(lo),
             0,
         );
-        let pkt = build_ipv4_packet(lo, lo, IPPROTO_TCP, 7, 0, false, &tcp);
+        let pkt = build_ipv4_packet(lo, lo, IPPROTO_TCP, 7, 0, false, &tcp).unwrap();
         send_raw_ipv4(&socket, &pkt, lo)
             .expect("kernel rejected TCP IP_HDRINCL packet (ip_len/ip_off byte order?)");
 
         // Also exercise the Don't Fragment path used by PMTUD.
         let icmp_df = build_echo_request(0x4242, 2, 64, false, None, false);
-        let pkt = build_ipv4_packet(lo, lo, IPPROTO_ICMP, 8, 0, true, &icmp_df);
+        let pkt = build_ipv4_packet(lo, lo, IPPROTO_ICMP, 8, 0, true, &icmp_df).unwrap();
         send_raw_ipv4(&socket, &pkt, lo)
             .expect("kernel rejected DF IP_HDRINCL packet (ip_len/ip_off byte order?)");
     }
@@ -543,7 +548,7 @@ mod tests {
         recv.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
 
         let icmp = build_echo_request(ident, 1, 16, false, None, false);
-        let pkt = build_ipv4_packet(lo, lo, IPPROTO_ICMP, ttl, tos, false, &icmp);
+        let pkt = build_ipv4_packet(lo, lo, IPPROTO_ICMP, ttl, tos, false, &icmp).unwrap();
         send_raw_ipv4(&send, &pkt, lo).expect("send IP_HDRINCL echo to loopback");
 
         // Loopback also yields the kernel's echo reply; read until we see our request.

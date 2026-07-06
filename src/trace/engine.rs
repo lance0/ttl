@@ -860,7 +860,7 @@ impl ProbeEngine {
 
                         let icmp =
                             build_echo_request(self.identifier, probe_id.to_sequence(), payload_size, false, None, false);
-                        let packet = build_ipv4_packet(src, dst, IPPROTO_ICMP, ttl, tos, false, &icmp);
+                        let packet = build_ipv4_packet(src, dst, IPPROTO_ICMP, ttl, tos, false, &icmp)?;
 
                         let sent_at = Instant::now();
                         let flow_id = 0u8;
@@ -976,7 +976,7 @@ impl ProbeEngine {
                             };
 
                             let udp = build_udp_datagram(src, dst, src_port, dst_port, &payload);
-                            let packet = build_ipv4_packet(src, dst, IPPROTO_UDP, ttl, tos, false, &udp);
+                            let packet = build_ipv4_packet(src, dst, IPPROTO_UDP, ttl, tos, false, &udp)?;
 
                             let sent_at = Instant::now();
                             {
@@ -1086,7 +1086,7 @@ impl ProbeEngine {
                                 self.target,
                                 payload_size,
                             );
-                            let packet = build_ipv4_packet(src, dst, IPPROTO_TCP, ttl, tos, false, &tcp);
+                            let packet = build_ipv4_packet(src, dst, IPPROTO_TCP, ttl, tos, false, &tcp)?;
 
                             let sent_at = Instant::now();
                             {
@@ -1331,7 +1331,13 @@ impl ProbeEngine {
             true,
         );
         // Don't Fragment set in the IP header so routers return Frag Needed.
-        let packet = build_ipv4_packet(src, dst, IPPROTO_ICMP, dest_ttl, tos, true, &icmp);
+        let packet = match build_ipv4_packet(src, dst, IPPROTO_ICMP, dest_ttl, tos, true, &icmp) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("PMTUD: Failed to build probe size {}: {}", packet_size, e);
+                return false;
+            }
+        };
 
         let sent_at = Instant::now();
         let flow_id = 0u8;

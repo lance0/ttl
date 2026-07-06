@@ -427,6 +427,18 @@ impl Args {
                 }
             }
         }
+
+        // Reject nonsensical flag combinations in replay/diff modes.
+        // These modes don't probe, so probing-related flags are meaningless.
+        if self.replay.is_some() || self.diff.is_some() {
+            if self.pmtud {
+                return Err("--pmtud cannot be used with --replay or --diff".into());
+            }
+            if self.jumbo {
+                return Err("--jumbo cannot be used with --replay or --diff".into());
+            }
+        }
+
         Ok(())
     }
 }
@@ -781,5 +793,51 @@ mod tests {
         .unwrap();
         assert!(args.daemon && args.stream_json);
         assert!(args.is_headless());
+    }
+
+    #[test]
+    fn test_pmtud_rejected_with_replay() {
+        let mut args =
+            Args::try_parse_from(["ttl", "--replay", "session.json", "--pmtud"]).unwrap();
+        let err = args.validate().unwrap_err();
+        assert!(
+            err.contains("--pmtud"),
+            "error should mention --pmtud: {err}"
+        );
+    }
+
+    #[test]
+    fn test_jumbo_rejected_with_replay() {
+        let mut args =
+            Args::try_parse_from(["ttl", "--replay", "session.json", "--pmtud", "--jumbo"])
+                .unwrap();
+        let err = args.validate().unwrap_err();
+        assert!(
+            err.contains("--pmtud") || err.contains("--jumbo"),
+            "error should mention --pmtud or --jumbo: {err}"
+        );
+    }
+
+    #[test]
+    fn test_pmtud_rejected_with_diff() {
+        let mut args =
+            Args::try_parse_from(["ttl", "--diff", "a.json", "b.json", "--pmtud"]).unwrap();
+        let err = args.validate().unwrap_err();
+        assert!(
+            err.contains("--pmtud"),
+            "error should mention --pmtud: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_passes_for_plain_replay() {
+        let mut args = Args::try_parse_from(["ttl", "--replay", "session.json"]).unwrap();
+        assert!(args.validate().is_ok(), "plain --replay should validate");
+    }
+
+    #[test]
+    fn test_validate_passes_for_plain_diff() {
+        let mut args = Args::try_parse_from(["ttl", "--diff", "a.json", "b.json"]).unwrap();
+        assert!(args.validate().is_ok(), "plain --diff should validate");
     }
 }

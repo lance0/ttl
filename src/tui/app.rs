@@ -475,6 +475,35 @@ fn adjust_replay_speed(ui_state: &mut UiState, delta: f32) {
     ui_state.set_status(format!("Speed: {:.1}x", new_speed));
 }
 
+/// Spawn a dedicated blocking thread to read crossterm events.
+///
+/// `event::poll` and `event::read` are blocking calls that must not run on the
+/// async executor — they'd stall the tokio runtime for up to `tick_rate` each
+/// iteration. This thread forwards `Event`s over a channel so the async loop
+/// can `try_recv` without blocking.
+///
+/// The thread exits when `cancel` fires or the receiver is dropped.
+fn spawn_event_reader(
+    tick_rate: Duration,
+    cancel: CancellationToken,
+) -> std::sync::mpsc::Receiver<Event> {
+    let (tx, rx) = std::sync::mpsc::channel::<Event>();
+
+    std::thread::spawn(move || {
+        while !cancel.is_cancelled() {
+            if event::poll(tick_rate).unwrap_or(false)
+                && let Ok(ev) = event::read()
+                && tx.send(ev).is_err()
+            {
+                // Receiver dropped — TUI is shutting down.
+                break;
+            }
+        }
+    });
+
+    rx
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_app<B>(
     terminal: &mut Terminal<B>,
@@ -491,6 +520,7 @@ where
     B::Error: Send + Sync + 'static,
 {
     let theme_names = Theme::list();
+    let event_rx = spawn_event_reader(tick_rate, cancel.clone());
     let ix_enabled = ix_lookup.is_some();
 
     loop {
@@ -618,10 +648,9 @@ where
             })?;
         }
 
-        // Handle input with timeout
-        if event::poll(tick_rate)?
-            && let Event::Key(key) = event::read()?
-        {
+        // Handle input — non-blocking: the event-reader thread forwards
+        // crossterm events over the channel so we never stall the async runtime.
+        if let Ok(Event::Key(key)) = event_rx.try_recv() {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
@@ -1054,6 +1083,11 @@ where
                 _ => {}
             }
         }
+
+        // Yield to the async runtime so other tasks (receiver, enrichment
+        // workers, cancellation) are not starved. Previously the blocking
+        // `event::poll(tick_rate)` provided this pacing implicitly.
+        tokio::time::sleep(tick_rate).await;
     }
 
     Ok(())

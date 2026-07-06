@@ -47,10 +47,17 @@ use tui::views::target_input::{AddTargetRequest, AddedTarget};
 async fn main() -> Result<()> {
     let mut args = Args::parse();
 
-    // Handle shell completion generation (instant, no update check needed)
+    // Handle shell completion generation (instant, no validation needed)
     if let Some(ref shell) = args.completions {
         generate_completions(shell);
         return Ok(());
+    }
+
+    // Validate before any mode dispatch so replay/diff also catch bad flags
+    // (e.g., --pmtud with --replay, nonsensical port/TTL combos).
+    if let Err(e) = args.validate() {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
     }
 
     // Handle replay mode (quick viewing operation, no update check)
@@ -70,12 +77,6 @@ async fn main() -> Result<()> {
         let result = update::check_for_update();
         let _ = update_tx.send(result); // Ignore if receiver dropped
     });
-
-    // Validate arguments
-    if let Err(e) = args.validate() {
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
-    }
 
     // Check permissions early
     if let Err(e) = check_permissions() {
