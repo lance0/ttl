@@ -756,6 +756,10 @@ fn parse_icmp_error_payload_v6_with_mtu(
             // [4-5]  Identifier
             // [6-7]  Sequence
 
+            if original_payload.len() < 8 {
+                return None;
+            }
+
             if original_payload[0] != ICMPV6_ECHO_REQUEST {
                 // Not our Echo Request
                 return None;
@@ -1246,6 +1250,10 @@ fn parse_icmp_error_payload_v6_dgram(
 
     match next_header {
         IPPROTO_ICMPV6 => {
+            if original_payload.len() < 8 {
+                return None;
+            }
+
             if original_payload[0] != ICMPV6_ECHO_REQUEST {
                 return None;
             }
@@ -1729,6 +1737,27 @@ mod tests {
         packet[63] = (seq & 0xFF) as u8;
 
         // Fragment headers in quoted packets should be rejected (can't reassemble)
+        let result = parse_icmp_response(&packet, responder, our_id, true);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_v6_error_quoted_ext_header_without_transport_rejected() {
+        let responder = IpAddr::V6(std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
+        let our_id = 0xABCD;
+
+        // ICMPv6 Time Exceeded quoting an IPv6 packet whose Hop-by-Hop header
+        // points to ICMPv6, but the quote ends before the ICMPv6 header. This
+        // must return None rather than indexing an empty transport payload.
+        let mut packet = vec![0u8; 56];
+        packet[0] = 3; // Time Exceeded
+        packet[1] = 0; // Hop limit exceeded
+        packet[8] = 0x60; // Quoted IPv6 version
+        packet[14] = 0; // Next Header: Hop-by-Hop
+        packet[15] = 1; // Quoted hop limit
+        packet[48] = 58; // Hop-by-Hop Next Header: ICMPv6
+        packet[49] = 0; // 8-byte extension header, no transport bytes follow
+
         let result = parse_icmp_response(&packet, responder, our_id, true);
         assert!(result.is_none());
     }
