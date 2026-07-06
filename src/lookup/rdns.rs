@@ -89,6 +89,13 @@ impl DnsLookup {
                     cached_at: Instant::now(),
                 },
             );
+            // Evict stale/overflow entries to keep the cache bounded.
+            super::prune_cache(
+                &mut cache,
+                self.cache_ttl,
+                |e| e.cached_at,
+                |e, ttl| e.cached_at.elapsed() >= ttl,
+            );
         }
 
         hostname

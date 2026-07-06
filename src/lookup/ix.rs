@@ -284,6 +284,12 @@ pub struct CacheStatus {
     pub refreshing: bool,
 }
 
+/// Per-IP cache entry for IX lookup results.
+struct IpCacheEntry {
+    result: Option<IxInfo>,
+    cached_at: Instant,
+}
+
 /// IX lookup via PeeringDB prefix matching
 pub struct IxLookup {
     /// Parsed prefixes for lookup (populated from cache or API)
@@ -296,12 +302,10 @@ pub struct IxLookup {
     load_once: OnceCell<()>,
     /// Timestamp of last load failure (for backoff)
     last_failure: AtomicU64,
-    /// Per-IP result cache (to avoid repeated lookups)
-    ip_cache: RwLock<HashMap<IpAddr, Option<IxInfo>>>,
+    /// Per-IP result cache (to avoid repeated radix lookups)
+    ip_cache: RwLock<HashMap<IpAddr, IpCacheEntry>>,
     /// IP cache TTL
     ip_cache_ttl: Duration,
-    /// Timestamps for IP cache entries
-    ip_cache_times: RwLock<HashMap<IpAddr, Instant>>,
     /// Stored API key (env var takes precedence)
     api_key: RwLock<Option<String>>,
     /// Unix timestamp when cache was last fetched
@@ -334,7 +338,6 @@ impl IxLookup {
             last_failure: AtomicU64::new(0),
             ip_cache: RwLock::new(HashMap::new()),
             ip_cache_ttl: Duration::from_secs(3600), // 1 hour for IP results
-            ip_cache_times: RwLock::new(HashMap::new()),
             api_key: RwLock::new(None),
             cache_fetched_at: AtomicU64::new(0),
             refreshing: AtomicBool::new(false),
@@ -348,11 +351,10 @@ impl IxLookup {
         // Check IP cache first
         {
             let ip_cache = self.ip_cache.read();
-            let ip_times = self.ip_cache_times.read();
-            if let (Some(result), Some(time)) = (ip_cache.get(&ip), ip_times.get(&ip))
-                && time.elapsed() < self.ip_cache_ttl
+            if let Some(entry) = ip_cache.get(&ip)
+                && entry.cached_at.elapsed() < self.ip_cache_ttl
             {
-                return result.clone();
+                return entry.result.clone();
             }
         }
 
@@ -398,11 +400,21 @@ impl IxLookup {
         // Cache result
         {
             let mut ip_cache = self.ip_cache.write();
-            let mut ip_times = self.ip_cache_times.write();
-            ip_cache.insert(ip, result.clone());
-            ip_times.insert(ip, Instant::now());
+            ip_cache.insert(
+                ip,
+                IpCacheEntry {
+                    result: result.clone(),
+                    cached_at: Instant::now(),
+                },
+            );
+            // Evict stale/overflow entries to keep the cache bounded.
+            super::prune_cache(
+                &mut ip_cache,
+                self.ip_cache_ttl,
+                |e| e.cached_at,
+                |e, ttl| e.cached_at.elapsed() >= ttl,
+            );
         }
-
         result
     }
 
@@ -700,7 +712,6 @@ impl IxLookup {
 
         // Clear IP cache so new lookups use fresh data
         self.ip_cache.write().clear();
-        self.ip_cache_times.write().clear();
 
         Ok(())
     }
@@ -816,7 +827,6 @@ mod tests {
             last_failure: AtomicU64::new(0),
             ip_cache: RwLock::new(HashMap::new()),
             ip_cache_ttl: Duration::from_secs(3600),
-            ip_cache_times: RwLock::new(HashMap::new()),
             api_key: RwLock::new(None),
             cache_fetched_at: AtomicU64::new(0),
             refreshing: AtomicBool::new(false),
@@ -1002,7 +1012,6 @@ mod tests {
             last_failure: AtomicU64::new(0),
             ip_cache: RwLock::new(HashMap::new()),
             ip_cache_ttl: Duration::from_secs(3600),
-            ip_cache_times: RwLock::new(HashMap::new()),
             api_key: RwLock::new(None),
             cache_fetched_at: AtomicU64::new(0),
             refreshing: AtomicBool::new(false),
@@ -1041,7 +1050,6 @@ mod tests {
             last_failure: AtomicU64::new(0),
             ip_cache: RwLock::new(HashMap::new()),
             ip_cache_ttl: Duration::from_secs(3600),
-            ip_cache_times: RwLock::new(HashMap::new()),
             api_key: RwLock::new(None),
             cache_fetched_at: AtomicU64::new(0),
             refreshing: AtomicBool::new(false),
@@ -1088,7 +1096,6 @@ mod tests {
             last_failure: AtomicU64::new(0),
             ip_cache: RwLock::new(HashMap::new()),
             ip_cache_ttl: Duration::from_secs(3600),
-            ip_cache_times: RwLock::new(HashMap::new()),
             api_key: RwLock::new(None),
             cache_fetched_at: AtomicU64::new(0),
             refreshing: AtomicBool::new(false),
@@ -1124,7 +1131,6 @@ mod tests {
             last_failure: AtomicU64::new(0),
             ip_cache: RwLock::new(HashMap::new()),
             ip_cache_ttl: Duration::from_secs(3600),
-            ip_cache_times: RwLock::new(HashMap::new()),
             api_key: RwLock::new(None),
             cache_fetched_at: AtomicU64::new(0),
             refreshing: AtomicBool::new(false),
