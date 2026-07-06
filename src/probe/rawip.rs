@@ -230,6 +230,14 @@ pub fn create_raw_hdrincl_socket_with_interface(
 fn set_ip_hdrincl(socket: &Socket) -> Result<()> {
     use std::os::unix::io::AsRawFd;
     let one: libc::c_int = 1;
+    // SAFETY: `socket.as_raw_fd()` yields a valid open file descriptor for the
+    // lifetime of the borrow (the `Socket` outlives this call). `IPPROTO_IP` and
+    // `IP_HDRINCL` are compile-time constants. `one` is a stack `c_int` that lives
+    // until after the call returns, so the `*const c_void` pointer and the
+    // `size_of_val(&one)` length denote a valid, initialized `c_int` for the
+    // duration of `setsockopt`. `setsockopt` itself is thread-safe and performs no
+    // synchronization that could deadlock. The only error mode is a negative
+    // return, which we translate below via `last_os_error()`.
     let ret = unsafe {
         libc::setsockopt(
             socket.as_raw_fd(),
