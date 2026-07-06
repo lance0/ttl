@@ -97,7 +97,7 @@ pub fn create_udp_dgram_socket_bound_with_interface(
     src_port: u16,
     interface: Option<&InterfaceInfo>,
 ) -> Result<Socket> {
-    create_udp_dgram_socket_bound_full(ipv6, src_port, interface, None)
+    create_udp_dgram_socket_bound_full(ipv6, src_port, interface, None, None)
 }
 
 /// Create a DGRAM UDP socket bound to source port, interface, and optionally source IP
@@ -107,6 +107,7 @@ pub fn create_udp_dgram_socket_bound_full(
     src_port: u16,
     interface: Option<&InterfaceInfo>,
     source_ip: Option<IpAddr>,
+    scope_id: Option<u32>,
 ) -> Result<Socket> {
     let socket = create_udp_dgram_socket(ipv6)?;
 
@@ -127,9 +128,12 @@ pub fn create_udp_dgram_socket_bound_full(
     socket.set_reuse_address(true)?;
 
     // Bind to the specified source port (and optionally source IP)
-    let bind_addr = match source_ip {
-        Some(ip) => SocketAddr::new(ip, src_port),
-        None => {
+    let bind_addr = match (source_ip, scope_id) {
+        (Some(IpAddr::V6(v6)), Some(scope)) => {
+            SocketAddr::V6(std::net::SocketAddrV6::new(v6, src_port, 0, scope))
+        }
+        (Some(ip), _) => SocketAddr::new(ip, src_port),
+        (None, _) => {
             if ipv6 {
                 SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), src_port)
             } else {

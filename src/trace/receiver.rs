@@ -46,6 +46,9 @@ const MAX_DRAIN_BATCH: usize = 100;
 struct BatchedResponse {
     probe_id: ProbeId,
     responder: IpAddr,
+    /// IPv6 scope ID for link-local responders (from sin6_scope_id)
+    #[allow(dead_code)]
+    responder_scope_id: Option<u32>,
     rtt: Duration,
     mpls_labels: Option<Vec<MplsLabel>>,
     response_type: IcmpResponseType,
@@ -197,6 +200,8 @@ impl Receiver {
                         // Reset consecutive error count on successful receive
                         self.consecutive_errors = 0;
                         batch_count += 1;
+                        // scope_id from the source address (non-zero for IPv6 link-local)
+                        let responder_scope_id = recv_result.scope_id;
 
                         if let Some(parsed) = parse_icmp_response(
                             &buffer[..recv_result.len],
@@ -264,6 +269,7 @@ impl Receiver {
                                 batch.push(BatchedResponse {
                                     probe_id: parsed.probe_id,
                                     responder: parsed.responder,
+                                    responder_scope_id,
                                     rtt,
                                     mpls_labels: parsed.mpls_labels,
                                     response_type: parsed.response_type,

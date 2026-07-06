@@ -203,9 +203,13 @@ pub struct Args {
     #[arg(long = "rate", value_parser = clap::value_parser!(u32).range(0..=10000))]
     pub rate: Option<u32>,
 
-    /// Source IP address for probes
+    /// Source IP address for probes (supports IPv6 zone: fe80::1%eth0)
     #[arg(long = "source-ip", value_name = "IP")]
-    pub source_ip: Option<std::net::IpAddr>,
+    pub source_ip: Option<String>,
+
+    /// Parsed IPv6 scope ID from `--source-ip` zone (populated in `validate`)
+    #[arg(skip)]
+    pub source_ip_scope_id: Option<u32>,
 
     /// Generate shell completions and exit
     #[arg(long, value_name = "SHELL", value_parser = ["bash", "zsh", "fish", "powershell"])]
@@ -258,7 +262,7 @@ impl Args {
     }
 
     /// Validate arguments
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&mut self) -> Result<(), String> {
         // Interactive TUI mode supports starting empty (add targets with 'o');
         // every other mode needs at least one target up front
         if self.targets.is_empty() && (self.is_batch_mode() || self.is_headless()) {
@@ -383,6 +387,46 @@ impl Args {
             }
         }
 
+        // Parse --source-ip zone ID (e.g. fe80::1%eth0 → scope_id)
+        if let Some(raw) = &self.source_ip {
+            let (ip_part, zone) = match raw.split_once('%') {
+                Some((ip, zone)) => (ip, Some(zone)),
+                None => (raw.as_str(), None),
+            };
+            // Validate the IP part parses
+            if ip_part.parse::<std::net::IpAddr>().is_err() {
+                return Err(format!("Invalid source IP: {raw}"));
+            }
+            // Resolve zone to numeric scope_id
+            if let Some(zone) = zone {
+                // Numeric scope_id (e.g. "2")
+                match zone.parse::<u32>() {
+                    Ok(id) => self.source_ip_scope_id = Some(id),
+                    Err(_) => {
+                        // Interface name (e.g. "eth0") → resolve via if_nametoindex
+                        #[cfg(unix)]
+                        {
+                            let cname = std::ffi::CString::new(zone)
+                                .map_err(|_| format!("Invalid zone name: {zone}"))?;
+                            let idx = unsafe { libc::if_nametoindex(cname.as_ptr()) };
+                            if idx == 0 {
+                                return Err(format!(
+                                    "Unknown interface '{zone}' in --source-ip zone"
+                                ));
+                            }
+                            self.source_ip_scope_id = Some(idx);
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            return Err(format!(
+                                "Interface name zone '{zone}' not supported on this platform; \
+                                 use a numeric scope ID"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -432,6 +476,7 @@ mod tests {
             jumbo: false,
             rate: None,
             source_ip: None,
+            source_ip_scope_id: None,
             completions: None,
         };
         overrides(&mut args);
@@ -441,7 +486,7 @@ mod tests {
     #[test]
     fn test_src_port_flows_valid_at_max() {
         // src_port=65520, flows=16 uses ports 65520..65535 (valid)
-        let args = make_args(|a| {
+        let mut args = make_args(|a| {
             a.src_port = 65520;
             a.flows = 16;
         });
@@ -451,7 +496,7 @@ mod tests {
     #[test]
     fn test_src_port_flows_overflow() {
         // src_port=65521, flows=16 would use port 65536 (invalid)
-        let args = make_args(|a| {
+        let mut args = make_args(|a| {
             a.src_port = 65521;
             a.flows = 16;
         });
@@ -461,7 +506,7 @@ mod tests {
 
     #[test]
     fn test_nan_interval_rejected() {
-        let args = make_args(|a| {
+        let mut args = make_args(|a| {
             a.interval = f64::NAN;
         });
         assert!(args.validate().unwrap_err().contains("positive, finite"));
@@ -469,7 +514,7 @@ mod tests {
 
     #[test]
     fn test_inf_timeout_rejected() {
-        let args = make_args(|a| {
+        let mut args = make_args(|a| {
             a.timeout = f64::INFINITY;
         });
         assert!(args.validate().unwrap_err().contains("positive, finite"));
@@ -477,7 +522,7 @@ mod tests {
 
     #[test]
     fn test_huge_interval_rejected() {
-        let args = make_args(|a| {
+        let mut args = make_args(|a| {
             a.interval = 1e300;
         });
         assert!(args.validate().unwrap_err().contains("too large"));
@@ -485,7 +530,7 @@ mod tests {
 
     #[test]
     fn test_huge_timeout_rejected() {
-        let args = make_args(|a| {
+        let mut args = make_args(|a| {
             a.timeout = 1e300;
         });
         assert!(args.validate().unwrap_err().contains("too large"));
@@ -494,7 +539,7 @@ mod tests {
     #[test]
     fn test_port_max_ttl_overflow_rejected() {
         // port=65530, max_ttl=30 → max port 65560 (overflows u16) unless --fixed-port
-        let args = make_args(|a| {
+        let mut args = make_args(|a| {
             a.protocol = "udp".to_string();
             a.port = Some(65530);
             a.max_ttl = 30;
@@ -505,7 +550,7 @@ mod tests {
     #[test]
     fn test_port_max_ttl_valid_at_boundary() {
         // port=65505, max_ttl=30 → max port 65535 (valid)
-        let args = make_args(|a| {
+        let mut args = make_args(|a| {
             a.protocol = "udp".to_string();
             a.port = Some(65505);
             a.max_ttl = 30;
@@ -523,7 +568,7 @@ mod tests {
     #[test]
     fn test_port_max_ttl_fixed_port_skips_check() {
         // With --fixed-port, the per-TTL port variation is disabled
-        let args = make_args(|a| {
+        let mut args = make_args(|a| {
             a.protocol = "udp".to_string();
             a.port = Some(65530);
             a.max_ttl = 30;
@@ -535,7 +580,7 @@ mod tests {
     #[test]
     fn test_timeout_interval_valid() {
         // timeout=255s with interval=1s is just under the limit (must be < 256 × interval)
-        let args = make_args(|a| {
+        let mut args = make_args(|a| {
             a.timeout = 255.0;
             a.interval = 1.0;
         });
@@ -545,7 +590,7 @@ mod tests {
     #[test]
     fn test_timeout_interval_boundary_rejected() {
         // timeout=256s with interval=1s is exactly at the limit — now rejected
-        let args = make_args(|a| {
+        let mut args = make_args(|a| {
             a.timeout = 256.0;
             a.interval = 1.0;
         });
@@ -555,7 +600,7 @@ mod tests {
     #[test]
     fn test_timeout_interval_wrap_rejected() {
         // timeout=257s with interval=1s exceeds 256 × interval
-        let args = make_args(|a| {
+        let mut args = make_args(|a| {
             a.timeout = 257.0;
             a.interval = 1.0;
         });
@@ -566,7 +611,7 @@ mod tests {
     #[test]
     fn test_timeout_interval_fast_probes() {
         // With 0.1s interval, timeout must be <= 25.6s
-        let args = make_args(|a| {
+        let mut args = make_args(|a| {
             a.timeout = 30.0;
             a.interval = 0.1;
         });
@@ -609,38 +654,38 @@ mod tests {
 
     #[test]
     fn test_empty_targets_interactive_ok() {
-        let args = make_args(|a| a.targets = vec![]);
+        let mut args = make_args(|a| a.targets = vec![]);
         assert!(args.validate().is_ok());
     }
 
     #[test]
     fn test_empty_targets_rejected_for_non_interactive_modes() {
-        let no_tui = make_args(|a| {
+        let mut no_tui = make_args(|a| {
             a.targets = vec![];
             a.no_tui = true;
         });
         assert!(no_tui.validate().unwrap_err().contains("No targets"));
 
-        let batch = make_args(|a| {
+        let mut batch = make_args(|a| {
             a.targets = vec![];
             a.json = true;
             a.count = 5;
         });
         assert!(batch.validate().is_err());
 
-        let daemon = make_args(|a| {
+        let mut daemon = make_args(|a| {
             a.targets = vec![];
             a.daemon = true;
         });
         assert!(daemon.validate().is_err());
 
-        let stream = make_args(|a| {
+        let mut stream = make_args(|a| {
             a.targets = vec![];
             a.stream_json = true;
         });
         assert!(stream.validate().is_err());
 
-        let prom = make_args(|a| {
+        let mut prom = make_args(|a| {
             a.targets = vec![];
             a.prometheus = Some(":9090".to_string());
         });
@@ -649,7 +694,7 @@ mod tests {
 
     #[test]
     fn test_prometheus_addr_shorthand() {
-        let args = make_args(|a| a.prometheus = Some(":9090".to_string()));
+        let mut args = make_args(|a| a.prometheus = Some(":9090".to_string()));
         assert_eq!(
             args.prometheus_addr(),
             Some("0.0.0.0:9090".parse().unwrap())
@@ -669,9 +714,52 @@ mod tests {
 
     #[test]
     fn test_prometheus_addr_invalid() {
-        let args = make_args(|a| a.prometheus = Some("not-an-addr".to_string()));
+        let mut args = make_args(|a| a.prometheus = Some("not-an-addr".to_string()));
         assert!(args.prometheus_addr().is_none());
         assert!(args.validate().unwrap_err().contains("--prometheus"));
+    }
+
+    #[test]
+    fn test_source_ip_plain_ipv4() {
+        let mut args = make_args(|a| a.source_ip = Some("192.168.1.1".to_string()));
+        assert!(args.validate().is_ok());
+        assert_eq!(args.source_ip_scope_id, None);
+    }
+
+    #[test]
+    fn test_source_ip_plain_ipv6() {
+        let mut args = make_args(|a| {
+            a.source_ip = Some("2001:db8::1".to_string());
+            a.ipv6 = true;
+        });
+        assert!(args.validate().is_ok());
+        assert_eq!(args.source_ip_scope_id, None);
+    }
+
+    #[test]
+    fn test_source_ip_ipv6_numeric_scope() {
+        let mut args = make_args(|a| {
+            a.source_ip = Some("fe80::1%5".to_string());
+            a.ipv6 = true;
+        });
+        assert!(args.validate().is_ok());
+        assert_eq!(args.source_ip_scope_id, Some(5));
+    }
+
+    #[test]
+    fn test_source_ip_invalid_ip() {
+        let mut args = make_args(|a| a.source_ip = Some("not-an-ip".to_string()));
+        assert!(args.validate().unwrap_err().contains("Invalid source IP"));
+    }
+
+    #[test]
+    fn test_source_ip_invalid_zone_interface() {
+        let mut args = make_args(|a| {
+            a.source_ip = Some("fe80::1%nonexistent99".to_string());
+            a.ipv6 = true;
+        });
+        let err = args.validate().unwrap_err();
+        assert!(err.contains("Unknown interface"));
     }
 
     #[test]

@@ -45,7 +45,7 @@ use tui::views::target_input::{AddTargetRequest, AddedTarget};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
 
     // Handle shell completion generation (instant, no update check needed)
     if let Some(ref shell) = args.completions {

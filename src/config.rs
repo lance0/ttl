@@ -71,6 +71,9 @@ pub struct Config {
     /// Source IP address for probes
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_ip: Option<IpAddr>,
+    /// IPv6 scope ID for link-local source IP (zone index from `--source-ip fe80::%eth0`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ip_scope_id: Option<u32>,
 }
 
 fn default_flows() -> u8 {
@@ -101,9 +104,10 @@ impl Default for Config {
             dscp: None,
             packet_size: None,
             pmtud: false,
+            source_ip: None,
+            source_ip_scope_id: None,
             jumbo: false,
             rate: None,
-            source_ip: None,
         }
     }
 }
@@ -149,7 +153,12 @@ impl From<&Args> for Config {
             pmtud: args.pmtud,
             jumbo: args.jumbo,
             rate: args.rate,
-            source_ip: args.source_ip,
+            source_ip: args.source_ip.as_deref().and_then(|s| {
+                // Strip zone ID for the IpAddr; scope_id is stored separately.
+                let ip_str = s.split('%').next().unwrap_or(s);
+                ip_str.parse().ok()
+            }),
+            source_ip_scope_id: args.source_ip_scope_id,
         }
     }
 }

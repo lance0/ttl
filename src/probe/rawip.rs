@@ -224,7 +224,7 @@ pub fn create_raw_hdrincl_socket_with_interface(
 
     // Bind to the configured source IP so a non-local --source-ip fails fast.
     if let Some(src) = bind_src {
-        bind_to_source_ip(&socket, IpAddr::V4(src))?;
+        bind_to_source_ip(&socket, IpAddr::V4(src), None)?;
     }
 
     Ok(socket)

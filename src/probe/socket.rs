@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 use std::time::Duration;
 
 /// Socket capability level
@@ -275,10 +275,16 @@ pub fn set_dscp(socket: &Socket, dscp: u8, ipv6: bool) -> Result<()> {
     Ok(())
 }
 
-/// Bind socket to a specific source IP address
-/// Call this after interface binding (if any) to force a specific source address
-pub fn bind_to_source_ip(socket: &Socket, ip: IpAddr) -> Result<()> {
-    let addr = SocketAddr::new(ip, 0);
+/// Bind socket to a specific source IP address.
+///
+/// Call this after interface binding (if any) to force a specific source address.
+/// For IPv6 link-local addresses, `scope_id` identifies the interface and must be
+/// provided for the bind to succeed (LAN-143).
+pub fn bind_to_source_ip(socket: &Socket, ip: IpAddr, scope_id: Option<u32>) -> Result<()> {
+    let addr = match (ip, scope_id) {
+        (IpAddr::V6(v6), Some(scope)) => SocketAddr::V6(SocketAddrV6::new(v6, 0, 0, scope)),
+        (ip, _) => SocketAddr::new(ip, 0),
+    };
     socket.bind(&SockAddr::from(addr))?;
     Ok(())
 }
@@ -424,6 +430,8 @@ pub fn send_icmp(socket: &Socket, packet: &[u8], target: IpAddr) -> Result<usize
 pub struct RecvResult {
     pub len: usize,
     pub source: IpAddr,
+    /// IPv6 scope ID from the source address (non-zero for link-local responders)
+    pub scope_id: Option<u32>,
     /// TTL/hop-limit from the IP header of the response packet
     pub response_ttl: Option<u8>,
 }
@@ -513,8 +521,8 @@ pub fn recv_icmp_with_ttl(socket: &Socket, buffer: &mut [u8], ipv6: bool) -> Res
         return Err(std::io::Error::last_os_error().into());
     }
 
-    // Parse source address
-    let source = parse_sockaddr_storage(&src_storage)?;
+    // Parse source address (and IPv6 scope ID for link-local responders)
+    let (source, scope_id) = parse_sockaddr_storage(&src_storage)?;
 
     // Check for MSG_CTRUNC - control message truncated, TTL may be unreliable
     let response_ttl = if msg.msg_flags & libc::MSG_CTRUNC != 0 {
@@ -527,6 +535,7 @@ pub fn recv_icmp_with_ttl(socket: &Socket, buffer: &mut [u8], ipv6: bool) -> Res
     Ok(RecvResult {
         len: len as usize,
         source,
+        scope_id,
         response_ttl,
     })
 }
@@ -601,19 +610,30 @@ fn extract_ttl_from_cmsg(msg: &libc::msghdr, ipv6: bool) -> Option<u8> {
     None
 }
 
-/// Parse sockaddr_storage to IpAddr
+/// Parse sockaddr_storage to IpAddr and (for IPv6) the scope ID.
+///
+/// For link-local IPv6 responders, `sin6_scope_id` identifies the interface the
+/// response arrived on. Dropping it makes the address ambiguous when multiple
+/// interfaces have link-local routers (LAN-143).
 #[cfg(unix)]
-fn parse_sockaddr_storage(storage: &libc::sockaddr_storage) -> Result<IpAddr> {
+fn parse_sockaddr_storage(storage: &libc::sockaddr_storage) -> Result<(IpAddr, Option<u32>)> {
     match storage.ss_family as libc::c_int {
         libc::AF_INET => {
             let addr: &libc::sockaddr_in = unsafe { &*(storage as *const _ as *const _) };
             let ip = std::net::Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
-            Ok(IpAddr::V4(ip))
+            Ok((IpAddr::V4(ip), None))
         }
         libc::AF_INET6 => {
             let addr: &libc::sockaddr_in6 = unsafe { &*(storage as *const _ as *const _) };
             let ip = std::net::Ipv6Addr::from(addr.sin6_addr.s6_addr);
-            Ok(IpAddr::V6(ip))
+            // sin6_scope_id is 0 for non-link-local addresses; preserve it so
+            // link-local responders can be disambiguated.
+            let scope_id = if addr.sin6_scope_id != 0 {
+                Some(addr.sin6_scope_id)
+            } else {
+                None
+            };
+            Ok((IpAddr::V6(ip), scope_id))
         }
         _ => Err(anyhow!("Unknown address family: {}", storage.ss_family)),
     }
@@ -662,6 +682,8 @@ pub fn create_recv_socket_with_interface(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn test_probe_id_encoding() {
         use crate::state::ProbeId;
@@ -672,5 +694,59 @@ mod tests {
 
         assert_eq!(decoded.ttl, 15);
         assert_eq!(decoded.seq, 42);
+    }
+
+    #[test]
+    fn test_parse_sockaddr_storage_ipv6_scope_id() {
+        use std::mem;
+
+        // Build a sockaddr_in6 with a link-local address and scope_id=3
+        let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+        let sin6: &mut libc::sockaddr_in6 =
+            unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6) };
+        sin6.sin6_family = libc::AF_INET6 as _;
+        sin6.sin6_addr.s6_addr = [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        sin6.sin6_scope_id = 3;
+
+        let (ip, scope_id) = parse_sockaddr_storage(&storage).unwrap();
+        assert!(ip.is_ipv6());
+        assert_eq!(scope_id, Some(3));
+    }
+
+    #[test]
+    fn test_parse_sockaddr_storage_ipv6_no_scope_id() {
+        use std::mem;
+
+        // Global IPv6 address — scope_id should be None (sin6_scope_id == 0)
+        let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+        let sin6: &mut libc::sockaddr_in6 =
+            unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6) };
+        sin6.sin6_family = libc::AF_INET6 as _;
+        sin6.sin6_addr.s6_addr = [
+            0x20, 0x01, 0x48, 0x60, 0x48, 0x60, 0, 0, 0, 0, 0, 0, 0, 0, 0x88, 0x88,
+        ];
+        sin6.sin6_scope_id = 0;
+
+        let (ip, scope_id) = parse_sockaddr_storage(&storage).unwrap();
+        assert!(ip.is_ipv6());
+        assert_eq!(scope_id, None);
+    }
+
+    #[test]
+    fn test_parse_sockaddr_storage_ipv4() {
+        use std::mem;
+
+        let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+        let sin: &mut libc::sockaddr_in =
+            unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in) };
+        sin.sin_family = libc::AF_INET as _;
+        sin.sin_addr.s_addr = u32::from_be_bytes([8, 8, 8, 8]).to_be();
+
+        let (ip, scope_id) = parse_sockaddr_storage(&storage).unwrap();
+        assert_eq!(
+            ip,
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(8, 8, 8, 8))
+        );
+        assert_eq!(scope_id, None);
     }
 }

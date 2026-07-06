@@ -106,7 +106,8 @@ impl ProbeEngine {
         // Skip binding if source is unspecified (:: or 0.0.0.0) - let kernel choose.
         if (self.config.source_ip.is_some() || ipv6)
             && !src_ip.is_unspecified()
-            && let Err(e) = bind_to_source_ip(&socket_info.socket, src_ip)
+            && let Err(e) =
+                bind_to_source_ip(&socket_info.socket, src_ip, self.config.source_ip_scope_id)
         {
             if self.config.source_ip.is_some() {
                 // User explicitly requested this source IP - hard fail
@@ -136,8 +137,13 @@ impl ProbeEngine {
         src_port: u16,
         source_ip: Option<IpAddr>,
     ) -> Result<Socket> {
-        let socket =
-            create_udp_dgram_socket_bound_full(ipv6, src_port, self.interface.as_ref(), source_ip)?;
+        let socket = create_udp_dgram_socket_bound_full(
+            ipv6,
+            src_port,
+            self.interface.as_ref(),
+            source_ip,
+            self.config.source_ip_scope_id,
+        )?;
         if let Some(dscp) = self.config.dscp
             && let Err(e) = set_dscp(&socket, dscp, ipv6)
         {
@@ -154,7 +160,7 @@ impl ProbeEngine {
     fn build_tcp_send_socket(&self, ipv6: bool) -> Result<Socket> {
         let socket = create_tcp_socket_with_interface(ipv6, self.interface.as_ref())?;
         if let Some(source_ip) = self.config.source_ip {
-            bind_to_source_ip(&socket, source_ip)?;
+            bind_to_source_ip(&socket, source_ip, self.config.source_ip_scope_id)?;
         }
         if let Some(dscp) = self.config.dscp
             && let Err(e) = set_dscp(&socket, dscp, ipv6)
