@@ -540,6 +540,24 @@ pub fn recv_icmp_with_ttl(socket: &Socket, buffer: &mut [u8], ipv6: bool) -> Res
     })
 }
 
+/// Read a TTL / hop-limit value out of a cmsg data buffer, handling both
+/// encodings seen in the wild: a 4-byte `int` (Linux IPv4 `IP_TTL`, and the
+/// IPv6 hop-limit on every platform per RFC 3542) and a single `u_char` (the
+/// BSD/macOS IPv4 `IP_RECVTTL`). `data_len` is the cmsg payload length in bytes.
+///
+/// # Safety
+/// `data_ptr` must be valid for reads of `data_len` bytes, and `data_len >= 1`.
+#[cfg(unix)]
+unsafe fn read_cmsg_ttl(data_ptr: *const libc::c_uchar, data_len: usize) -> u8 {
+    if data_len >= std::mem::size_of::<libc::c_int>() {
+        // Native-endian int; `as u8` keeps the numerically low byte (the TTL)
+        // on both little- and big-endian hosts.
+        unsafe { std::ptr::read_unaligned(data_ptr as *const libc::c_int) as u8 }
+    } else {
+        unsafe { std::ptr::read_unaligned(data_ptr) }
+    }
+}
+
 /// Extract TTL/hop limit from control message
 #[cfg(unix)]
 fn extract_ttl_from_cmsg(msg: &libc::msghdr, ipv6: bool) -> Option<u8> {
@@ -581,26 +599,27 @@ fn extract_ttl_from_cmsg(msg: &libc::msghdr, ipv6: bool) -> Option<u8> {
             let cmsg_type = std::ptr::addr_of!((*cmsg).cmsg_type).read_unaligned();
             let cmsg_len = std::ptr::addr_of!((*cmsg).cmsg_len).read_unaligned() as usize;
 
-            // Validate cmsg_len is large enough to hold the TTL/hop-limit integer
-            let min_len = libc::CMSG_LEN(std::mem::size_of::<libc::c_int>() as u32) as usize;
-            if cmsg_len < min_len {
+            // Require at least one data byte, then pick the read width by the
+            // actual payload length (see read_cmsg_ttl). Gating on CMSG_LEN(int)
+            // as before would wrongly drop the BSD/macOS 1-byte IPv4 IP_RECVTTL
+            // cmsg; gating on one byte keeps the over-read protection (#102) while
+            // still populating response TTL on those platforms.
+            let header_len = libc::CMSG_LEN(0) as usize;
+            if cmsg_len < header_len + 1 {
                 cmsg = libc::CMSG_NXTHDR(msg, cmsg);
                 continue;
             }
+            let data_len = cmsg_len - header_len;
 
             if ipv6 {
-                // IPV6_HOPLIMIT
+                // IPV6_HOPLIMIT (always a 4-byte int per RFC 3542)
                 if cmsg_level == libc::IPPROTO_IPV6 && cmsg_type == ipv6_hoplimit {
-                    let data_ptr = libc::CMSG_DATA(cmsg);
-                    let ttl = std::ptr::read_unaligned(data_ptr as *const i32);
-                    return Some(ttl as u8);
+                    return Some(read_cmsg_ttl(libc::CMSG_DATA(cmsg), data_len));
                 }
             } else {
-                // IP_TTL - check platform-specific type(s)
+                // IP_TTL / IP_RECVTTL - check platform-specific type(s)
                 if cmsg_level == libc::IPPROTO_IP && is_ip_ttl_type(cmsg_type) {
-                    let data_ptr = libc::CMSG_DATA(cmsg);
-                    let ttl = std::ptr::read_unaligned(data_ptr as *const i32);
-                    return Some(ttl as u8);
+                    return Some(read_cmsg_ttl(libc::CMSG_DATA(cmsg), data_len));
                 }
             }
 
@@ -748,5 +767,85 @@ mod tests {
             std::net::IpAddr::V4(std::net::Ipv4Addr::new(8, 8, 8, 8))
         );
         assert_eq!(scope_id, None);
+    }
+
+    // Run extract_ttl_from_cmsg over a single synthetic cmsg (level/type/payload).
+    #[cfg(unix)]
+    fn extract_one_cmsg(
+        level: libc::c_int,
+        ctype: libc::c_int,
+        data: &[u8],
+        ipv6: bool,
+    ) -> Option<u8> {
+        #[repr(align(8))]
+        struct Buf([u8; 64]);
+        let mut buf = Buf([0u8; 64]);
+        let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+        msg.msg_control = buf.0.as_mut_ptr() as *mut libc::c_void;
+        msg.msg_controllen = buf.0.len() as _;
+        unsafe {
+            let cmsg = libc::CMSG_FIRSTHDR(&msg);
+            assert!(!cmsg.is_null());
+            (*cmsg).cmsg_level = level;
+            (*cmsg).cmsg_type = ctype;
+            (*cmsg).cmsg_len = libc::CMSG_LEN(data.len() as u32) as _;
+            std::ptr::copy_nonoverlapping(data.as_ptr(), libc::CMSG_DATA(cmsg), data.len());
+            // Trim controllen to exactly this cmsg so CMSG_NXTHDR terminates.
+            msg.msg_controllen = libc::CMSG_SPACE(data.len() as u32) as _;
+        }
+        extract_ttl_from_cmsg(&msg, ipv6)
+    }
+
+    // Regression: BSD/macOS deliver the IPv4 IP_RECVTTL value as a single u_char.
+    // A cmsg-length gate of CMSG_LEN(sizeof(int)) wrongly dropped it, blanking
+    // response-TTL / return-hop estimation on those platforms. The read must be
+    // width-aware: 1-byte u_char and 4-byte int both yield the TTL.
+    #[test]
+    #[cfg(unix)]
+    fn test_extract_ttl_single_byte_and_int_widths() {
+        // IPv4 IP_TTL / IP_RECVTTL cmsg_type this build accepts.
+        #[cfg(target_os = "linux")]
+        let ip_ttl_type = 2;
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        let ip_ttl_type = 24;
+        #[cfg(target_os = "freebsd")]
+        let ip_ttl_type = 65;
+        #[cfg(target_os = "netbsd")]
+        let ip_ttl_type = 23;
+        #[cfg(not(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "netbsd"
+        )))]
+        let ip_ttl_type = 2;
+
+        // 1-byte u_char (BSD/macOS IPv4) — the regression case.
+        assert_eq!(
+            extract_one_cmsg(libc::IPPROTO_IP, ip_ttl_type, &[57u8], false),
+            Some(57)
+        );
+        // 4-byte int (Linux IPv4) — must still work.
+        assert_eq!(
+            extract_one_cmsg(libc::IPPROTO_IP, ip_ttl_type, &57i32.to_ne_bytes(), false),
+            Some(57)
+        );
+
+        // IPv6 hop-limit is always a 4-byte int.
+        #[cfg(not(target_os = "netbsd"))]
+        let hoplimit = libc::IPV6_HOPLIMIT;
+        #[cfg(target_os = "netbsd")]
+        let hoplimit = 47;
+        assert_eq!(
+            extract_one_cmsg(libc::IPPROTO_IPV6, hoplimit, &42i32.to_ne_bytes(), true),
+            Some(42)
+        );
+
+        // Empty payload (data_len == 0) must be skipped, not over-read.
+        assert_eq!(
+            extract_one_cmsg(libc::IPPROTO_IP, ip_ttl_type, &[], false),
+            None
+        );
     }
 }
