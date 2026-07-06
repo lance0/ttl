@@ -42,6 +42,19 @@ fn sanitize_filename(s: &str) -> String {
         })
         .collect();
 
+    // Cap length so the final `ttl-<target>-<timestamp>.json` stays within the
+    // filesystem's per-component limit (255 bytes on Linux/macOS). A legitimate
+    // max-length FQDN (253 chars) plus the ~25-byte fixed overhead would otherwise
+    // exceed it and fail export with ENAMETOOLONG. Truncate on a char boundary.
+    const MAX_TARGET_BYTES: usize = 200;
+    if sanitized.len() > MAX_TARGET_BYTES {
+        let mut end = MAX_TARGET_BYTES;
+        while !sanitized.is_char_boundary(end) {
+            end -= 1;
+        }
+        sanitized.truncate(end);
+    }
+
     sanitized.truncate(sanitized.trim_end_matches([' ', '.']).len());
     if sanitized.is_empty() {
         return "_".to_string();
@@ -102,5 +115,15 @@ mod tests {
         assert_eq!(sanitize_filename("nul.txt"), "_nul.txt");
         assert_eq!(sanitize_filename("router. "), "router");
         assert_eq!(sanitize_filename("..."), "_");
+    }
+
+    #[test]
+    fn test_sanitize_filename_caps_length() {
+        // ASCII: capped to <= 200 bytes.
+        assert!(sanitize_filename(&"a".repeat(500)).len() <= 200);
+        // Multibyte: must truncate on a char boundary (no panic) and stay bounded.
+        let multibyte = sanitize_filename(&"é".repeat(300));
+        assert!(multibyte.len() <= 200);
+        assert!(multibyte.chars().all(|c| c == 'é'));
     }
 }
