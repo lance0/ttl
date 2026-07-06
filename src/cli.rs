@@ -815,13 +815,17 @@ mod tests {
 
     #[test]
     fn test_jumbo_rejected_with_replay() {
-        let mut args =
-            Args::try_parse_from(["ttl", "--replay", "session.json", "--pmtud", "--jumbo"])
-                .unwrap();
+        // Construct directly so this test exercises the `jumbo` validation branch
+        // rather than being short-circuited by the earlier `pmtud` check.
+        let mut args = make_args(|a| {
+            a.targets.clear();
+            a.replay = Some("session.json".to_string());
+            a.jumbo = true;
+        });
         let err = args.validate().unwrap_err();
         assert!(
-            err.contains("--pmtud") || err.contains("--jumbo"),
-            "error should mention --pmtud or --jumbo: {err}"
+            err.contains("--jumbo"),
+            "error should mention --jumbo: {err}"
         );
     }
 
