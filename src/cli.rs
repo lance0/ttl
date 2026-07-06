@@ -263,13 +263,20 @@ impl Args {
 
     /// Validate arguments
     pub fn validate(&mut self) -> Result<(), String> {
+        // Replay/diff modes don't probe — they load saved sessions and
+        // export/diff them. Skip live-probe validations for those modes.
+        let replay_or_diff = self.replay.is_some() || self.diff.is_some();
+
         // Interactive TUI mode supports starting empty (add targets with 'o');
         // every other mode needs at least one target up front
-        if self.targets.is_empty() && (self.is_batch_mode() || self.is_headless()) {
+        if !replay_or_diff
+            && self.targets.is_empty()
+            && (self.is_batch_mode() || self.is_headless())
+        {
             return Err("No targets specified (required for non-interactive modes)".into());
         }
 
-        if self.is_batch_mode() && self.count == 0 {
+        if !replay_or_diff && self.is_batch_mode() && self.count == 0 {
             return Err("Batch output modes (--json, --csv, --report) require -c to be set".into());
         }
 
@@ -839,5 +846,38 @@ mod tests {
     fn test_validate_passes_for_plain_diff() {
         let mut args = Args::try_parse_from(["ttl", "--diff", "a.json", "b.json"]).unwrap();
         assert!(args.validate().is_ok(), "plain --diff should validate");
+    }
+
+    #[test]
+    fn test_replay_with_json_validates() {
+        let mut args = Args::try_parse_from(["ttl", "--replay", "session.json", "--json"]).unwrap();
+        assert!(args.validate().is_ok(), "--replay --json should validate");
+    }
+
+    #[test]
+    fn test_replay_with_csv_validates() {
+        let mut args = Args::try_parse_from(["ttl", "--replay", "session.json", "--csv"]).unwrap();
+        assert!(args.validate().is_ok(), "--replay --csv should validate");
+    }
+
+    #[test]
+    fn test_replay_with_report_validates() {
+        let mut args =
+            Args::try_parse_from(["ttl", "--replay", "session.json", "--report"]).unwrap();
+        assert!(args.validate().is_ok(), "--replay --report should validate");
+    }
+
+    #[test]
+    fn test_replay_with_no_tui_validates() {
+        let mut args =
+            Args::try_parse_from(["ttl", "--replay", "session.json", "--no-tui"]).unwrap();
+        assert!(args.validate().is_ok(), "--replay --no-tui should validate");
+    }
+
+    #[test]
+    fn test_diff_with_json_validates() {
+        let mut args =
+            Args::try_parse_from(["ttl", "--diff", "a.json", "b.json", "--json"]).unwrap();
+        assert!(args.validate().is_ok(), "--diff --json should validate");
     }
 }
