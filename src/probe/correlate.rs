@@ -296,15 +296,10 @@ fn parse_icmp_response_v4(
 // ICMPv6 sockets before delivery. Kept for potential future use on other platforms.
 #[allow(dead_code)]
 const IPV6_NH_HOP_BY_HOP: u8 = 0;
-#[allow(dead_code)]
 const IPV6_NH_ROUTING: u8 = 43;
-#[allow(dead_code)]
 const IPV6_NH_FRAGMENT: u8 = 44;
-#[allow(dead_code)]
 const IPV6_NH_ICMPV6: u8 = 58;
-#[allow(dead_code)]
 const IPV6_NH_NO_NEXT: u8 = 59;
-#[allow(dead_code)]
 const IPV6_NH_DEST_OPTS: u8 = 60;
 
 /// Skip IPv6 extension headers and return offset to ICMPv6 payload
@@ -357,6 +352,54 @@ fn skip_ipv6_extension_headers(data: &[u8]) -> Option<usize> {
                 // Unknown or unsupported protocol (ESP, AH, etc.)
                 // Can't safely skip, so reject
                 return None;
+            }
+        }
+    }
+}
+
+/// Walk extension headers in a *quoted* IPv6 packet (embedded in an ICMPv6 error)
+/// and return (offset_to_transport, final_next_header).
+///
+/// Unlike `skip_ipv6_extension_headers`, this returns the transport protocol
+/// (not just ICMPv6 offset) since the quoted packet may contain UDP or TCP,
+/// and extension headers shift where the transport header actually starts.
+/// Returns None if extension headers are malformed, fragmented, or use
+/// unsupported protocols (ESP, AH).
+fn skip_ipv6_ext_headers_quoted(ipv6_data: &[u8]) -> Option<(usize, u8)> {
+    const IPV6_HEADER_LEN: usize = 40;
+
+    if ipv6_data.len() < IPV6_HEADER_LEN {
+        return None;
+    }
+
+    let mut next_header = ipv6_data[6];
+    let mut offset = IPV6_HEADER_LEN;
+
+    loop {
+        match next_header {
+            IPV6_NH_HOP_BY_HOP | IPV6_NH_ROUTING | IPV6_NH_DEST_OPTS => {
+                // Variable-length extension header:
+                // Byte 0: Next Header, Byte 1: Length (in 8-octet units, excluding first 8)
+                if ipv6_data.len() < offset + 2 {
+                    return None;
+                }
+                next_header = ipv6_data[offset];
+                let ext_len = (ipv6_data[offset + 1] as usize + 1) * 8;
+                offset += ext_len;
+                if offset > ipv6_data.len() {
+                    return None;
+                }
+            }
+            IPV6_NH_FRAGMENT => {
+                // Fragment header — can't reassemble quoted fragments
+                return None;
+            }
+            IPV6_NH_NO_NEXT => {
+                return None;
+            }
+            _ => {
+                // Reached the transport protocol (ICMPv6, UDP, TCP, or unknown)
+                return Some((offset, next_header));
             }
         }
     }
@@ -632,9 +675,9 @@ fn parse_icmp_error_payload_v4_with_mtu(
 
 /// Parse the payload of an IPv6 ICMPv6 error message (Time Exceeded, Dest Unreachable, or Packet Too Big)
 ///
-/// Note: Assumes the embedded original IPv6 packet has no extension headers.
-/// This is valid for our use case since we send ICMPv6 Echo Requests and UDP directly
-/// (Next Header = 58 or 17) without any extension headers.
+/// Note: The embedded original IPv6 packet may contain extension headers
+/// (e.g. from routers that add Hop-by-Hop or Routing headers). These are
+/// skipped via `skip_ipv6_ext_headers_quoted` to find the transport header.
 ///
 /// Currently unused because Linux strips IPv6 headers from raw ICMPv6 sockets.
 /// The DGRAM error parser is used instead. Kept for potential future use.
@@ -688,7 +731,17 @@ fn parse_icmp_error_payload_v6_with_mtu(
         u16::from_be_bytes([original_ipv6_data[36], original_ipv6_data[37]]),
         u16::from_be_bytes([original_ipv6_data[38], original_ipv6_data[39]]),
     )));
-    let original_payload = &original_ipv6_data[IPV6_HEADER_LEN..];
+    // Walk extension headers to find the transport offset (LAN-144)
+    let (transport_offset, final_next_header) =
+        match skip_ipv6_ext_headers_quoted(original_ipv6_data) {
+            Some((off, nh)) => (off, nh),
+            None => (IPV6_HEADER_LEN, next_header),
+        };
+    if transport_offset > original_ipv6_data.len() {
+        return None;
+    }
+    let original_payload = &original_ipv6_data[transport_offset..];
+    let next_header = final_next_header;
 
     // Try to parse ICMP extensions using RFC 4884 length field
     let mpls_labels = parse_icmp_extensions_with_length(&icmp_data[8..], icmp_length);
@@ -1171,7 +1224,23 @@ fn parse_icmp_error_payload_v6_dgram(
         u16::from_be_bytes([original_ipv6_data[36], original_ipv6_data[37]]),
         u16::from_be_bytes([original_ipv6_data[38], original_ipv6_data[39]]),
     )));
-    let original_payload = &original_ipv6_data[IPV6_HEADER_LEN..];
+    // Walk extension headers in the quoted IPv6 packet to find the actual
+    // transport header offset (LAN-144). Without this, extension headers shift
+    // the transport header past byte 40 and we mis-correlate.
+    let (transport_offset, final_next_header) =
+        match skip_ipv6_ext_headers_quoted(original_ipv6_data) {
+            Some((off, nh)) => (off, nh),
+            None => {
+                // No extension headers (or malformed): use the raw next_header
+                // field and fixed 40-byte offset as before.
+                (IPV6_HEADER_LEN, next_header)
+            }
+        };
+    if transport_offset > original_ipv6_data.len() {
+        return None;
+    }
+    let original_payload = &original_ipv6_data[transport_offset..];
+    let next_header = final_next_header;
 
     let mpls_labels = parse_icmp_extensions_with_length(&icmp_data[8..], icmp_length);
 
@@ -1546,10 +1615,123 @@ mod tests {
         assert_eq!(parsed.response_type, IcmpResponseType::TimeExceeded(0));
     }
 
-    // Note: IPv6 extension header tests removed.
-    // Linux kernel strips outer IPv6 header before delivering to raw ICMPv6 sockets,
-    // so we never see extension headers in the outer packet. Extension header parsing
-    // code (parse_icmp_response_v6, skip_ipv6_extension_headers) is now unused.
+    // Test: ICMPv6 error with quoted IPv6 packet containing extension headers (LAN-144).
+    // Without extension header parsing, the transport header would be mis-aligned.
+    #[test]
+    fn test_parse_time_exceeded_v6_with_ext_headers() {
+        let responder = IpAddr::V6(std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
+        let our_id = 0xABCD;
+
+        // Layout:
+        // [0-7]   ICMPv6 Time Exceeded header
+        // [8-47]  Original IPv6 header (40 bytes) — Next Header = Hop-by-Hop (0)
+        // [48-55] Hop-by-Hop extension header (8 bytes) — Next Header = ICMPv6 (58)
+        // [56-63] Original ICMPv6 Echo Request (8 bytes)
+        // Total: 64 bytes
+        let mut packet = vec![0u8; 64];
+
+        // ICMPv6 Time Exceeded
+        packet[0] = 3; // Type: Time Exceeded
+        packet[1] = 0; // Code: Hop limit exceeded
+
+        // Original IPv6 header (offset 8)
+        packet[8] = 0x60; // Version 6
+        packet[14] = 0; // Next Header: Hop-by-Hop (0)
+        packet[15] = 1; // Hop limit (quoted TTL)
+
+        // Hop-by-Hop extension header (offset 48 = 8 + 40)
+        packet[48] = 58; // Next Header: ICMPv6 (58)
+        packet[49] = 0; // Length: 0 (8 bytes total, excluding first 8 → (0+1)*8=8)
+
+        // Original ICMPv6 Echo Request (offset 56 = 48 + 8)
+        packet[56] = 128; // Type: Echo Request
+        packet[57] = 0; // Code: 0
+        packet[60] = 0xAB; // Identifier high
+        packet[61] = 0xCD; // Identifier low
+        let probe_id = ProbeId::new(6, 2);
+        let seq = probe_id.to_sequence();
+        packet[62] = (seq >> 8) as u8;
+        packet[63] = (seq & 0xFF) as u8;
+
+        // Parse as DGRAM (no outer IP header, starts at ICMPv6)
+        let result = parse_icmp_response(&packet, responder, our_id, true);
+        assert!(result.is_some(), "should parse with extension headers");
+
+        let parsed = result.unwrap();
+        assert_eq!(parsed.probe_id.ttl, 6);
+        assert_eq!(parsed.probe_id.seq, 2);
+        assert_eq!(parsed.response_type, IcmpResponseType::TimeExceeded(0));
+        assert_eq!(parsed.quoted_ttl, Some(1));
+    }
+
+    // Test: extension header with Routing header type should also be skipped
+    #[test]
+    fn test_parse_time_exceeded_v6_with_routing_ext_header() {
+        let responder = IpAddr::V6(std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
+        let our_id = 0xABCD;
+
+        // Layout with Routing extension header (NH=43):
+        // [0-7]   ICMPv6 Time Exceeded
+        // [8-47]  IPv6 header — Next Header = Routing (43)
+        // [48-55] Routing ext header (8 bytes) — Next Header = ICMPv6 (58)
+        // [56-63] ICMPv6 Echo Request
+        let mut packet = vec![0u8; 64];
+
+        packet[0] = 3;
+        packet[8] = 0x60;
+        packet[14] = 43; // Next Header: Routing
+        packet[15] = 2; // Hop limit
+
+        // Routing extension header (offset 48)
+        packet[48] = 58; // Next Header: ICMPv6
+        packet[49] = 0; // Length: 0 → 8 bytes
+
+        // ICMPv6 Echo Request (offset 56)
+        packet[56] = 128;
+        packet[60] = 0xAB;
+        packet[61] = 0xCD;
+        let probe_id = ProbeId::new(8, 3);
+        let seq = probe_id.to_sequence();
+        packet[62] = (seq >> 8) as u8;
+        packet[63] = (seq & 0xFF) as u8;
+
+        let result = parse_icmp_response(&packet, responder, our_id, true);
+        assert!(result.is_some());
+        let parsed = result.unwrap();
+        assert_eq!(parsed.probe_id.ttl, 8);
+        assert_eq!(parsed.probe_id.seq, 3);
+        assert_eq!(parsed.quoted_ttl, Some(2));
+    }
+
+    // Test: fragment extension header in quoted packet should be rejected
+    #[test]
+    fn test_parse_v6_error_quoted_fragment_rejected() {
+        let responder = IpAddr::V6(std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
+        let our_id = 0xABCD;
+
+        // IPv6 header with Next Header = Fragment (44)
+        let mut packet = vec![0u8; 64];
+        packet[0] = 3;
+        packet[8] = 0x60;
+        packet[14] = 44; // Next Header: Fragment
+        packet[15] = 1;
+
+        // Fragment header (offset 48)
+        packet[48] = 58; // Next Header: ICMPv6
+
+        // ICMPv6 at offset 56
+        packet[56] = 128;
+        packet[60] = 0xAB;
+        packet[61] = 0xCD;
+        let probe_id = ProbeId::new(4, 1);
+        let seq = probe_id.to_sequence();
+        packet[62] = (seq >> 8) as u8;
+        packet[63] = (seq & 0xFF) as u8;
+
+        // Fragment headers in quoted packets should be rejected (can't reassemble)
+        let result = parse_icmp_response(&packet, responder, our_id, true);
+        assert!(result.is_none());
+    }
 
     #[test]
     fn test_ipv6_fragment_header_rejected() {
