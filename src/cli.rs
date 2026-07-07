@@ -125,7 +125,7 @@ pub struct Args {
     pub no_tui: bool,
 
     /// Skip the startup check for new releases (also honors DO_NOT_TRACK=1 or
-    /// TTL_NO_UPDATE_CHECK=1, or a saved `update_check = false` preference)
+    /// TTL_NO_UPDATE_CHECK=1, or a saved `no_update_check = true` preference)
     #[arg(long = "no-update-check")]
     pub no_update_check: bool,
 

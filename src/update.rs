@@ -4,7 +4,7 @@
 //! Detects install method and shows appropriate update command.
 //!
 //! The check can be opted out of via `--no-update-check`, the `DO_NOT_TRACK`
-//! or `TTL_NO_UPDATE_CHECK` env vars, an `update_check = false` preference, or
+//! or `TTL_NO_UPDATE_CHECK` env vars, a `no_update_check = true` preference, or
 //! by building without the default `update-check` feature.
 
 /// Whether update checking was compiled in (the `update-check` feature, on by
