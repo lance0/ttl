@@ -165,10 +165,14 @@ pub async fn run_tui(
     let display_mode = initial_prefs.display_mode.unwrap_or_default();
     let api_key = initial_prefs.peeringdb_api_key.clone();
 
+    let mut settings = SettingsState::new(initial_index, display_mode, api_key);
+    // Toggle shows "enabled"; the pref stores the negated "disabled" form.
+    settings.update_check = !initial_prefs.no_update_check.unwrap_or(false);
+
     let mut ui_state = UiState {
         theme_index: initial_index,
         display_mode,
-        settings: SettingsState::new(initial_index, display_mode, api_key),
+        settings,
         update_rx,
         replay_state,
         ..Default::default()
@@ -216,6 +220,8 @@ pub async fn run_tui(
         theme: Some(theme_names[ui_state.theme_index].to_string()),
         display_mode: Some(ui_state.display_mode),
         peeringdb_api_key: final_api_key,
+        // Toggle holds "enabled"; persist the negated "disabled" form.
+        no_update_check: Some(!ui_state.settings.update_check),
     })
 }
 
@@ -747,9 +753,15 @@ where
                         ui_state.settings.next_section(ix_enabled);
                     }
                     KeyCode::Enter | KeyCode::Char(' ') => {
-                        ui_state.settings.select();
-                        // Live preview display mode changes
-                        ui_state.display_mode = ui_state.settings.display_mode;
+                        if ui_state.settings.selected_section
+                            == SettingsState::update_check_section(ix_enabled)
+                        {
+                            ui_state.settings.update_check = !ui_state.settings.update_check;
+                        } else {
+                            ui_state.settings.select();
+                            // Live preview display mode changes
+                            ui_state.display_mode = ui_state.settings.display_mode;
+                        }
                     }
                     _ => {}
                 }
@@ -952,17 +964,20 @@ where
                     ui_state.set_status(format!("Display: {}", ui_state.display_mode.label()));
                 }
                 KeyCode::Char('s') => {
-                    // Open settings modal - preserve existing API key
+                    // Open settings modal - preserve existing API key and the
+                    // update-check toggle across opens.
                     let current_api_key = if ui_state.settings.api_key.is_empty() {
                         None
                     } else {
                         Some(ui_state.settings.api_key.clone())
                     };
+                    let update_check = ui_state.settings.update_check;
                     ui_state.settings = SettingsState::new(
                         ui_state.theme_index,
                         ui_state.display_mode,
                         current_api_key,
                     );
+                    ui_state.settings.update_check = update_check;
                     ui_state.show_settings = true;
                 }
                 // Open target input modal (live mode only)

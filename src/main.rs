@@ -70,13 +70,26 @@ async fn main() -> Result<()> {
         return run_diff_mode(&diff_files[0], &diff_files[1], args.json);
     }
 
-    // Spawn background update check after early exits
-    // Uses channel for non-blocking result retrieval at exit
-    let (update_tx, update_rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let result = update::check_for_update();
-        let _ = update_tx.send(result); // Ignore if receiver dropped
-    });
+    // Spawn background update check after early exits, unless opted out by any
+    // source. Precedence (higher wins): compiled-out > env (DO_NOT_TRACK /
+    // TTL_NO_UPDATE_CHECK) > --no-update-check flag > saved `no_update_check`
+    // preference. Uses a channel for non-blocking result retrieval at exit.
+    // ponytail: re-reads the tiny prefs TOML here (the TUI reloads it later); a
+    // full prefs-threading refactor isn't worth it for one small file read.
+    let update_disabled = update::check_disabled(
+        update::env_opt_out(),
+        args.no_update_check,
+        Prefs::load().no_update_check,
+    );
+    let update_rx = if update_disabled {
+        None
+    } else {
+        let (update_tx, update_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = update_tx.send(update::check_for_update()); // Ignore if receiver dropped
+        });
+        Some(update_rx)
+    };
 
     // Check permissions early
     if let Err(e) = check_permissions() {
@@ -358,7 +371,8 @@ async fn main() -> Result<()> {
 
     // Check for update notification (only for non-interactive mode)
     // Use short timeout so we don't delay exit if check is slow
-    if is_terminal::is_terminal(std::io::stderr())
+    if let Some(update_rx) = update_rx
+        && is_terminal::is_terminal(std::io::stderr())
         && let Ok(Some(new_version)) = update_rx.recv_timeout(Duration::from_millis(100))
     {
         update::print_update_notice(&new_version);
@@ -783,7 +797,7 @@ async fn run_interactive_mode(
     cancel: CancellationToken,
     interface: Option<InterfaceInfo>,
     resolve_info: Option<ResolveInfo>,
-    update_rx: std::sync::mpsc::Receiver<Option<String>>,
+    update_rx: Option<std::sync::mpsc::Receiver<Option<String>>>,
 ) -> Result<()> {
     // Shared pending map for probe correlation (engine writes, receiver reads)
     let pending = new_pending_map();
@@ -940,7 +954,7 @@ async fn run_interactive_mode(
         prefs,
         resolve_info,
         ix_lookup.clone(),
-        Some(update_rx),
+        update_rx,
         None, // replay_state (live mode)
         Some(add_target_tx),
     )

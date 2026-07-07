@@ -43,7 +43,7 @@ See [Installation](#installation) below for setup instructions.
 - **MPLS label detection** from ICMP extensions
 - **ICMP, UDP, TCP probing** with auto-detection
 - **Great TUI** with themes, sparklines, and session export
-- **Update notifications** - in-app banner when new versions are available
+- **Update notifications** - in-app banner when new versions are available (opt out via `--no-update-check`, `DO_NOT_TRACK`, config, or a `--no-default-features` build)
 - **Scriptable** - JSON, CSV, text report, and line-delimited JSON streaming output
 - **Trace diffing** - compare two saved sessions for path and latency changes
 - **Daemon mode + Prometheus exporter** - headless continuous monitoring with `/metrics` and `/healthz`
@@ -225,6 +225,7 @@ ttl --interface eth0 host      # Bind to interface
 ttl --size 1400 host           # Large packets for MTU testing
 ttl --dscp 46 host             # QoS marking (EF)
 ttl --wide host                # Wide mode for wider terminals
+ttl --no-update-check host     # Skip the startup release check (see also DO_NOT_TRACK)
 ```
 
 See [docs/FEATURES.md](docs/FEATURES.md) for full CLI reference.

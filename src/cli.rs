@@ -124,6 +124,11 @@ pub struct Args {
     #[arg(long = "no-tui")]
     pub no_tui: bool,
 
+    /// Skip the startup check for new releases (also honors DO_NOT_TRACK=1 or
+    /// TTL_NO_UPDATE_CHECK=1, or a saved `update_check = false` preference)
+    #[arg(long = "no-update-check")]
+    pub no_update_check: bool,
+
     /// Output JSON (batch mode, requires -c)
     #[arg(long = "json")]
     pub json: bool,
@@ -475,6 +480,7 @@ mod tests {
             no_ix: false,
             geoip_db: None,
             no_tui: false,
+            no_update_check: false,
             json: false,
             csv: false,
             report: false,

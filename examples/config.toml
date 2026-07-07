@@ -1,0 +1,21 @@
+# ttl configuration file
+# Place at ~/.config/ttl/config.toml
+#
+# ttl writes this file itself when you change settings in the TUI (theme,
+# display mode, PeeringDB key). You can also edit it by hand. Every key is
+# optional; omitted keys use the built-in defaults.
+
+# Color theme: default, kawaii, cyber, dracula, monochrome, matrix, nord,
+# gruvbox, catppuccin, tokyo_night, solarized
+theme = "default"
+
+# Column width mode: auto, compact, or wide
+display_mode = "auto"
+
+# PeeringDB API key for higher-rate-limit IX detection lookups
+# peeringdb_api_key = "your-key-here"
+
+# Disable the background check for a newer ttl release. Also honored via the
+# DO_NOT_TRACK or TTL_NO_UPDATE_CHECK environment variables, the
+# --no-update-check flag, or the Update Check toggle in the TUI settings.
+no_update_check = false

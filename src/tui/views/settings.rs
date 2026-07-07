@@ -23,6 +23,8 @@ pub struct SettingsState {
     pub api_key: String,
     /// Cursor position in API key input
     pub api_key_cursor: usize,
+    /// Whether the startup update check is enabled (persisted to prefs)
+    pub update_check: bool,
 }
 
 impl SettingsState {
@@ -36,7 +38,15 @@ impl SettingsState {
             display_mode,
             api_key,
             api_key_cursor: cursor,
+            // Caller overrides from prefs; enabled is the default.
+            update_check: true,
         }
+    }
+
+    /// Section index of the Update Check toggle. It sits after the optional
+    /// PeeringDB section, so its index depends on whether IX detection is on.
+    pub fn update_check_section(ix_enabled: bool) -> usize {
+        if ix_enabled { 3 } else { 2 }
     }
 
     /// Insert a character at the cursor position
@@ -123,9 +133,10 @@ impl SettingsState {
         // Display mode section has no up/down navigation
     }
 
-    /// Switch between sections (0=Theme, 1=Display Mode, 2=PeeringDB)
+    /// Switch between sections. Order: 0=Theme, 1=Display Mode,
+    /// 2=PeeringDB (only when IX detection is enabled), then Update Check last.
     pub fn next_section(&mut self, ix_enabled: bool) {
-        let num_sections = if ix_enabled { 3 } else { 2 };
+        let num_sections = if ix_enabled { 4 } else { 3 };
         self.selected_section = (self.selected_section + 1) % num_sections;
     }
 
@@ -187,9 +198,10 @@ impl<'a> SettingsView<'a> {
 
 impl Widget for SettingsView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Calculate centered popup area (taller if IX is enabled)
+        // Calculate centered popup area (taller if IX is enabled). The extra 4
+        // rows hold the Update Check section (blank + header + toggle + hint).
         let popup_width = 44.min(area.width.saturating_sub(4));
-        let base_height = if self.ix_enabled { 23 } else { 17 };
+        let base_height = if self.ix_enabled { 27 } else { 21 };
         let popup_height = base_height.min(area.height.saturating_sub(4));
         let popup_x = (area.width - popup_width) / 2 + area.x;
         let popup_y = (area.height - popup_height) / 2 + area.y;
@@ -391,6 +403,39 @@ impl Widget for SettingsView<'_> {
             }
         }
 
+        // Update Check section (always shown; sits after the optional PeeringDB
+        // section so its index shifts with ix_enabled).
+        lines.push(Line::from(""));
+        let uc_section = SettingsState::update_check_section(self.ix_enabled);
+        let uc_selected = self.state.selected_section == uc_section;
+        let uc_header_style = if uc_selected {
+            Style::default()
+                .fg(self.theme.header)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(self.theme.text_dim)
+        };
+        lines.push(Line::from(vec![Span::styled(
+            "  Update Check",
+            uc_header_style,
+        )]));
+        let uc_state = if self.state.update_check { "on" } else { "off" };
+        let uc_style = if uc_selected {
+            Style::default()
+                .fg(self.theme.shortcut)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(self.theme.text_dim)
+        };
+        lines.push(Line::from(vec![Span::styled(
+            format!("    [{}]  (Enter to toggle)", uc_state),
+            uc_style,
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            "    check GitHub for new releases at startup",
+            Style::default().fg(self.theme.text_dim),
+        )]));
+
         lines.push(Line::from(""));
 
         // Footer with keybindings
@@ -457,21 +502,29 @@ mod tests {
     fn test_settings_state_next_section() {
         let mut state = SettingsState::new(0, DisplayMode::Auto, None);
 
-        // Without IX enabled (2 sections)
+        // Without IX enabled: 3 sections (theme, display, update-check)
         assert_eq!(state.selected_section, 0);
         state.next_section(false);
         assert_eq!(state.selected_section, 1);
         state.next_section(false);
+        assert_eq!(state.selected_section, 2); // update-check
+        state.next_section(false);
         assert_eq!(state.selected_section, 0); // Wraps
 
-        // With IX enabled (3 sections)
+        // With IX enabled: 4 sections (theme, display, peeringdb, update-check)
         state.selected_section = 0;
         state.next_section(true);
         assert_eq!(state.selected_section, 1);
         state.next_section(true);
         assert_eq!(state.selected_section, 2);
         state.next_section(true);
+        assert_eq!(state.selected_section, 3); // update-check
+        state.next_section(true);
         assert_eq!(state.selected_section, 0); // Wraps
+
+        // Update-check section index tracks ix_enabled.
+        assert_eq!(SettingsState::update_check_section(false), 2);
+        assert_eq!(SettingsState::update_check_section(true), 3);
     }
 
     #[test]

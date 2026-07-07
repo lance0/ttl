@@ -419,6 +419,7 @@ Press `s` to open the settings modal. Configure:
 - **Theme**: Select from 11 built-in themes with live preview
 - **Display Mode**: Control column widths (auto/compact/wide)
 - **PeeringDB**: Configure API key and view cache status (only shown when IX detection is enabled)
+- **Update Check**: Toggle the startup check for new releases on/off (persisted to config)
 
 ### Navigation
 
@@ -426,7 +427,7 @@ Press `s` to open the settings modal. Configure:
 |-----|--------|
 | `Tab` | Switch between sections |
 | `Up`/`Down` or `j`/`k` | Navigate within section |
-| `Enter` or `Space` | Cycle option (theme/display mode) |
+| `Enter` or `Space` | Cycle option (theme/display mode) or toggle update check |
 | `r` | Refresh PeeringDB cache (in PeeringDB section) |
 | `Esc` | Close and save |
 
@@ -482,6 +483,21 @@ ttl checks GitHub releases for new versions in a background thread at startup. T
   - Cargo: `cargo install ttl`
   - Pre-built binary: link to GitHub releases
 - **Non-interactive mode**: Update notice is printed to stderr after the run completes (JSON/CSV/report modes)
+
+### Disabling the update check
+
+The check can be turned off — useful for packaged installs, air-gapped hosts, or
+privacy. Any of these opts out (checked in this order):
+
+- **Per run**: `ttl --no-update-check <target>`
+- **Environment**: `DO_NOT_TRACK=1` (the [cross-tool standard](https://consoledonottrack.com/))
+  or `TTL_NO_UPDATE_CHECK=1`. Any value other than empty/`0`/`false` counts as set.
+- **Persistent**: `no_update_check = true` in `~/.config/ttl/config.toml` (see
+  [`examples/config.toml`](../examples/config.toml)), or toggle **Update Check**
+  off in the Settings modal (`s`), which saves the preference.
+- **Compile-time**: build with `--no-default-features` to drop the check — and the
+  `update-informer` dependency — entirely. Package maintainers can ship a build
+  that never phones home.
 
 ## Output Formats
 

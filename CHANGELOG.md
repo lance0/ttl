@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Opt out of the startup update check** (#110). The GitHub release check can now be disabled five ways: the `--no-update-check` flag, the `DO_NOT_TRACK=1` (cross-tool standard) or `TTL_NO_UPDATE_CHECK=1` environment variables, a `no_update_check = true` preference in `~/.config/ttl/config.toml`, the **Update Check** toggle in the TUI Settings modal, or a build with `--no-default-features`, which compiles the check out entirely and drops the `update-informer` dependency. Addresses package-repository, air-gapped, and privacy use cases where an unconditional phone-home is unexpected. An [`examples/config.toml`](examples/config.toml) now documents the available preferences.
+
 ## [0.20.2] - 2026-07-06
 
 ### Fixed

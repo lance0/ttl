@@ -49,6 +49,11 @@ pub struct Prefs {
     /// PeeringDB API key for higher rate limits on IX detection
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peeringdb_api_key: Option<String>,
+    /// Disable the background check for a newer ttl release. Absent/`None` means
+    /// enabled (the default); `true` opts out. Also overridable per-run via
+    /// --no-update-check or the DO_NOT_TRACK / TTL_NO_UPDATE_CHECK env vars.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_update_check: Option<bool>,
 }
 
 impl Prefs {
@@ -137,6 +142,24 @@ mod tests {
         assert!(prefs.theme.is_none());
         assert!(prefs.display_mode.is_none());
         assert!(prefs.peeringdb_api_key.is_none());
+        assert!(prefs.no_update_check.is_none());
+    }
+
+    #[test]
+    fn test_prefs_no_update_check_roundtrip() {
+        // Some(true) is persisted; None is omitted (default = enabled).
+        let opted_out = Prefs {
+            no_update_check: Some(true),
+            ..Default::default()
+        };
+        let toml_str = toml::to_string_pretty(&opted_out).unwrap();
+        assert!(toml_str.contains("no_update_check = true"));
+        let loaded: Prefs = toml::from_str(&toml_str).unwrap();
+        assert_eq!(loaded.no_update_check, Some(true));
+
+        let default = Prefs::default();
+        let toml_str = toml::to_string_pretty(&default).unwrap();
+        assert!(!toml_str.contains("no_update_check"));
     }
 
     #[test]
@@ -145,6 +168,7 @@ mod tests {
             theme: Some("dracula".to_string()),
             display_mode: Some(DisplayMode::Wide),
             peeringdb_api_key: Some("test_api_key_123".to_string()),
+            no_update_check: None,
         };
         let toml_str = toml::to_string_pretty(&prefs).unwrap();
         assert!(toml_str.contains("theme = \"dracula\""));
@@ -166,6 +190,7 @@ mod tests {
             theme: Some("default".to_string()),
             display_mode: None,
             peeringdb_api_key: None,
+            no_update_check: None,
         };
         let toml_str = toml::to_string_pretty(&prefs).unwrap();
         // peeringdb_api_key should be omitted when None
@@ -208,6 +233,7 @@ mod tests {
             theme: None,
             display_mode: Some(DisplayMode::Auto),
             peeringdb_api_key: None,
+            no_update_check: None,
         };
         let toml_str = toml::to_string_pretty(&prefs).unwrap();
         assert!(toml_str.contains("display_mode = \"auto\""));
@@ -219,6 +245,7 @@ mod tests {
             theme: None,
             display_mode: Some(DisplayMode::Compact),
             peeringdb_api_key: None,
+            no_update_check: None,
         };
         let toml_str = toml::to_string_pretty(&prefs).unwrap();
         assert!(toml_str.contains("display_mode = \"compact\""));
@@ -230,6 +257,7 @@ mod tests {
             theme: None,
             display_mode: Some(DisplayMode::Wide),
             peeringdb_api_key: None,
+            no_update_check: None,
         };
         let toml_str = toml::to_string_pretty(&prefs).unwrap();
         assert!(toml_str.contains("display_mode = \"wide\""));
