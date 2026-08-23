@@ -1331,6 +1331,10 @@ pub struct Session {
     /// Recorded probe events for animated replay
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<ProbeEvent>,
+    /// Bumped on hop mutation so the TUI can skip snapshot+draw when idle.
+    /// Experimental (LAN-1222); not serialized.
+    #[serde(skip)]
+    pub render_generation: u64,
 }
 
 impl Session {
@@ -1362,6 +1366,7 @@ impl Session {
             source_ip: None,
             gateway: None,
             events: Vec::new(),
+            render_generation: 0,
         }
     }
 
@@ -1379,8 +1384,14 @@ impl Session {
         if ttl == 0 || ttl as usize > self.hops.len() {
             None
         } else {
+            self.touch_render();
             Some(&mut self.hops[ttl as usize - 1])
         }
+    }
+
+    /// Mark session data as changed for TUI dirty-skip (LAN-1222 experiment).
+    pub fn touch_render(&mut self) {
+        self.render_generation = self.render_generation.wrapping_add(1);
     }
 
     /// Apply a recorded replay event to this session.
@@ -1477,6 +1488,7 @@ impl Session {
             hop.ttl_manip = None;
             hop.flap_tracking_primary = None;
         }
+        self.touch_render();
     }
 
     /// Check if NAT is detected at any hop
@@ -1507,6 +1519,7 @@ impl Session {
             source_ip: self.source_ip,
             gateway: self.gateway,
             events: Vec::new(),
+            render_generation: self.render_generation,
         }
     }
 
@@ -2606,6 +2619,25 @@ mod tests {
         assert!(session.hop(1).unwrap().ttl_manip.is_none());
     }
 
+    #[test]
+    fn test_render_generation_bumps_on_hop_mut_and_reset() {
+        let target = Target::new(
+            "test.com".to_string(),
+            IpAddr::V4(std::net::Ipv4Addr::new(1, 2, 3, 4)),
+        );
+        let mut session = Session::new(target, Config::default());
+        assert_eq!(session.render_generation, 0);
+
+        assert!(session.hop_mut(1).is_some());
+        assert_eq!(session.render_generation, 1);
+
+        session.reset_stats();
+        assert_eq!(session.render_generation, 2);
+
+        let snap = session.snapshot_for_render();
+        assert_eq!(snap.render_generation, 2);
+        assert!(snap.events.is_empty());
+    }
     #[test]
     fn test_target_new() {
         let ip = IpAddr::V4(std::net::Ipv4Addr::new(8, 8, 8, 8));
