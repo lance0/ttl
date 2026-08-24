@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-08-24
+
+### Changed
+- **The TUI redraws only when something changed.** The interactive view previously rebuilt its session snapshot and repainted the terminal on every 16 ms tick (~60 fps) whether or not a probe had landed — at the default 1 s probe interval roughly 55 of every 60 frames were pure churn. Each tick now compares a fingerprint of everything the view renders (hop-stat generation, overlays, theme, status line, replay clock, settings, target list, IX cache state) against the previous frame and skips both the snapshot clone and the draw when they match. Measured on a 9-hop trace at the default interval, **1.4% → 0.4% of one CPU core**, and the saving grows with hop count. Output is unchanged and the tick rate is still 16 ms, so input, replay animation, and terminal resizes stay as responsive as before.
+- **The published crate no longer bundles the demo assets.** `docs/*.gif` and `docs/*.tape` are excluded from the package, roughly halving the crates.io tarball (1.14 MB → 0.56 MB compressed) for every `cargo install ttl`. The README still renders the demo from the repository.
+
+### Security
+- **`rkyv` 0.8.16 → 0.8.18** clears RUSTSEC-2026-0233 (use-after-free during deserialization) and RUSTSEC-2026-0234 / RUSTSEC-2026-0235 (out-of-bounds reads on crafted archives). The advisory reaches ttl transitively via `getifs` → `smallvec-wrapper`.
+- **`lru` 0.18.0 → 0.18.2** clears RUSTSEC-2026-0253 (potential use-after-free from missing panic safety in `LruCache::pop()`). The advisory reaches ttl transitively via `ratatui` → `ratatui-core`.
+
+### Dependencies
+- maxminddb 0.29 → 0.30 (direct), plus tokio 1.52.3 → 1.53.1, clap 4.6.1 → 4.6.6, clap_complete 4.6.7 → 4.6.9, futures 0.3.32 → 0.3.34, libc 0.2.186 → 0.2.189, serde 1.0.228 → 1.0.229, serde_json 1.0.150 → 1.0.151, socket2 0.6.4 → 0.6.5, and anyhow 1.0.103 → 1.0.104.
+
 ## [0.21.0] - 2026-07-07
 
 ### Added

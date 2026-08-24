@@ -105,6 +105,14 @@
 
 ---
 
+## Completed (v0.22.0)
+
+- [x] TUI renders only on change (#129, #131): a per-tick render fingerprint skips the session snapshot and the redraw when nothing moved — 1.4% → 0.4% of one CPU core on a 9-hop trace, scaling with hop count. Session mutations mark the view dirty through the lock's write guard, so no writer can leave the display stale.
+- [x] Published crate excludes the demo GIF/tape, halving the crates.io tarball (1.14 MB → 0.56 MB compressed)
+- [x] Security: rkyv 0.8.18 (RUSTSEC-2026-0233/0234/0235) and lru 0.18.2 (RUSTSEC-2026-0253)
+
+---
+
 ## Planned Features
 
 ### Before next release — TTL send-path correctness (follow-ups to #12)
