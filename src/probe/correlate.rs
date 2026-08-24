@@ -103,9 +103,8 @@ fn parse_icmp_extensions_with_length(
             let mut labels = Vec::new();
 
             // Each label entry is 4 bytes
-            for chunk in label_data.chunks_exact(4) {
-                // chunks_exact(4) guarantees chunk.len() == 4, so this is infallible
-                let bytes: [u8; 4] = [chunk[0], chunk[1], chunk[2], chunk[3]];
+            for chunk in label_data.as_chunks::<4>().0 {
+                let bytes: [u8; 4] = *chunk;
                 let label = MplsLabel::from_bytes(&bytes);
                 labels.push(label);
                 // Stop at bottom of stack

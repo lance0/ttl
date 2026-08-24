@@ -1674,7 +1674,7 @@ fn emit_stream_events(sessions: &SessionMap, targets: &[IpAddr]) -> Result<()> {
                 if session.events.is_empty() {
                     continue;
                 }
-                session.events.drain(..).collect()
+                std::mem::take(&mut session.events)
             };
             for event in &events {
                 write_event_line(&mut out, *target_ip, event)?;
