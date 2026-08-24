@@ -11,12 +11,12 @@ use crate::probe::{
     recv_icmp_with_ttl,
 };
 use crate::state::{
-    IcmpResponseType, MplsLabel, PmtudPhase, ProbeEvent, ProbeId, ProbeOutcome, Session,
+    IcmpResponseType, MplsLabel, PmtudPhase, ProbeEvent, ProbeId, ProbeOutcome, SessionLock,
 };
 use crate::trace::pending::{PendingKey, PendingMap, PendingProbe};
 
 /// Map of target IP to session, shared across multiple engines and the receiver
-pub type SessionMap = Arc<RwLock<HashMap<IpAddr, Arc<RwLock<Session>>>>>;
+pub type SessionMap = Arc<RwLock<HashMap<IpAddr, Arc<SessionLock>>>>;
 
 /// Configuration for the ICMP receiver
 #[derive(Clone)]

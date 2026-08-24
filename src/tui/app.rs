@@ -1580,6 +1580,7 @@ fn draw_ui(
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::state::SessionLock;
     use crate::state::Target;
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
@@ -1587,7 +1588,7 @@ mod tests {
 
     fn make_single_session_map(target: IpAddr, session: Session) -> SessionMap {
         let mut map = HashMap::new();
-        map.insert(target, Arc::new(parking_lot::RwLock::new(session)));
+        map.insert(target, Arc::new(SessionLock::new(session)));
         Arc::new(parking_lot::RwLock::new(map))
     }
 
@@ -1781,8 +1782,8 @@ mod tests {
             Session::new(Target::new("a".to_string(), current), Config::default());
         let other_session = Session::new(Target::new("b".to_string(), other), Config::default());
         let mut map = HashMap::new();
-        map.insert(current, Arc::new(parking_lot::RwLock::new(current_session)));
-        map.insert(other, Arc::new(parking_lot::RwLock::new(other_session)));
+        map.insert(current, Arc::new(SessionLock::new(current_session)));
+        map.insert(other, Arc::new(SessionLock::new(other_session)));
         let sessions: SessionMap = Arc::new(parking_lot::RwLock::new(map));
         let targets = vec![current, other];
 
