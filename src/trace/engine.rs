@@ -1,5 +1,4 @@
 use anyhow::Result;
-use parking_lot::RwLock;
 use socket2::Socket;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -24,7 +23,7 @@ use crate::probe::{
 use crate::probe::{enable_recv_ttl, parse_icmp_response, recv_icmp_with_ttl};
 #[cfg(target_os = "linux")]
 use crate::state::IcmpResponseType;
-use crate::state::{PmtudPhase, ProbeId, Session};
+use crate::state::{PmtudPhase, ProbeId, SessionLock};
 use crate::trace::pending::{PendingMap, PendingProbe};
 
 /// Safety cap for IPv6 echo-reply draining per tick.
@@ -37,7 +36,7 @@ pub struct ProbeEngine {
     config: Config,
     target: IpAddr,
     identifier: u16,
-    state: Arc<RwLock<Session>>,
+    state: Arc<SessionLock>,
     pending: PendingMap,
     cancel: CancellationToken,
     interface: Option<InterfaceInfo>,
@@ -47,7 +46,7 @@ impl ProbeEngine {
     pub fn new(
         config: Config,
         target: IpAddr,
-        state: Arc<RwLock<Session>>,
+        state: Arc<SessionLock>,
         pending: PendingMap,
         cancel: CancellationToken,
         interface: Option<InterfaceInfo>,
@@ -1509,6 +1508,7 @@ impl ProbeEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::Session;
     use crate::state::Target;
     use crate::trace::pending::new_pending_map;
     use std::net::{IpAddr, Ipv4Addr};
@@ -1519,7 +1519,7 @@ mod tests {
             ..Config::default()
         };
         let target = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
-        let session = Arc::new(RwLock::new(Session::new(
+        let session = Arc::new(SessionLock::new(Session::new(
             Target::new("test".to_string(), target),
             config.clone(),
         )));

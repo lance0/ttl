@@ -36,7 +36,7 @@ use probe::{
     InterfaceInfo, check_permissions, create_send_socket_with_interface, detect_default_gateway,
     get_local_addr_with_interface, validate_interface,
 };
-use state::{Session, Target, run_ratelimit_worker};
+use state::{Session, SessionLock, Target, run_ratelimit_worker};
 use trace::engine::ProbeEngine;
 use trace::pending::{PendingMap, new_pending_map};
 use trace::receiver::{ReceiverConfig, SessionMap, spawn_receiver};
@@ -112,7 +112,7 @@ async fn main() -> Result<()> {
 
     // Resolve all targets
     let mut targets: Vec<IpAddr> = Vec::new();
-    let mut sessions_map: HashMap<IpAddr, Arc<RwLock<Session>>> = HashMap::new();
+    let mut sessions_map: HashMap<IpAddr, Arc<SessionLock>> = HashMap::new();
     let config = Config::from(&args);
     let mut effective_flows_v4 = None;
     let mut effective_flows_v6 = None;
@@ -157,7 +157,7 @@ async fn main() -> Result<()> {
                 detect_default_gateway(ipv6)
             };
 
-            sessions_map.insert(resolved_ip, Arc::new(RwLock::new(session)));
+            sessions_map.insert(resolved_ip, Arc::new(SessionLock::new(session)));
             targets.push(resolved_ip);
         }
 
@@ -212,7 +212,7 @@ async fn main() -> Result<()> {
                 detect_default_gateway(ipv6)
             };
 
-            sessions_map.insert(resolved_ip, Arc::new(RwLock::new(session)));
+            sessions_map.insert(resolved_ip, Arc::new(SessionLock::new(session)));
             targets.push(resolved_ip);
         }
 
@@ -506,11 +506,11 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
         };
 
         // Show in TUI
-        let state = Arc::new(RwLock::new(session_to_display));
+        let state = Arc::new(SessionLock::new(session_to_display));
         let cancel = CancellationToken::new();
 
         // Create SessionMap with single session
-        let mut sessions_map: HashMap<IpAddr, Arc<RwLock<Session>>> = HashMap::new();
+        let mut sessions_map: HashMap<IpAddr, Arc<SessionLock>> = HashMap::new();
         sessions_map.insert(target_ip, state);
         let sessions: SessionMap = Arc::new(RwLock::new(sessions_map));
         let targets = vec![target_ip];
@@ -1126,7 +1126,7 @@ async fn run_target_manager(mut ctx: TargetManagerCtx) -> Result<()> {
             detect_default_gateway(ipv6)
         };
 
-        let state = Arc::new(RwLock::new(session));
+        let state = Arc::new(SessionLock::new(session));
         ctx.sessions.write().insert(ip, state.clone());
 
         // Spawn a receiver if this IP family doesn't have one yet
@@ -1822,7 +1822,7 @@ mod tests {
     }
 
     fn make_session_map(entries: &[(IpAddr, u8)]) -> SessionMap {
-        let mut map: HashMap<IpAddr, Arc<RwLock<Session>>> = HashMap::new();
+        let mut map: HashMap<IpAddr, Arc<SessionLock>> = HashMap::new();
         for (target_ip, flows) in entries {
             let mut target = Target::new(target_ip.to_string(), *target_ip);
             target.hostname = Some(format!("host-{}", target_ip));
@@ -1832,7 +1832,7 @@ mod tests {
             };
             map.insert(
                 *target_ip,
-                Arc::new(RwLock::new(Session::new(target, config))),
+                Arc::new(SessionLock::new(Session::new(target, config))),
             );
         }
         Arc::new(RwLock::new(map))

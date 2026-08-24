@@ -268,7 +268,7 @@ async fn handle_connection(mut stream: TcpStream, sessions: SessionMap) -> Resul
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::state::{Session, Target};
+    use crate::state::{Session, SessionLock, Target};
     use parking_lot::RwLock;
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
@@ -292,7 +292,7 @@ mod tests {
         session.total_sent = 2;
 
         let mut map = HashMap::new();
-        map.insert(target_ip, Arc::new(RwLock::new(session)));
+        map.insert(target_ip, Arc::new(SessionLock::new(session)));
         Arc::new(RwLock::new(map))
     }
 

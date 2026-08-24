@@ -128,6 +128,139 @@ impl UiState {
     }
 }
 
+/// Post-poll render fingerprint (LAN-1222). Built after status expiry,
+/// add-target, update check, IX cache status, and target-list refresh so
+/// idle skip cannot leave those chrome surfaces stale.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RenderFingerprint {
+    session_generation: Option<u64>,
+    selected: Option<usize>,
+    paused: bool,
+    show_help: bool,
+    show_hop_detail: bool,
+    show_settings: bool,
+    show_target_list: bool,
+    show_target_input: bool,
+    theme_index: usize,
+    display_mode: crate::prefs::DisplayMode,
+    selected_target: usize,
+    num_targets: usize,
+    target_list_index: usize,
+    status: Option<String>,
+    update_available: Option<String>,
+    replay: Option<(bool, bool, usize, u64, u32)>,
+    target_input: (String, usize, Option<String>, bool),
+    settings: (
+        usize,
+        usize,
+        usize,
+        crate::prefs::DisplayMode,
+        String,
+        usize,
+        bool,
+    ),
+    ix_cache: Option<(bool, usize, Option<u64>, bool, bool)>,
+    target_list_rows: Option<Vec<(IpAddr, String, String, String)>>,
+}
+
+fn render_fingerprint(
+    ui_state: &UiState,
+    num_targets: usize,
+    session_generation: Option<u64>,
+    cache_status: Option<&crate::lookup::ix::CacheStatus>,
+) -> RenderFingerprint {
+    let replay = ui_state.replay_state.as_ref().map(|r| {
+        (
+            r.paused,
+            r.finished,
+            r.current_index,
+            replay_current_ms(r),
+            r.speed_multiplier.to_bits(),
+        )
+    });
+    RenderFingerprint {
+        session_generation,
+        selected: ui_state.selected,
+        paused: ui_state.paused,
+        show_help: ui_state.show_help,
+        show_hop_detail: ui_state.show_hop_detail,
+        show_settings: ui_state.show_settings,
+        show_target_list: ui_state.show_target_list,
+        show_target_input: ui_state.show_target_input,
+        theme_index: ui_state.theme_index,
+        display_mode: ui_state.display_mode,
+        selected_target: ui_state.selected_target,
+        num_targets,
+        target_list_index: ui_state.target_list_index,
+        status: ui_state.status_message.as_ref().map(|(m, _)| m.clone()),
+        update_available: ui_state.update_available.clone(),
+        replay,
+        target_input: (
+            ui_state.target_input.input.clone(),
+            ui_state.target_input.cursor,
+            ui_state.target_input.error.clone(),
+            ui_state.target_input.resolving,
+        ),
+        settings: (
+            ui_state.settings.selected_section,
+            ui_state.settings.theme_scroll,
+            ui_state.settings.theme_index,
+            ui_state.settings.display_mode,
+            ui_state.settings.api_key.clone(),
+            ui_state.settings.api_key_cursor,
+            ui_state.settings.update_check,
+        ),
+        ix_cache: cache_status.map(|c| {
+            (
+                c.loaded,
+                c.prefix_count,
+                c.fetched_at,
+                c.expired,
+                c.refreshing,
+            )
+        }),
+        target_list_rows: ui_state.target_list_cache.as_ref().map(|rows| {
+            rows.iter()
+                .map(|t| {
+                    (
+                        t.ip,
+                        t.hostname.clone(),
+                        t.hops_str.clone(),
+                        t.loss_str.clone(),
+                    )
+                })
+                .collect()
+        }),
+    }
+}
+
+fn poll_update_check(ui_state: &mut UiState) {
+    if let (None, Some(rx)) = (&ui_state.update_available, &ui_state.update_rx) {
+        match rx.try_recv() {
+            Ok(result) => {
+                ui_state.update_available = result;
+                ui_state.update_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ui_state.update_rx = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+}
+
+fn refresh_target_list_cache(ui_state: &mut UiState, sessions: &SessionMap, targets: &[IpAddr]) {
+    if ui_state.show_target_list {
+        ui_state.target_list_tick += 1;
+        if ui_state.target_list_cache.is_none() || ui_state.target_list_tick.is_multiple_of(30) {
+            ui_state.target_list_cache = Some(extract_target_infos(sessions, targets));
+        }
+    } else {
+        ui_state.target_list_cache = None;
+        ui_state.target_list_tick = 0;
+    }
+}
+
 /// Run the TUI application. Returns the final preferences for persistence.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tui(
@@ -527,6 +660,7 @@ where
 {
     let theme_names = Theme::list();
     let event_rx = spawn_event_reader(tick_rate, cancel.clone());
+    let mut last_draw: Option<RenderFingerprint> = None;
     let ix_enabled = ix_lookup.is_some();
 
     loop {
@@ -545,20 +679,7 @@ where
         // Compute count AFTER polling so newly added targets are reflected this tick.
         let num_targets = targets.len();
 
-        // Poll for update check result (non-blocking)
-        // Drop receiver once we get any result (Some or None) or sender disconnects
-        if let (None, Some(rx)) = (&ui_state.update_available, &ui_state.update_rx) {
-            match rx.try_recv() {
-                Ok(result) => {
-                    ui_state.update_available = result;
-                    ui_state.update_rx = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    ui_state.update_rx = None;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-        }
+        poll_update_check(ui_state);
 
         // Process replay animation tick
         if let Some(ref mut replay) = ui_state.replay_state
@@ -613,50 +734,61 @@ where
         // Get cache status for settings modal
         let cache_status = ix_lookup.as_ref().map(|ix| ix.get_cache_status());
 
-        // Snapshot session data BEFORE draw so no locks are held during rendering.
-        // Uses snapshot_for_render() to skip cloning the events vec (unbounded, not used in render).
-        let session_snapshot = {
+        // Snapshot only when dirty so no locks are held during rendering.
+        refresh_target_list_cache(ui_state, &sessions, &targets);
+
+        // Fingerprint after polls so status expiry, add-target, update
+        // check, IX cache, and target-list rows participate (LAN-1222).
+        let session_generation = {
             let sessions_read = sessions.read();
             sessions_read
                 .get(&current_target)
-                .map(|state| state.read().snapshot_for_render())
+                .map(|state| state.read().render_generation)
         };
+        let fingerprint = render_fingerprint(
+            ui_state,
+            num_targets,
+            session_generation,
+            cache_status.as_ref(),
+        );
+        let dirty = last_draw.as_ref() != Some(&fingerprint);
 
-        // Refresh target list cache (~every 500ms while overlay is open)
-        if ui_state.show_target_list {
-            ui_state.target_list_tick += 1;
-            if ui_state.target_list_cache.is_none() || ui_state.target_list_tick.is_multiple_of(30)
-            {
-                ui_state.target_list_cache = Some(extract_target_infos(&sessions, &targets));
+        if dirty {
+            let session_snapshot = {
+                let sessions_read = sessions.read();
+                sessions_read
+                    .get(&current_target)
+                    .map(|state| state.read().snapshot_for_render())
+            };
+
+            if let Some(ref session) = session_snapshot {
+                terminal.draw(|f| {
+                    draw_ui(
+                        f,
+                        session,
+                        ui_state,
+                        &theme,
+                        num_targets,
+                        cache_status.clone(),
+                        ix_enabled,
+                    );
+                })?;
+            } else {
+                terminal.draw(|f| {
+                    draw_empty_state(f, ui_state, &theme, cache_status.clone(), ix_enabled);
+                })?;
             }
-        } else {
-            ui_state.target_list_cache = None;
-            ui_state.target_list_tick = 0;
+            last_draw = Some(fingerprint);
         }
-
-        // Draw (no locks held — all data is pre-extracted snapshots)
-        if let Some(ref session) = session_snapshot {
-            terminal.draw(|f| {
-                draw_ui(
-                    f,
-                    session,
-                    ui_state,
-                    &theme,
-                    num_targets,
-                    cache_status.clone(),
-                    ix_enabled,
-                );
-            })?;
-        } else {
-            // No targets yet (interactive empty mode)
-            terminal.draw(|f| {
-                draw_empty_state(f, ui_state, &theme, cache_status.clone(), ix_enabled);
-            })?;
-        }
-
         // Handle input — non-blocking: the event-reader thread forwards
         // crossterm events over the channel so we never stall the async runtime.
-        if let Ok(Event::Key(key)) = event_rx.try_recv() {
+        let event = event_rx.try_recv().ok();
+        // A resize changes the layout without touching any fingerprinted state,
+        // so force the next tick to draw (terminal.draw re-measures the area).
+        if matches!(event, Some(Event::Resize(..))) {
+            last_draw = None;
+        }
+        if let Some(Event::Key(key)) = event {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
@@ -1454,6 +1586,7 @@ fn draw_ui(
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::state::SessionLock;
     use crate::state::Target;
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
@@ -1461,7 +1594,7 @@ mod tests {
 
     fn make_single_session_map(target: IpAddr, session: Session) -> SessionMap {
         let mut map = HashMap::new();
-        map.insert(target, Arc::new(parking_lot::RwLock::new(session)));
+        map.insert(target, Arc::new(SessionLock::new(session)));
         Arc::new(parking_lot::RwLock::new(map))
     }
 
@@ -1584,5 +1717,136 @@ mod tests {
         let replay = ui_state.replay_state.as_ref().unwrap();
         assert_eq!(replay.current_index, 0);
         assert!(replay.paused);
+    }
+
+    #[test]
+    fn test_fingerprint_changes_when_status_expires() {
+        let mut ui_state = UiState {
+            status_message: Some((
+                "Working".to_string(),
+                std::time::Instant::now() - Duration::from_secs(4),
+            )),
+            ..UiState::default()
+        };
+        let before = render_fingerprint(&ui_state, 1, Some(0), None);
+        ui_state.clear_old_status();
+        let after = render_fingerprint(&ui_state, 1, Some(0), None);
+        assert!(ui_state.status_message.is_none());
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn test_fingerprint_changes_on_add_target_poll() {
+        let existing = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        let added = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+        let mut targets = vec![existing];
+        let mut ui_state = UiState {
+            target_input: TargetInputState {
+                resolving: true,
+                ..TargetInputState::default()
+            },
+            show_target_input: true,
+            ..UiState::default()
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        ui_state.target_input.pending = Some(rx);
+        let before = render_fingerprint(&ui_state, targets.len(), Some(0), None);
+        tx.send(Ok(crate::tui::views::AddedTarget {
+            ip: added,
+            name: "dns.google".to_string(),
+            existed: false,
+        }))
+        .unwrap();
+        poll_add_target_result(&mut ui_state, &mut targets);
+        let after = render_fingerprint(&ui_state, targets.len(), Some(0), None);
+        assert_eq!(targets, vec![existing, added]);
+        assert_eq!(ui_state.selected_target, 1);
+        assert!(!ui_state.show_target_input);
+        assert!(ui_state.status_message.is_some());
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn test_fingerprint_changes_on_update_check_recv() {
+        let mut ui_state = UiState::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        ui_state.update_rx = Some(rx);
+        let before = render_fingerprint(&ui_state, 1, Some(0), None);
+        tx.send(Some("0.22.0".to_string())).unwrap();
+        poll_update_check(&mut ui_state);
+        let after = render_fingerprint(&ui_state, 1, Some(0), None);
+        assert_eq!(ui_state.update_available.as_deref(), Some("0.22.0"));
+        assert!(ui_state.update_rx.is_none());
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn test_fingerprint_changes_when_open_target_list_refreshes() {
+        let current = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
+        let other = IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9));
+        let current_session =
+            Session::new(Target::new("a".to_string(), current), Config::default());
+        let other_session = Session::new(Target::new("b".to_string(), other), Config::default());
+        let mut map = HashMap::new();
+        map.insert(current, Arc::new(SessionLock::new(current_session)));
+        map.insert(other, Arc::new(SessionLock::new(other_session)));
+        let sessions: SessionMap = Arc::new(parking_lot::RwLock::new(map));
+        let targets = vec![current, other];
+
+        let mut ui_state = UiState {
+            show_target_list: true,
+            target_list_tick: 29,
+            target_list_cache: Some(extract_target_infos(&sessions, &targets)),
+            ..UiState::default()
+        };
+        let current_gen = sessions
+            .read()
+            .get(&current)
+            .unwrap()
+            .read()
+            .render_generation;
+        let before = render_fingerprint(&ui_state, targets.len(), Some(current_gen), None);
+
+        {
+            let sessions_read = sessions.read();
+            let mut other_session = sessions_read.get(&other).unwrap().write();
+            other_session.dest_ttl = Some(1);
+            if let Some(hop) = other_session.hop_mut(1) {
+                hop.sent = 10;
+                hop.received = 5;
+            }
+        }
+
+        refresh_target_list_cache(&mut ui_state, &sessions, &targets);
+        let current_gen_after = sessions
+            .read()
+            .get(&current)
+            .unwrap()
+            .read()
+            .render_generation;
+        let after = render_fingerprint(&ui_state, targets.len(), Some(current_gen_after), None);
+
+        assert_eq!(current_gen, current_gen_after);
+        assert_eq!(ui_state.target_list_tick, 30);
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn test_fingerprint_includes_ix_fetched_at() {
+        let stale = crate::lookup::ix::CacheStatus {
+            loaded: true,
+            prefix_count: 3,
+            fetched_at: Some(1),
+            expired: false,
+            refreshing: false,
+        };
+        let fresh = crate::lookup::ix::CacheStatus {
+            fetched_at: Some(2),
+            ..stale.clone()
+        };
+        let ui_state = UiState::default();
+        let a = render_fingerprint(&ui_state, 0, None, Some(&stale));
+        let b = render_fingerprint(&ui_state, 0, None, Some(&fresh));
+        assert_ne!(a, b);
     }
 }

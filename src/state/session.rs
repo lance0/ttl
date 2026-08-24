@@ -2,7 +2,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
+use std::ops::{Deref, DerefMut};
 use std::time::Duration;
+
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::config::Config;
 
@@ -1331,6 +1334,51 @@ pub struct Session {
     /// Recorded probe events for animated replay
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<ProbeEvent>,
+    /// Bumped every time a [`SessionLock`] write guard is released, so the TUI
+    /// can skip snapshot+draw on ticks where nothing changed. Not serialized.
+    #[serde(skip)]
+    pub render_generation: u64,
+}
+
+/// `RwLock<Session>` whose write guard bumps [`Session::render_generation`]
+/// on release, so every mutation path — hop stats, enrichment, PMTUD, pause —
+/// marks the TUI dirty without each writer having to remember to.
+pub struct SessionLock(RwLock<Session>);
+
+impl SessionLock {
+    pub fn new(session: Session) -> Self {
+        Self(RwLock::new(session))
+    }
+
+    pub fn read(&self) -> RwLockReadGuard<'_, Session> {
+        self.0.read()
+    }
+
+    pub fn write(&self) -> SessionWriteGuard<'_> {
+        SessionWriteGuard(self.0.write())
+    }
+}
+
+/// Write guard for [`SessionLock`]; bumps `render_generation` when dropped.
+pub struct SessionWriteGuard<'a>(RwLockWriteGuard<'a, Session>);
+
+impl Deref for SessionWriteGuard<'_> {
+    type Target = Session;
+    fn deref(&self) -> &Session {
+        &self.0
+    }
+}
+
+impl DerefMut for SessionWriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Session {
+        &mut self.0
+    }
+}
+
+impl Drop for SessionWriteGuard<'_> {
+    fn drop(&mut self) {
+        self.0.render_generation = self.0.render_generation.wrapping_add(1);
+    }
 }
 
 impl Session {
@@ -1362,6 +1410,7 @@ impl Session {
             source_ip: None,
             gateway: None,
             events: Vec::new(),
+            render_generation: 0,
         }
     }
 
@@ -1507,6 +1556,7 @@ impl Session {
             source_ip: self.source_ip,
             gateway: self.gateway,
             events: Vec::new(),
+            render_generation: self.render_generation,
         }
     }
 
@@ -2604,6 +2654,28 @@ mod tests {
         // Reset should clear
         session.reset_stats();
         assert!(session.hop(1).unwrap().ttl_manip.is_none());
+    }
+
+    #[test]
+    fn test_session_lock_write_bumps_render_generation() {
+        let target = Target::new(
+            "test.com".to_string(),
+            IpAddr::V4(std::net::Ipv4Addr::new(1, 2, 3, 4)),
+        );
+        let lock = SessionLock::new(Session::new(target, Config::default()));
+        assert_eq!(lock.read().render_generation, 0);
+
+        // Any write-guard release bumps, regardless of which field changed.
+        lock.write().total_sent += 1;
+        assert_eq!(lock.read().render_generation, 1);
+        lock.write().reset_stats();
+        assert_eq!(lock.read().render_generation, 2);
+
+        // Reads never bump.
+        let snap = lock.read().snapshot_for_render();
+        assert_eq!(lock.read().render_generation, 2);
+        assert_eq!(snap.render_generation, 2);
+        assert!(snap.events.is_empty());
     }
 
     #[test]
