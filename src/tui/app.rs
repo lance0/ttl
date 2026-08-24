@@ -169,65 +169,112 @@ fn render_fingerprint(
     session_generation: Option<u64>,
     cache_status: Option<&crate::lookup::ix::CacheStatus>,
 ) -> RenderFingerprint {
-    let replay = ui_state.replay_state.as_ref().map(|r| {
+    // Exhaustive destructures, deliberately without `..`: adding a field to
+    // any of these structs fails to compile here until it is either
+    // fingerprinted or explicitly bound to `_`, so new render-relevant state
+    // cannot silently render late.
+    let UiState {
+        selected,
+        paused,
+        show_help,
+        show_hop_detail,
+        show_settings,
+        settings,
+        status_message,
+        theme_index,
+        display_mode,
+        selected_target,
+        show_target_list,
+        target_list_index,
+        update_available,
+        update_rx: _,
+        replay_state,
+        target_list_cache,
+        target_list_tick: _,
+        show_target_input,
+        target_input,
+    } = ui_state;
+    let SettingsState {
+        selected_section,
+        theme_scroll,
+        theme_index: settings_theme_index,
+        display_mode: settings_display_mode,
+        api_key,
+        api_key_cursor,
+        update_check,
+    } = settings;
+    let TargetInputState {
+        input,
+        cursor,
+        error,
+        resolving,
+        pending: _,
+    } = target_input;
+    let replay = replay_state.as_ref().map(|r| {
+        let ReplayState {
+            events: _, // fixed after load
+            current_index,
+            replay_started_at: _, // both clock fields feed replay_current_ms(r)
+            speed_multiplier,
+            paused: replay_paused,
+            finished,
+            paused_at_elapsed_ms: _,
+        } = r;
         (
-            r.paused,
-            r.finished,
-            r.current_index,
+            *replay_paused,
+            *finished,
+            *current_index,
             replay_current_ms(r),
-            r.speed_multiplier.to_bits(),
+            speed_multiplier.to_bits(),
         )
     });
     RenderFingerprint {
         session_generation,
-        selected: ui_state.selected,
-        paused: ui_state.paused,
-        show_help: ui_state.show_help,
-        show_hop_detail: ui_state.show_hop_detail,
-        show_settings: ui_state.show_settings,
-        show_target_list: ui_state.show_target_list,
-        show_target_input: ui_state.show_target_input,
-        theme_index: ui_state.theme_index,
-        display_mode: ui_state.display_mode,
-        selected_target: ui_state.selected_target,
+        selected: *selected,
+        paused: *paused,
+        show_help: *show_help,
+        show_hop_detail: *show_hop_detail,
+        show_settings: *show_settings,
+        show_target_list: *show_target_list,
+        show_target_input: *show_target_input,
+        theme_index: *theme_index,
+        display_mode: *display_mode,
+        selected_target: *selected_target,
         num_targets,
-        target_list_index: ui_state.target_list_index,
-        status: ui_state.status_message.as_ref().map(|(m, _)| m.clone()),
-        update_available: ui_state.update_available.clone(),
+        target_list_index: *target_list_index,
+        status: status_message.as_ref().map(|(m, _)| m.clone()),
+        update_available: update_available.clone(),
         replay,
-        target_input: (
-            ui_state.target_input.input.clone(),
-            ui_state.target_input.cursor,
-            ui_state.target_input.error.clone(),
-            ui_state.target_input.resolving,
-        ),
+        target_input: (input.clone(), *cursor, error.clone(), *resolving),
         settings: (
-            ui_state.settings.selected_section,
-            ui_state.settings.theme_scroll,
-            ui_state.settings.theme_index,
-            ui_state.settings.display_mode,
-            ui_state.settings.api_key.clone(),
-            ui_state.settings.api_key_cursor,
-            ui_state.settings.update_check,
+            *selected_section,
+            *theme_scroll,
+            *settings_theme_index,
+            *settings_display_mode,
+            api_key.clone(),
+            *api_key_cursor,
+            *update_check,
         ),
         ix_cache: cache_status.map(|c| {
-            (
-                c.loaded,
-                c.prefix_count,
-                c.fetched_at,
-                c.expired,
-                c.refreshing,
-            )
+            let crate::lookup::ix::CacheStatus {
+                loaded,
+                prefix_count,
+                fetched_at,
+                expired,
+                refreshing,
+            } = c;
+            (*loaded, *prefix_count, *fetched_at, *expired, *refreshing)
         }),
-        target_list_rows: ui_state.target_list_cache.as_ref().map(|rows| {
+        target_list_rows: target_list_cache.as_ref().map(|rows| {
             rows.iter()
                 .map(|t| {
-                    (
-                        t.ip,
-                        t.hostname.clone(),
-                        t.hops_str.clone(),
-                        t.loss_str.clone(),
-                    )
+                    let TargetInfo {
+                        ip,
+                        hostname,
+                        hops_str,
+                        loss_str,
+                    } = t;
+                    (*ip, hostname.clone(), hops_str.clone(), loss_str.clone())
                 })
                 .collect()
         }),
