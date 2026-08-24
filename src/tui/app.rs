@@ -782,7 +782,13 @@ where
         }
         // Handle input — non-blocking: the event-reader thread forwards
         // crossterm events over the channel so we never stall the async runtime.
-        if let Ok(Event::Key(key)) = event_rx.try_recv() {
+        let event = event_rx.try_recv().ok();
+        // A resize changes the layout without touching any fingerprinted state,
+        // so force the next tick to draw (terminal.draw re-measures the area).
+        if matches!(event, Some(Event::Resize(..))) {
+            last_draw = None;
+        }
+        if let Some(Event::Key(key)) = event {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
