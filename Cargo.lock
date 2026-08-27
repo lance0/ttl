@@ -1736,9 +1736,9 @@ dependencies = [
 
 [[package]]
 name = "maxminddb"
-version = "0.30.0"
+version = "0.30.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7bd67e2f5d65937ff283e418fcad53c8e2eeda0719e455508b62dad8ffe6180"
+checksum = "6649a1829998559f076107dfff337f1d05195eec8d01964d96e53570cc8f8d75"
 dependencies = [
  "ipnetwork 0.21.1",
  "memchr",
