@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **`rustls` 0.23.40 → 0.23.45** clears RUSTSEC-2026-0285 (TLS 1.3 handshake messages incorrectly accepted across encryption-level boundaries). The advisory reaches ttl transitively via `reqwest` (PeeringDB) and `ureq` (update check). Also replaces the yanked `chacha20` 0.10.0 with 0.10.2.
+
+### Dependencies
+- dirs 6 → 7 (direct; the only change is Windows `preference_dir`, which ttl does not use), hickory-resolver/-proto/-net 0.26.1 → 0.26.3, maxminddb 0.30.0 → 0.30.3, aws-lc-rs 1.16.3 → 1.18.1, aws-lc-sys 0.40.0 → 0.45.0, toml 1.1.4 → 1.1.6.
+
 ## [0.22.0] - 2026-08-24
 
 ### Changed
