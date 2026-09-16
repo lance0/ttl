@@ -210,6 +210,42 @@ impl HopDetailView<'_> {
                 ]));
             }
 
+            // RFC 5837 Interface Information (if present)
+            if let Some(ifaces) = &stats.interface_info {
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![Span::styled(
+                    "  Interface (RFC 5837):",
+                    Style::default().fg(self.theme.text_dim),
+                )]));
+                for iface in ifaces {
+                    let mut parts = Vec::new();
+                    if let Some(name) = &iface.name {
+                        parts.push(format!("\"{}\"", name));
+                    }
+                    if let Some(ip) = iface.ip_addr {
+                        parts.push(format!("IP {}", ip));
+                    }
+                    if let Some(if_index) = iface.if_index {
+                        parts.push(format!("idx {}", if_index));
+                    }
+                    if let Some(mtu) = iface.mtu {
+                        parts.push(format!("MTU {}", mtu));
+                    }
+                    let detail_str = if parts.is_empty() {
+                        "(no details)".to_string()
+                    } else {
+                        parts.join(", ")
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("    {}: ", iface.role.as_str()),
+                            Style::default().fg(self.theme.text_dim),
+                        ),
+                        Span::styled(detail_str, Style::default().fg(self.theme.shortcut)),
+                    ]));
+                }
+            }
+
             // NAT detection info (if present)
             if let Some(ref nat_info) = self.hop.nat_info {
                 lines.push(Line::from(""));

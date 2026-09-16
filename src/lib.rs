@@ -10,6 +10,7 @@
 //! - Path MTU discovery via binary search
 //! - ASN, GeoIP, reverse DNS, and IX enrichment
 //! - MPLS label detection from ICMP extensions
+//! - Interface and next-hop identification from ICMP extensions (RFC 5837)
 //! - Route flap and NAT detection
 //!
 //! ## Library Usage
