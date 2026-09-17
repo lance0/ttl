@@ -10,7 +10,7 @@ keywords = ["traceroute", "mtr", "network", "tui", "diagnostics"]
 categories = ["command-line-utilities", "network-programming"]
 # Keep the published crate lean: the README demo assets live in the git repo
 # only (crates.io renders README images from the repo, not the tarball).
-exclude = ["docs/*.gif", "docs/*.tape"]
+exclude = ["docs/*.gif", "docs/*.tape", "scripts/"]
 
 [features]
 default = ["update-check"]
