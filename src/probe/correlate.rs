@@ -1,6 +1,6 @@
 use crate::probe::tcp::extract_probe_id_from_tcp;
 use crate::probe::udp::extract_probe_id_from_udp_payload;
-use crate::state::{IcmpResponseType, InterfaceInfo, InterfaceRole, MplsLabel, ProbeId};
+use crate::state::{IcmpInterfaceInfo, IcmpResponseType, InterfaceRole, MplsLabel, ProbeId};
 use pnet::packet::icmp::{IcmpPacket, IcmpTypes};
 use pnet::packet::ipv4::Ipv4Packet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -31,7 +31,7 @@ pub struct ParsedResponse {
     /// MPLS labels from ICMP extensions (RFC 4950), if present
     pub mpls_labels: Option<Vec<MplsLabel>>,
     /// RFC 5837 interface and next-hop identification, if present
-    pub interface_info: Option<Vec<InterfaceInfo>>,
+    pub interface_info: Option<Vec<IcmpInterfaceInfo>>,
     /// Source port from original UDP/TCP packet (for flow identification in Paris/Dublin traceroute)
     /// This allows the receiver to compute flow_id = src_port - base_src_port
     pub src_port: Option<u16>,
@@ -56,7 +56,7 @@ const MIN_ORIGINAL_DATAGRAM: usize = 128;
 #[derive(Debug, Default)]
 struct ParsedIcmpExtensions {
     mpls_labels: Option<Vec<MplsLabel>>,
-    interface_info: Option<Vec<InterfaceInfo>>,
+    interface_info: Option<Vec<IcmpInterfaceInfo>>,
 }
 
 /// Parse ICMP extensions from an error message payload (RFC 4884)
@@ -141,10 +141,10 @@ fn parse_icmp_extensions(
             let role_val = (c_type >> 6) & 0x03;
             let role_mask = 1 << role_val;
 
-            // RFC 5837 Section 4.5:
-            // "A single ICMP message MUST NOT contain two Interface Information Objects
-            // that specify the same role... If such an illegal ICMP message is received,
-            // it MUST be silently discarded."
+            // RFC 5837 §4.5 forbids two objects with the same role and says the
+            // whole message "MUST be silently discarded". Deliberately lenient
+            // here: keep the first object per role and ignore repeats, so a
+            // buggy router still yields the rest of its trace data.
             if seen_roles & role_mask == 0 {
                 seen_roles |= role_mask;
 
@@ -203,7 +203,9 @@ fn parse_icmp_extensions(
                                 }
                             }
                             _ => {
-                                // Unknown AFI
+                                // Unknown AFI: the address length is unknowable, so
+                                // the remaining sub-objects cannot be located.
+                                malformed = true;
                             }
                         }
                     } else {
@@ -245,7 +247,7 @@ fn parse_icmp_extensions(
                 }
 
                 if !malformed {
-                    interfaces.push(InterfaceInfo {
+                    interfaces.push(IcmpInterfaceInfo {
                         role,
                         if_index,
                         ip_addr,
@@ -736,7 +738,7 @@ fn parse_icmp_error_payload_v4_with_mtu(
                     response_type,
                     is_pmtud: false,
                     mpls_labels: exts.mpls_labels,
-                    interface_info: exts.interface_info.clone(),
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -761,7 +763,7 @@ fn parse_icmp_error_payload_v4_with_mtu(
                     response_type,
                     is_pmtud: false,
                     mpls_labels: exts.mpls_labels,
-                    interface_info: exts.interface_info.clone(),
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -790,7 +792,7 @@ fn parse_icmp_error_payload_v4_with_mtu(
                 response_type,
                 is_pmtud: false,
                 mpls_labels: exts.mpls_labels,
-                interface_info: exts.interface_info.clone(),
+                interface_info: exts.interface_info,
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
@@ -931,7 +933,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                     response_type,
                     is_pmtud: false,
                     mpls_labels: exts.mpls_labels,
-                    interface_info: exts.interface_info.clone(),
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -955,7 +957,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                     response_type,
                     is_pmtud: false,
                     mpls_labels: exts.mpls_labels,
-                    interface_info: exts.interface_info.clone(),
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -984,7 +986,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                 response_type,
                 is_pmtud: false,
                 mpls_labels: exts.mpls_labels,
-                interface_info: exts.interface_info.clone(),
+                interface_info: exts.interface_info,
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
@@ -1191,7 +1193,7 @@ fn parse_icmp_error_payload_v4_dgram(
                     response_type,
                     is_pmtud: false,
                     mpls_labels: exts.mpls_labels,
-                    interface_info: exts.interface_info.clone(),
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -1212,7 +1214,7 @@ fn parse_icmp_error_payload_v4_dgram(
                     response_type,
                     is_pmtud: false,
                     mpls_labels: exts.mpls_labels,
-                    interface_info: exts.interface_info.clone(),
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -1234,7 +1236,7 @@ fn parse_icmp_error_payload_v4_dgram(
                 response_type,
                 is_pmtud: false,
                 mpls_labels: exts.mpls_labels,
-                interface_info: exts.interface_info.clone(),
+                interface_info: exts.interface_info,
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
@@ -1436,7 +1438,7 @@ fn parse_icmp_error_payload_v6_dgram(
                     response_type,
                     is_pmtud: false,
                     mpls_labels: exts.mpls_labels,
-                    interface_info: exts.interface_info.clone(),
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -1455,7 +1457,7 @@ fn parse_icmp_error_payload_v6_dgram(
                     response_type,
                     is_pmtud: false,
                     mpls_labels: exts.mpls_labels,
-                    interface_info: exts.interface_info.clone(),
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -1479,7 +1481,7 @@ fn parse_icmp_error_payload_v6_dgram(
                 is_pmtud: false,
                 mtu,
                 mpls_labels: exts.mpls_labels,
-                interface_info: exts.interface_info.clone(),
+                interface_info: exts.interface_info,
                 quoted_ttl: Some(quoted_ttl),
                 original_dest,
             })
@@ -3021,7 +3023,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rfc5837_duplicate_role_rejected() {
+    fn test_rfc5837_duplicate_role_ignored() {
         let responder = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 3));
         let our_id = 0x2222;
         let probe_id = ProbeId::new(3, 1);
@@ -3063,7 +3065,7 @@ mod tests {
         let ifaces = parsed
             .interface_info
             .expect("interface info should be parsed");
-        // Second object with duplicate role 0 MUST be discarded per RFC 5837
+        // Duplicate role: first object wins, the repeat is ignored (lenient vs RFC 5837 §4.5)
         assert_eq!(ifaces.len(), 1);
         assert_eq!(ifaces[0].if_index, Some(100));
     }
@@ -3159,22 +3161,41 @@ mod tests {
         assert!(parsed.interface_info.is_none());
     }
 
+    /// Arista EOS 4.36 lab frame (issue #134): ICMPv4 Time Exceeded with an RFC 5837 Interface Information Object
+    const ARISTA_PKT1_V4: &[u8] = &[
+        104, 52, 33, 178, 14, 88, 4, 244, 28, 40, 230, 9, 8, 0, 69, 0, 0, 244, 109, 96, 64, 0, 63,
+        1, 152, 110, 198, 51, 100, 33, 10, 0, 0, 230, 11, 0, 244, 223, 0, 32, 0, 0, 69, 0, 0, 92,
+        22, 180, 0, 0, 1, 1, 109, 171, 10, 0, 0, 230, 198, 51, 100, 41, 8, 0, 246, 202, 0, 1, 1,
+        52, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 86, 229, 0, 52, 2, 15, 0, 0, 0, 1, 0, 1, 0, 0, 198,
+        51, 100, 33, 32, 69, 116, 104, 101, 114, 110, 101, 116, 49, 64, 97, 114, 105, 115, 116, 97,
+        45, 114, 102, 99, 53, 56, 51, 55, 45, 114, 116, 49, 0, 0, 0, 0, 0, 5, 220, 0, 32, 4, 6, 0,
+        1, 0, 0, 192, 0, 2, 11, 20, 97, 114, 105, 115, 116, 97, 45, 114, 102, 99, 53, 56, 51, 55,
+        45, 114, 116, 49, 0,
+    ];
+
+    /// Arista EOS 4.36 lab frame (issue #134): ICMPv6 Time Exceeded with an RFC 5837 Interface Information Object
+    const ARISTA_PKT1_V6: &[u8] = &[
+        104, 52, 33, 178, 14, 88, 4, 244, 28, 40, 230, 9, 134, 221, 96, 10, 214, 179, 0, 248, 58,
+        63, 32, 1, 13, 184, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 51, 32, 1, 13, 184, 222, 173, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 5, 3, 0, 23, 173, 16, 0, 0, 0, 96, 0, 0, 0, 0, 72, 58, 1, 32, 1, 13, 184,
+        222, 173, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 32, 1, 13, 184, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        65, 128, 0, 68, 203, 0, 1, 0, 75, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 32, 0, 152, 226, 0, 64, 2, 15, 0, 0, 0, 1, 0, 2, 0, 0, 32, 1, 13, 184, 0, 1, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 51, 32, 69, 116, 104, 101, 114, 110, 101, 116, 49, 64, 97, 114, 105, 115,
+        116, 97, 45, 114, 102, 99, 53, 56, 51, 55, 45, 114, 116, 49, 0, 0, 0, 0, 0, 5, 220, 0, 44,
+        4, 6, 0, 2, 0, 0, 222, 173, 190, 239, 0, 0, 0, 0, 0, 0, 0, 0, 0, 17, 222, 173, 20, 97, 114,
+        105, 115, 116, 97, 45, 114, 102, 99, 53, 56, 51, 55, 45, 114, 116, 49, 0,
+    ];
+
     #[test]
     fn test_arista_real_world_pcaps() {
         // Real Arista EOS capture packet 1 (IPv4, Ethernet1@arista-rfc5837-rt1, MTU 1500)
-        let pkt1_v4: &[u8] = &[
-            104, 52, 33, 178, 14, 88, 4, 244, 28, 40, 230, 9, 8, 0, 69, 0, 0, 244, 109, 96, 64, 0,
-            63, 1, 152, 110, 198, 51, 100, 33, 10, 0, 0, 230, 11, 0, 244, 223, 0, 32, 0, 0, 69, 0,
-            0, 92, 22, 180, 0, 0, 1, 1, 109, 171, 10, 0, 0, 230, 198, 51, 100, 41, 8, 0, 246, 202,
-            0, 1, 1, 52, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 86, 229, 0, 52, 2, 15, 0, 0,
-            0, 1, 0, 1, 0, 0, 198, 51, 100, 33, 32, 69, 116, 104, 101, 114, 110, 101, 116, 49, 64,
-            97, 114, 105, 115, 116, 97, 45, 114, 102, 99, 53, 56, 51, 55, 45, 114, 116, 49, 0, 0,
-            0, 0, 0, 5, 220, 0, 32, 4, 6, 0, 1, 0, 0, 192, 0, 2, 11, 20, 97, 114, 105, 115, 116,
-            97, 45, 114, 102, 99, 53, 56, 51, 55, 45, 114, 116, 49, 0,
-        ];
+        let pkt1_v4 = ARISTA_PKT1_V4;
         let ip_payload = &pkt1_v4[14..];
         let responder = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 33));
         let parsed_v4 =
@@ -3249,21 +3270,7 @@ mod tests {
         assert_eq!(ifaces_pkt7[0].mtu, Some(1430));
 
         // Real Arista EOS capture packet 1 (IPv6, Ethernet1@arista-rfc5837-rt1, MTU 1500)
-        let pkt1_v6: &[u8] = &[
-            104, 52, 33, 178, 14, 88, 4, 244, 28, 40, 230, 9, 134, 221, 96, 10, 214, 179, 0, 248,
-            58, 63, 32, 1, 13, 184, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 51, 32, 1, 13, 184, 222, 173,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 3, 0, 23, 173, 16, 0, 0, 0, 96, 0, 0, 0, 0, 72, 58, 1,
-            32, 1, 13, 184, 222, 173, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 32, 1, 13, 184, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 65, 128, 0, 68, 203, 0, 1, 0, 75, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 152, 226, 0, 64, 2, 15, 0, 0, 0, 1, 0, 2, 0, 0,
-            32, 1, 13, 184, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 51, 32, 69, 116, 104, 101, 114, 110,
-            101, 116, 49, 64, 97, 114, 105, 115, 116, 97, 45, 114, 102, 99, 53, 56, 51, 55, 45,
-            114, 116, 49, 0, 0, 0, 0, 0, 5, 220, 0, 44, 4, 6, 0, 2, 0, 0, 222, 173, 190, 239, 0, 0,
-            0, 0, 0, 0, 0, 0, 0, 17, 222, 173, 20, 97, 114, 105, 115, 116, 97, 45, 114, 102, 99,
-            53, 56, 51, 55, 45, 114, 116, 49, 0,
-        ];
+        let pkt1_v6 = ARISTA_PKT1_V6;
         let icmp6_payload = &pkt1_v6[54..];
         let responder_v6 = IpAddr::V6("2001:db8:1::33".parse().unwrap());
         let parsed_v6 = parse_icmp_response(icmp6_payload, responder_v6, 1, true)
@@ -3336,5 +3343,31 @@ mod tests {
             Some("Ethernet2@arista-rfc5837-rt3")
         );
         assert_eq!(ifaces_v6_7[0].mtu, Some(1430));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20_000))]
+        /// Every router on the path can hand this parser arbitrary bytes: mutating
+        /// and truncating real RFC 5837 frames must never panic.
+        #[test]
+        fn proptest_icmp_extension_parser_never_panics(
+            is_v6 in any::<bool>(),
+            idx in 0usize..320,
+            byte in any::<u8>(),
+            cut in 1usize..320,
+        ) {
+            let base: &[u8] = if is_v6 { &ARISTA_PKT1_V6[54..] } else { &ARISTA_PKT1_V4[14..] };
+            let mut pkt = base.to_vec();
+            if idx < pkt.len() {
+                pkt[idx] = byte;
+            }
+            pkt.truncate(cut.min(pkt.len()));
+            let responder = if is_v6 {
+                IpAddr::V6(Ipv6Addr::LOCALHOST)
+            } else {
+                IpAddr::V4(Ipv4Addr::LOCALHOST)
+            };
+            let _ = parse_icmp_response(&pkt, responder, 1, is_v6);
+        }
     }
 }

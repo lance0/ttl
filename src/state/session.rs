@@ -122,9 +122,6 @@ pub struct IcmpInterfaceInfo {
     pub mtu: Option<u32>,
 }
 
-/// Alias for [`IcmpInterfaceInfo`] (RFC 5837)
-pub type InterfaceInfo = IcmpInterfaceInfo;
-
 /// Result of a single probe
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
