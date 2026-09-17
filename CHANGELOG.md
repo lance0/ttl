@@ -5,16 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.23.0] - 2026-09-17
 
 ### Added
 - **Interface and next-hop identification from ICMP extensions (RFC 5837)** (#134). Routers that append Interface Information Objects to Time Exceeded / Destination Unreachable messages (for example Arista EOS with extended ICMP errors enabled) now have the incoming interface, sub-IP component, outgoing interface, or IP next hop — ifIndex, IP address, interface name, and MTU — parsed, shown in the hop detail view, and included in JSON exports. Parsed alongside RFC 4950 MPLS label stacks in the same message; unknown extension objects are skipped. Also corrects the RFC 4884 length field for ICMPv6 (byte 4, in 64-bit words), which previously kept any ICMPv6 extension from being read. Validated against Arista EOS 4.36 IPv4 and IPv6 captures.
 
 ### Security
+- **`maxminddb` 0.30 → 0.31** fixes a denial of service in MMDB decoding: a crafted database could make record or metadata decoding reference shared data repeatedly and burn unbounded CPU and memory. ttl opens whichever GeoLite2 file it is pointed at, so the reader now caps the work done per lookup and returns an error instead. Also bounds subdivision lists from untrusted data.
 - **`rustls` 0.23.40 → 0.23.45** clears RUSTSEC-2026-0285 (TLS 1.3 handshake messages incorrectly accepted across encryption-level boundaries). The advisory reaches ttl transitively via `reqwest` (PeeringDB) and `ureq` (update check). Also replaces the yanked `chacha20` 0.10.0 with 0.10.2.
 
 ### Dependencies
-- dirs 6 → 7 (direct; the only change is Windows `preference_dir`, which ttl does not use), hickory-resolver/-proto/-net 0.26.1 → 0.26.3, maxminddb 0.30.0 → 0.30.3, aws-lc-rs 1.16.3 → 1.18.1, aws-lc-sys 0.40.0 → 0.45.0, toml 1.1.4 → 1.1.6.
+- dirs 6 → 7 (direct; the only change is Windows `preference_dir`, which ttl does not use), reqwest 0.13.4 → 0.13.5, hickory-resolver/-proto/-net 0.26.1 → 0.26.3, aws-lc-rs 1.16.3 → 1.18.1, aws-lc-sys 0.40.0 → 0.45.0, toml 1.1.4 → 1.1.6.
 
 ## [0.22.0] - 2026-08-24
 
