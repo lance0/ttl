@@ -77,6 +77,51 @@ impl MplsLabel {
     }
 }
 
+/// Interface role in RFC 5837 extension
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterfaceRole {
+    /// IP interface upon which datagram arrived (0)
+    IncomingIp,
+    /// Sub-IP component of incoming IP interface (1)
+    SubIpComponent,
+    /// IP interface through which datagram would have been forwarded (2)
+    OutgoingIp,
+    /// IP next hop to which datagram would have been forwarded (3)
+    IpNextHop,
+}
+
+impl InterfaceRole {
+    /// Short display name for TUI/CLI (e.g., "Incoming", "Outgoing")
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::IncomingIp => "Incoming",
+            Self::SubIpComponent => "Sub-IP",
+            Self::OutgoingIp => "Outgoing",
+            Self::IpNextHop => "Next-Hop",
+        }
+    }
+}
+
+/// Interface and next-hop identification from ICMP extension (RFC 5837)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IcmpInterfaceInfo {
+    /// Role of the interface
+    pub role: InterfaceRole,
+    /// SNMP MIB-II ifIndex (RFC 2863), if present
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub if_index: Option<u32>,
+    /// IP address associated with the interface, if present
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_addr: Option<IpAddr>,
+    /// Human-readable interface name (e.g. MIB-II ifName), if present
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// MTU of the interface, if present
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtu: Option<u32>,
+}
+
 /// Result of a single probe
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -133,6 +178,9 @@ pub struct ResponderStats {
 
     /// MPLS labels from ICMP extensions (RFC 4950)
     pub mpls_labels: Option<Vec<MplsLabel>>,
+    /// Interface and next-hop identification from ICMP extensions (RFC 5837)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interface_info: Option<Vec<IcmpInterfaceInfo>>,
 
     // Counters
     // Note: sent is kept for JSON schema compatibility but not used in TUI
@@ -175,6 +223,7 @@ impl ResponderStats {
             geo: None,
             ix: None,
             mpls_labels: None,
+            interface_info: None,
             sent: 0,
             received: 0,
             min_rtt: Duration::MAX,
@@ -962,12 +1011,13 @@ impl Hop {
         self.record_response_with_mpls(ip, rtt, None);
     }
 
-    /// Record a response from a responder with optional MPLS labels
-    pub fn record_response_with_mpls(
+    /// Record a response from a responder with optional MPLS labels and RFC 5837 interface info
+    pub fn record_response_with_extensions(
         &mut self,
         ip: IpAddr,
         rtt: Duration,
         mpls_labels: Option<Vec<MplsLabel>>,
+        interface_info: Option<Vec<IcmpInterfaceInfo>>,
     ) {
         self.received += 1;
 
@@ -983,6 +1033,10 @@ impl Hop {
         if mpls_labels.is_some() {
             stats.mpls_labels = mpls_labels;
         }
+        // Store RFC 5837 interface info if present
+        if interface_info.is_some() {
+            stats.interface_info = interface_info;
+        }
 
         // Track in hop-level sparkline
         self.recent_results.push_back(true);
@@ -991,6 +1045,16 @@ impl Hop {
         }
 
         self.update_primary();
+    }
+
+    /// Record a response from a responder with optional MPLS labels
+    pub fn record_response_with_mpls(
+        &mut self,
+        ip: IpAddr,
+        rtt: Duration,
+        mpls_labels: Option<Vec<MplsLabel>>,
+    ) {
+        self.record_response_with_extensions(ip, rtt, mpls_labels, None);
     }
 
     /// Record a response and detect route changes (single-flow mode only)
@@ -1007,8 +1071,19 @@ impl Hop {
         rtt: Duration,
         mpls_labels: Option<Vec<MplsLabel>>,
     ) {
+        self.record_response_detecting_flaps_with_extensions(ip, rtt, mpls_labels, None);
+    }
+
+    /// Record a response and detect route changes with optional ICMP extensions
+    pub fn record_response_detecting_flaps_with_extensions(
+        &mut self,
+        ip: IpAddr,
+        rtt: Duration,
+        mpls_labels: Option<Vec<MplsLabel>>,
+        interface_info: Option<Vec<IcmpInterfaceInfo>>,
+    ) {
         let old_flap_primary = self.flap_tracking_primary;
-        self.record_response_with_mpls(ip, rtt, mpls_labels);
+        self.record_response_with_extensions(ip, rtt, mpls_labels, interface_info);
 
         // Update flap_tracking_primary with hysteresis
         let current_count = self

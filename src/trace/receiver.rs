@@ -11,7 +11,8 @@ use crate::probe::{
     recv_icmp_with_ttl,
 };
 use crate::state::{
-    IcmpResponseType, MplsLabel, PmtudPhase, ProbeEvent, ProbeId, ProbeOutcome, SessionLock,
+    IcmpInterfaceInfo, IcmpResponseType, MplsLabel, PmtudPhase, ProbeEvent, ProbeId, ProbeOutcome,
+    SessionLock,
 };
 use crate::trace::pending::{PendingKey, PendingMap, PendingProbe};
 
@@ -51,6 +52,7 @@ struct BatchedResponse {
     responder_scope_id: Option<u32>,
     rtt: Duration,
     mpls_labels: Option<Vec<MplsLabel>>,
+    interface_info: Option<Vec<IcmpInterfaceInfo>>,
     response_type: IcmpResponseType,
     target: IpAddr,
     /// Flow ID for Paris/Dublin traceroute ECMP detection
@@ -272,6 +274,7 @@ impl Receiver {
                                     responder_scope_id,
                                     rtt,
                                     mpls_labels: parsed.mpls_labels,
+                                    interface_info: parsed.interface_info,
                                     response_type: parsed.response_type,
                                     target: probe.target,
                                     flow_id: probe.flow_id,
@@ -357,16 +360,18 @@ impl Receiver {
                                 // Record aggregate stats with optional flap detection
                                 // Only detect flaps in single-flow mode (multi-flow expects path changes)
                                 if self.config.num_flows == 1 {
-                                    hop.record_response_detecting_flaps(
+                                    hop.record_response_detecting_flaps_with_extensions(
                                         resp.responder,
                                         resp.rtt,
                                         resp.mpls_labels.clone(),
+                                        resp.interface_info.clone(),
                                     );
                                 } else {
-                                    hop.record_response_with_mpls(
+                                    hop.record_response_with_extensions(
                                         resp.responder,
                                         resp.rtt,
                                         resp.mpls_labels.clone(),
+                                        resp.interface_info.clone(),
                                     );
                                 }
                                 // Record per-flow stats for Paris/Dublin traceroute ECMP detection

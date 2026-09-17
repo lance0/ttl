@@ -43,6 +43,7 @@ See [Installation](#installation) below for setup instructions.
 - **Route flap detection** - alert on path changes indicating routing instability
 - **Rich enrichment** - ASN, GeoIP, reverse DNS, IX detection (PeeringDB)
 - **MPLS label detection** from ICMP extensions
+- **Interface and next-hop identification** (RFC 5837 ICMP extensions)
 - **ICMP, UDP, TCP probing** with auto-detection
 - **Great TUI** with themes, sparklines, and session export
 - **Update notifications** - in-app banner when new versions are available (opt out via `--no-update-check`, `DO_NOT_TRACK`, config, or a `--no-default-features` build)

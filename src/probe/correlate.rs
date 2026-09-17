@@ -1,9 +1,9 @@
 use crate::probe::tcp::extract_probe_id_from_tcp;
 use crate::probe::udp::extract_probe_id_from_udp_payload;
-use crate::state::{IcmpResponseType, MplsLabel, ProbeId};
+use crate::state::{IcmpInterfaceInfo, IcmpResponseType, InterfaceRole, MplsLabel, ProbeId};
 use pnet::packet::icmp::{IcmpPacket, IcmpTypes};
 use pnet::packet::ipv4::Ipv4Packet;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 // IP protocol numbers
 const IPPROTO_ICMP: u8 = 1;
@@ -30,6 +30,8 @@ pub struct ParsedResponse {
     pub is_pmtud: bool,
     /// MPLS labels from ICMP extensions (RFC 4950), if present
     pub mpls_labels: Option<Vec<MplsLabel>>,
+    /// RFC 5837 interface and next-hop identification, if present
+    pub interface_info: Option<Vec<IcmpInterfaceInfo>>,
     /// Source port from original UDP/TCP packet (for flow identification in Paris/Dublin traceroute)
     /// This allows the receiver to compute flow_id = src_port - base_src_port
     pub src_port: Option<u16>,
@@ -44,35 +46,48 @@ pub struct ParsedResponse {
     pub original_dest: Option<IpAddr>,
 }
 
-// ICMP extension constants (RFC 4884, RFC 4950)
+// ICMP extension constants (RFC 4884, RFC 4950, RFC 5837)
 const ICMP_EXT_VERSION: u8 = 2;
 const MPLS_LABEL_STACK_CLASS: u8 = 1;
 const MPLS_LABEL_STACK_TYPE: u8 = 1;
+const INTERFACE_INFO_CLASS: u8 = 2;
 const MIN_ORIGINAL_DATAGRAM: usize = 128;
 
+#[derive(Debug, Default)]
+struct ParsedIcmpExtensions {
+    mpls_labels: Option<Vec<MplsLabel>>,
+    interface_info: Option<Vec<IcmpInterfaceInfo>>,
+}
+
 /// Parse ICMP extensions from an error message payload (RFC 4884)
-/// Returns MPLS label stack if present (RFC 4950)
+/// Returns parsed MPLS labels (RFC 4950) and Interface Information (RFC 5837)
 ///
 /// The icmp_payload parameter should be the ICMP error payload starting
 /// after the 8-byte ICMP header (i.e., starting with the original datagram).
 /// The icmp_length parameter is the "length" field from the ICMP header
-/// (byte 5 of the full ICMP message), which indicates the original datagram
-/// length in 32-bit words when non-zero.
-fn parse_icmp_extensions_with_length(
+/// (byte 5 in 32-bit words for IPv4, byte 4 in 64-bit words for IPv6).
+fn parse_icmp_extensions(
     icmp_payload: &[u8],
     icmp_length: u8,
-) -> Option<Vec<MplsLabel>> {
-    // RFC 4884: The "length" field indicates original datagram length in 32-bit words
-    // If non-zero, extensions start at (length * 4) bytes
-    // If zero (legacy), extensions start at 128 bytes (if present)
+    is_ipv6: bool,
+) -> ParsedIcmpExtensions {
+    // RFC 4884:
+    // - For IPv4: byte 5 of ICMP header, measured in 32-bit words (4 octets)
+    // - For IPv6: byte 4 of ICMPv6 header, measured in 64-bit words (8 octets)
+    // If non-zero, extensions start at that word offset.
+    // If zero (legacy), extensions start at 128 bytes (if present).
     let ext_start = if icmp_length > 0 {
-        (icmp_length as usize) * 4
+        if is_ipv6 {
+            (icmp_length as usize) * 8
+        } else {
+            (icmp_length as usize) * 4
+        }
     } else {
         MIN_ORIGINAL_DATAGRAM
     };
 
     if icmp_payload.len() < ext_start + 4 {
-        return None;
+        return ParsedIcmpExtensions::default();
     }
 
     let ext_header = &icmp_payload[ext_start..];
@@ -80,48 +95,184 @@ fn parse_icmp_extensions_with_length(
     // Version (high nibble of first byte) must be 2
     let version = (ext_header[0] >> 4) & 0x0F;
     if version != ICMP_EXT_VERSION {
-        return None;
+        return ParsedIcmpExtensions::default();
     }
 
     // Skip checksum validation for now (optional in compliant mode)
     // Parse extension objects starting at offset 4
     let mut offset = 4;
+    let mut labels = Vec::new();
+    let mut interfaces = Vec::new();
+    let mut seen_roles: u8 = 0;
+
     while offset + 4 <= ext_header.len() {
         // Object header: length (16 bits), class (8 bits), type (8 bits)
         let obj_length = u16::from_be_bytes([ext_header[offset], ext_header[offset + 1]]) as usize;
         let obj_class = ext_header[offset + 2];
         let obj_type = ext_header[offset + 3];
 
-        // Validate object length
+        // Validate object length (must be >= 4 to contain header and advance)
         if obj_length < 4 || offset + obj_length > ext_header.len() {
             break;
         }
 
-        // Check for MPLS Label Stack (class=1, type=1)
-        if obj_class == MPLS_LABEL_STACK_CLASS && obj_type == MPLS_LABEL_STACK_TYPE {
-            let label_data = &ext_header[offset + 4..offset + obj_length];
-            let mut labels = Vec::new();
+        let obj_payload = &ext_header[offset + 4..offset + obj_length];
 
-            // Each label entry is 4 bytes
-            for chunk in label_data.as_chunks::<4>().0 {
+        // Check for MPLS Label Stack (class=1, type=1, RFC 4950)
+        if obj_class == MPLS_LABEL_STACK_CLASS && obj_type == MPLS_LABEL_STACK_TYPE {
+            for chunk in obj_payload.as_chunks::<4>().0 {
                 let bytes: [u8; 4] = *chunk;
                 let label = MplsLabel::from_bytes(&bytes);
                 labels.push(label);
-                // Stop at bottom of stack
                 if label.bottom {
                     break;
                 }
             }
+        } else if obj_class == INTERFACE_INFO_CLASS {
+            // Interface Information Object (RFC 5837)
+            // C-Type bit-fields:
+            // bits 0-1: role (0: incoming, 1: sub-IP, 2: outgoing, 3: next-hop)
+            // bits 2-3: reserved (ignore)
+            // bit 4: ifIndex (0x08)
+            // bit 5: IP address (0x04)
+            // bit 6: name (0x02)
+            // bit 7: MTU (0x01)
+            let c_type = obj_type;
+            let role_val = (c_type >> 6) & 0x03;
+            let role_mask = 1 << role_val;
 
-            if !labels.is_empty() {
-                return Some(labels);
+            // RFC 5837 §4.5 forbids two objects with the same role and says the
+            // whole message "MUST be silently discarded". Deliberately lenient
+            // here: keep the first object per role and ignore repeats, so a
+            // buggy router still yields the rest of its trace data.
+            if seen_roles & role_mask == 0 {
+                seen_roles |= role_mask;
+
+                let role = match role_val {
+                    0 => InterfaceRole::IncomingIp,
+                    1 => InterfaceRole::SubIpComponent,
+                    2 => InterfaceRole::OutgoingIp,
+                    3 => InterfaceRole::IpNextHop,
+                    _ => unreachable!(),
+                };
+
+                let mut pos = 0;
+                let mut if_index = None;
+                let mut ip_addr = None;
+                let mut name = None;
+                let mut mtu = None;
+                let mut malformed = false;
+
+                // 1. ifIndex (bit 4, 0x08)
+                if (c_type & 0x08) != 0 {
+                    if pos + 4 <= obj_payload.len() {
+                        let bytes: [u8; 4] = obj_payload[pos..pos + 4].try_into().unwrap();
+                        if_index = Some(u32::from_be_bytes(bytes));
+                        pos += 4;
+                    } else {
+                        malformed = true;
+                    }
+                }
+
+                // 2. IP Address Sub-Object (bit 5, 0x04)
+                if !malformed && (c_type & 0x04) != 0 {
+                    if pos + 4 <= obj_payload.len() {
+                        let afi = u16::from_be_bytes([obj_payload[pos], obj_payload[pos + 1]]);
+                        pos += 4; // AFI (2) + Reserved (2)
+                        match afi {
+                            1 => {
+                                // IPv4: 4 bytes
+                                if pos + 4 <= obj_payload.len() {
+                                    let bytes: [u8; 4] =
+                                        obj_payload[pos..pos + 4].try_into().unwrap();
+                                    ip_addr = Some(IpAddr::V4(Ipv4Addr::from(bytes)));
+                                    pos += 4;
+                                } else {
+                                    malformed = true;
+                                }
+                            }
+                            2 => {
+                                // IPv6: 16 bytes
+                                if pos + 16 <= obj_payload.len() {
+                                    let bytes: [u8; 16] =
+                                        obj_payload[pos..pos + 16].try_into().unwrap();
+                                    ip_addr = Some(IpAddr::V6(Ipv6Addr::from(bytes)));
+                                    pos += 16;
+                                } else {
+                                    malformed = true;
+                                }
+                            }
+                            _ => {
+                                // Unknown AFI: the address length is unknowable, so
+                                // the remaining sub-objects cannot be located.
+                                malformed = true;
+                            }
+                        }
+                    } else {
+                        malformed = true;
+                    }
+                }
+
+                // 3. Interface Name Sub-Object (bit 6, 0x02)
+                if !malformed && (c_type & 0x02) != 0 {
+                    if pos < obj_payload.len() {
+                        let name_len = obj_payload[pos] as usize;
+                        if name_len >= 1 && pos + name_len <= obj_payload.len() {
+                            let raw_name = &obj_payload[pos + 1..pos + name_len];
+                            let trimmed = match raw_name.iter().position(|&b| b == 0) {
+                                Some(null_pos) => &raw_name[..null_pos],
+                                None => raw_name,
+                            };
+                            let s = String::from_utf8_lossy(trimmed).trim().to_string();
+                            if !s.is_empty() {
+                                name = Some(s);
+                            }
+                            pos += name_len;
+                        } else {
+                            malformed = true;
+                        }
+                    } else {
+                        malformed = true;
+                    }
+                }
+
+                // 4. MTU (bit 7, 0x01)
+                if !malformed && (c_type & 0x01) != 0 {
+                    if pos + 4 <= obj_payload.len() {
+                        let bytes: [u8; 4] = obj_payload[pos..pos + 4].try_into().unwrap();
+                        mtu = Some(u32::from_be_bytes(bytes));
+                    } else {
+                        malformed = true;
+                    }
+                }
+
+                if !malformed {
+                    interfaces.push(IcmpInterfaceInfo {
+                        role,
+                        if_index,
+                        ip_addr,
+                        name,
+                        mtu,
+                    });
+                }
             }
         }
 
         offset += obj_length;
     }
 
-    None
+    ParsedIcmpExtensions {
+        mpls_labels: if labels.is_empty() {
+            None
+        } else {
+            Some(labels)
+        },
+        interface_info: if interfaces.is_empty() {
+            None
+        } else {
+            Some(interfaces)
+        },
+    }
 }
 
 /// Calculate ICMP checksum (RFC 1071)
@@ -230,6 +381,7 @@ fn parse_icmp_response_v4(
                     response_type: IcmpResponseType::EchoReply,
                     is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
+                    interface_info: None,
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
@@ -250,6 +402,7 @@ fn parse_icmp_response_v4(
                     response_type: IcmpResponseType::EchoReply,
                     is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
+                    interface_info: None,
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
@@ -445,6 +598,7 @@ fn parse_icmp_response_v6(
                     response_type: IcmpResponseType::EchoReply,
                     is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
+                    interface_info: None,
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
@@ -464,6 +618,7 @@ fn parse_icmp_response_v6(
                     response_type: IcmpResponseType::EchoReply,
                     is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
+                    interface_info: None,
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
@@ -556,7 +711,7 @@ fn parse_icmp_error_payload_v4_with_mtu(
     let original_payload = &original_ip_data[orig_ihl..];
 
     // Try to parse ICMP extensions using RFC 4884 length field
-    let mpls_labels = parse_icmp_extensions_with_length(&icmp_data[8..], icmp_length);
+    let exts = parse_icmp_extensions(&icmp_data[8..], icmp_length, false);
 
     // Handle based on original protocol
     match orig_protocol {
@@ -582,7 +737,8 @@ fn parse_icmp_error_payload_v4_with_mtu(
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type,
                     is_pmtud: false,
-                    mpls_labels,
+                    mpls_labels: exts.mpls_labels,
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -606,7 +762,8 @@ fn parse_icmp_error_payload_v4_with_mtu(
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type,
                     is_pmtud: false,
-                    mpls_labels,
+                    mpls_labels: exts.mpls_labels,
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -634,7 +791,8 @@ fn parse_icmp_error_payload_v4_with_mtu(
                 probe_id,
                 response_type,
                 is_pmtud: false,
-                mpls_labels,
+                mpls_labels: exts.mpls_labels,
+                interface_info: exts.interface_info,
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
@@ -661,7 +819,8 @@ fn parse_icmp_error_payload_v4_with_mtu(
                 probe_id,
                 response_type,
                 is_pmtud: false,
-                mpls_labels,
+                mpls_labels: exts.mpls_labels,
+                interface_info: exts.interface_info,
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
@@ -711,8 +870,8 @@ fn parse_icmp_error_payload_v6_with_mtu(
         return None;
     }
 
-    // Extract RFC 4884 length field (byte 5 of ICMPv6 header)
-    let icmp_length = icmp_data[5];
+    // Extract RFC 4884 length field (byte 4 of ICMPv6 header, in 64-bit words)
+    let icmp_length = icmp_data[4];
 
     let original_ipv6_data = &icmp_data[8..];
     // Next header field is at byte 6 of IPv6 header
@@ -743,7 +902,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
     let next_header = final_next_header;
 
     // Try to parse ICMP extensions using RFC 4884 length field
-    let mpls_labels = parse_icmp_extensions_with_length(&icmp_data[8..], icmp_length);
+    let exts = parse_icmp_extensions(&icmp_data[8..], icmp_length, true);
 
     // Handle based on original protocol
     match next_header {
@@ -773,7 +932,8 @@ fn parse_icmp_error_payload_v6_with_mtu(
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type,
                     is_pmtud: false,
-                    mpls_labels,
+                    mpls_labels: exts.mpls_labels,
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -796,7 +956,8 @@ fn parse_icmp_error_payload_v6_with_mtu(
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type,
                     is_pmtud: false,
-                    mpls_labels,
+                    mpls_labels: exts.mpls_labels,
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -824,7 +985,8 @@ fn parse_icmp_error_payload_v6_with_mtu(
                 probe_id,
                 response_type,
                 is_pmtud: false,
-                mpls_labels,
+                mpls_labels: exts.mpls_labels,
+                interface_info: exts.interface_info,
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
@@ -851,7 +1013,8 @@ fn parse_icmp_error_payload_v6_with_mtu(
                 probe_id,
                 response_type,
                 is_pmtud: false,
-                mpls_labels,
+                mpls_labels: exts.mpls_labels,
+                interface_info: exts.interface_info,
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
@@ -919,6 +1082,7 @@ fn parse_icmp_response_v4_dgram(
                     response_type: IcmpResponseType::EchoReply,
                     is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
+                    interface_info: None,
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
@@ -939,6 +1103,7 @@ fn parse_icmp_response_v4_dgram(
                     response_type: IcmpResponseType::EchoReply,
                     is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
+                    interface_info: None,
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
@@ -1004,7 +1169,7 @@ fn parse_icmp_error_payload_v4_dgram(
     }
 
     let original_payload = &original_ip_data[orig_ihl..];
-    let mpls_labels = parse_icmp_extensions_with_length(&icmp_data[8..], icmp_length);
+    let exts = parse_icmp_extensions(&icmp_data[8..], icmp_length, false);
 
     match orig_protocol {
         IPPROTO_ICMP => {
@@ -1027,7 +1192,8 @@ fn parse_icmp_error_payload_v4_dgram(
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type,
                     is_pmtud: false,
-                    mpls_labels,
+                    mpls_labels: exts.mpls_labels,
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -1047,7 +1213,8 @@ fn parse_icmp_error_payload_v4_dgram(
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type,
                     is_pmtud: false,
-                    mpls_labels,
+                    mpls_labels: exts.mpls_labels,
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -1068,7 +1235,8 @@ fn parse_icmp_error_payload_v4_dgram(
                 probe_id,
                 response_type,
                 is_pmtud: false,
-                mpls_labels,
+                mpls_labels: exts.mpls_labels,
+                interface_info: exts.interface_info,
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
@@ -1088,7 +1256,8 @@ fn parse_icmp_error_payload_v4_dgram(
                 probe_id,
                 response_type,
                 is_pmtud: false,
-                mpls_labels,
+                mpls_labels: exts.mpls_labels,
+                interface_info: exts.interface_info,
                 src_port: Some(src_port),
                 mtu,
                 quoted_ttl: Some(quoted_ttl),
@@ -1124,6 +1293,7 @@ fn parse_icmp_response_v6_dgram(
                     response_type: IcmpResponseType::EchoReply,
                     is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
+                    interface_info: None,
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
@@ -1143,6 +1313,7 @@ fn parse_icmp_response_v6_dgram(
                     response_type: IcmpResponseType::EchoReply,
                     is_pmtud: is_pmtud_payload(&icmp_data[8..]),
                     mpls_labels: None,
+                    interface_info: None,
                     src_port: None,
                     mtu: None,
                     quoted_ttl: None,
@@ -1212,7 +1383,7 @@ fn parse_icmp_error_payload_v6_dgram(
         return None;
     }
 
-    let icmp_length = icmp_data[5];
+    let icmp_length = icmp_data[4];
     let original_ipv6_data = &icmp_data[8..];
     let next_header = original_ipv6_data[6];
     let quoted_ttl = original_ipv6_data[7]; // Hop limit
@@ -1245,7 +1416,7 @@ fn parse_icmp_error_payload_v6_dgram(
     let original_payload = &original_ipv6_data[transport_offset..];
     let next_header = final_next_header;
 
-    let mpls_labels = parse_icmp_extensions_with_length(&icmp_data[8..], icmp_length);
+    let exts = parse_icmp_extensions(&icmp_data[8..], icmp_length, true);
 
     match next_header {
         IPPROTO_ICMPV6 => {
@@ -1266,7 +1437,8 @@ fn parse_icmp_error_payload_v6_dgram(
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type,
                     is_pmtud: false,
-                    mpls_labels,
+                    mpls_labels: exts.mpls_labels,
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -1284,7 +1456,8 @@ fn parse_icmp_error_payload_v6_dgram(
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type,
                     is_pmtud: false,
-                    mpls_labels,
+                    mpls_labels: exts.mpls_labels,
+                    interface_info: exts.interface_info,
                     src_port: None,
                     mtu,
                     quoted_ttl: Some(quoted_ttl),
@@ -1304,10 +1477,11 @@ fn parse_icmp_error_payload_v6_dgram(
                 responder,
                 probe_id,
                 response_type,
-                is_pmtud: false,
-                mpls_labels,
                 src_port: Some(src_port),
+                is_pmtud: false,
                 mtu,
+                mpls_labels: exts.mpls_labels,
+                interface_info: exts.interface_info,
                 quoted_ttl: Some(quoted_ttl),
                 original_dest,
             })
@@ -1324,10 +1498,11 @@ fn parse_icmp_error_payload_v6_dgram(
                 responder,
                 probe_id,
                 response_type,
-                is_pmtud: false,
-                mpls_labels,
                 src_port: Some(src_port),
+                is_pmtud: false,
                 mtu,
+                mpls_labels: exts.mpls_labels,
+                interface_info: exts.interface_info,
                 quoted_ttl: Some(quoted_ttl),
                 original_dest,
             })
@@ -2635,5 +2810,564 @@ mod tests {
         );
         assert_eq!(parsed.probe_id.ttl, 12);
         assert_eq!(parsed.probe_id.seq, 3);
+    }
+
+    #[test]
+    fn test_rfc5837_ipv4_time_exceeded() {
+        let responder = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 33));
+        let our_id = 0x4321;
+        let probe_id = ProbeId::new(4, 1);
+
+        let mut packet = vec![0u8; 20 + 8 + 128 + 4 + 52];
+        packet[0] = 0x45;
+        packet[9] = 1; // ICMP
+
+        packet[20] = 11; // Time Exceeded
+        packet[21] = 0;
+        packet[25] = 32; // Length = 32 words (128 bytes)
+
+        // Original IP header at 28
+        packet[28] = 0x45;
+        packet[37] = 1; // Protocol: ICMP
+
+        // Original ICMP Echo Request at 48
+        packet[48] = 8;
+        packet[52] = (our_id >> 8) as u8;
+        packet[53] = (our_id & 0xFF) as u8;
+        let seq = probe_id.to_sequence();
+        packet[54] = (seq >> 8) as u8;
+        packet[55] = (seq & 0xFF) as u8;
+
+        // Extension header at 20 + 8 + 128 = 156
+        let ext_off = 156;
+        packet[ext_off] = 0x20; // Version 2
+
+        // Interface Information Object at 160: length 52
+        let obj_off = ext_off + 4;
+        let obj_len = 52u16;
+        packet[obj_off..obj_off + 2].copy_from_slice(&obj_len.to_be_bytes());
+        packet[obj_off + 2] = 2; // Class 2: Interface Information Object
+        // C-Type: Role = 0 (incoming), ifIndex (0x08), IP (0x04), Name (0x02), MTU (0x01) -> 0x0F
+        packet[obj_off + 3] = 0x0F;
+
+        let mut p = obj_off + 4;
+        // 1. ifIndex (4 bytes): 1
+        packet[p..p + 4].copy_from_slice(&1u32.to_be_bytes());
+        p += 4;
+        // 2. IP Address (AFI=1, Reserved=0, 198.51.100.33)
+        packet[p..p + 2].copy_from_slice(&1u16.to_be_bytes());
+        packet[p + 4..p + 8].copy_from_slice(&[198, 51, 100, 33]);
+        p += 8;
+        // 3. Name: subobj_len = 32, "Ethernet1@arista-rfc5837-rt1" (27 bytes)
+        let name = b"Ethernet1@arista-rfc5837-rt1";
+        packet[p] = 32;
+        packet[p + 1..p + 1 + name.len()].copy_from_slice(name);
+        p += 32;
+        // 4. MTU: 1500
+        packet[p..p + 4].copy_from_slice(&1500u32.to_be_bytes());
+
+        let result = parse_icmp_response(&packet, responder, our_id, false);
+        assert!(result.is_some());
+        let parsed = result.unwrap();
+        assert_eq!(parsed.probe_id.ttl, 4);
+        assert_eq!(parsed.probe_id.seq, 1);
+
+        assert!(parsed.interface_info.is_some());
+        let ifaces = parsed.interface_info.unwrap();
+        assert_eq!(ifaces.len(), 1);
+        let iface = &ifaces[0];
+        assert_eq!(iface.role, InterfaceRole::IncomingIp);
+        assert_eq!(iface.if_index, Some(1));
+        assert_eq!(
+            iface.ip_addr,
+            Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 33)))
+        );
+        assert_eq!(iface.name.as_deref(), Some("Ethernet1@arista-rfc5837-rt1"));
+        assert_eq!(iface.mtu, Some(1500));
+    }
+
+    #[test]
+    fn test_rfc5837_ipv6_time_exceeded() {
+        let responder = IpAddr::V6("2001:db8:1::33".parse().unwrap());
+        let our_id = 0x5678;
+        let probe_id = ProbeId::new(6, 2);
+
+        // ICMPv6 DGRAM layout:
+        // ICMPv6 header: 8 bytes (byte 4 = length in 64-bit words)
+        // Original IPv6 header: 40 bytes
+        // Original ICMPv6 Echo Request: 8 bytes
+        // Padding to 128 bytes (length = 16 64-bit words = 128 bytes)
+        // Extension header: 4 bytes
+        // Interface Info Object: 4 (header) + 4 (ifIndex) + 20 (IPv6 AFI) + 32 (name) + 4 (MTU) = 64 bytes
+        let mut icmp_data = vec![0u8; 8 + 128 + 4 + 64];
+        icmp_data[0] = 3; // ICMPv6 Time Exceeded
+        icmp_data[1] = 0;
+        icmp_data[4] = 16; // Length in 64-bit words (16 * 8 = 128)
+
+        // Original IPv6 header at offset 8
+        let orig_v6 = &mut icmp_data[8..48];
+        orig_v6[0] = 0x60;
+        orig_v6[6] = 58; // Next header: ICMPv6
+
+        // Original ICMPv6 Echo Request at offset 48
+        icmp_data[48] = 128; // Echo Request
+        icmp_data[52] = (our_id >> 8) as u8;
+        icmp_data[53] = (our_id & 0xFF) as u8;
+        let seq = probe_id.to_sequence();
+        icmp_data[54] = (seq >> 8) as u8;
+        icmp_data[55] = (seq & 0xFF) as u8;
+
+        // Extension header at 8 + 128 = 136
+        let ext_off = 136;
+        icmp_data[ext_off] = 0x20; // Version 2
+
+        // Interface Info Object at 140
+        let obj_off = ext_off + 4;
+        let obj_len = 64u16;
+        icmp_data[obj_off..obj_off + 2].copy_from_slice(&obj_len.to_be_bytes());
+        icmp_data[obj_off + 2] = 2; // Class 2
+        icmp_data[obj_off + 3] = 0x0F; // Role 0, all 4 fields present
+
+        let mut p = obj_off + 4;
+        // ifIndex: 1
+        icmp_data[p..p + 4].copy_from_slice(&1u32.to_be_bytes());
+        p += 4;
+        // IP address: AFI=2 (IPv6: 2001:db8:1::33)
+        icmp_data[p..p + 2].copy_from_slice(&2u16.to_be_bytes());
+        let v6_addr: std::net::Ipv6Addr = "2001:db8:1::33".parse().unwrap();
+        icmp_data[p + 4..p + 20].copy_from_slice(&v6_addr.octets());
+        p += 20;
+        // Name: 32 bytes
+        let name = b"Ethernet1@arista-rfc5837-rt1";
+        icmp_data[p] = 32;
+        icmp_data[p + 1..p + 1 + name.len()].copy_from_slice(name);
+        p += 32;
+        // MTU: 1500
+        icmp_data[p..p + 4].copy_from_slice(&1500u32.to_be_bytes());
+
+        let result = parse_icmp_response(&icmp_data, responder, our_id, true);
+        assert!(result.is_some());
+        let parsed = result.unwrap();
+        assert_eq!(parsed.probe_id.ttl, 6);
+        assert_eq!(parsed.probe_id.seq, 2);
+
+        assert!(parsed.interface_info.is_some());
+        let ifaces = parsed.interface_info.unwrap();
+        assert_eq!(ifaces.len(), 1);
+        let iface = &ifaces[0];
+        assert_eq!(iface.role, InterfaceRole::IncomingIp);
+        assert_eq!(iface.if_index, Some(1));
+        assert_eq!(iface.ip_addr, Some(IpAddr::V6(v6_addr)));
+        assert_eq!(iface.name.as_deref(), Some("Ethernet1@arista-rfc5837-rt1"));
+        assert_eq!(iface.mtu, Some(1500));
+    }
+
+    #[test]
+    fn test_rfc5837_multiple_interface_roles() {
+        let responder = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2));
+        let our_id = 0x1111;
+        let probe_id = ProbeId::new(2, 1);
+
+        let mut packet = vec![0u8; 20 + 8 + 128 + 4 + 16 + 24];
+        packet[0] = 0x45;
+        packet[9] = 1;
+        packet[20] = 11;
+        packet[25] = 32;
+        packet[28] = 0x45;
+        packet[37] = 1;
+        packet[48] = 8;
+        packet[52] = 0x11;
+        packet[53] = 0x11;
+        let seq = probe_id.to_sequence();
+        packet[54] = (seq >> 8) as u8;
+        packet[55] = (seq & 0xFF) as u8;
+
+        let ext_off = 156;
+        packet[ext_off] = 0x20;
+
+        // Object 1: Incoming IP (role=0), ifIndex=10, name="ge0" (len=8) -> obj_len = 4 + 4 + 8 = 16
+        let obj1 = ext_off + 4;
+        packet[obj1..obj1 + 2].copy_from_slice(&16u16.to_be_bytes());
+        packet[obj1 + 2] = 2; // Class 2
+        packet[obj1 + 3] = 0x08 | 0x02; // Role 0, ifIndex, Name
+        packet[obj1 + 4..obj1 + 8].copy_from_slice(&10u32.to_be_bytes());
+        packet[obj1 + 8] = 8;
+        packet[obj1 + 9..obj1 + 12].copy_from_slice(b"ge0");
+
+        // Object 2: Outgoing IP (role=2), ifIndex=20, MTU=9000, name="ge1" (len=8) -> obj_len = 4 + 4 + 8 + 4 = 20
+        // Padded to 24
+        let obj2 = obj1 + 16;
+        packet[obj2..obj2 + 2].copy_from_slice(&24u16.to_be_bytes());
+        packet[obj2 + 2] = 2; // Class 2
+        packet[obj2 + 3] = (2 << 6) | 0x08 | 0x02 | 0x01; // Role 2, ifIndex, Name, MTU
+        packet[obj2 + 4..obj2 + 8].copy_from_slice(&20u32.to_be_bytes());
+        packet[obj2 + 8] = 8;
+        packet[obj2 + 9..obj2 + 12].copy_from_slice(b"ge1");
+        packet[obj2 + 16..obj2 + 20].copy_from_slice(&9000u32.to_be_bytes());
+
+        let result = parse_icmp_response(&packet, responder, our_id, false);
+        assert!(result.is_some());
+        let parsed = result.unwrap();
+        let ifaces = parsed
+            .interface_info
+            .expect("interface info should be parsed");
+        assert_eq!(ifaces.len(), 2);
+        assert_eq!(ifaces[0].role, InterfaceRole::IncomingIp);
+        assert_eq!(ifaces[0].if_index, Some(10));
+        assert_eq!(ifaces[0].name.as_deref(), Some("ge0"));
+
+        assert_eq!(ifaces[1].role, InterfaceRole::OutgoingIp);
+        assert_eq!(ifaces[1].if_index, Some(20));
+        assert_eq!(ifaces[1].name.as_deref(), Some("ge1"));
+        assert_eq!(ifaces[1].mtu, Some(9000));
+    }
+
+    #[test]
+    fn test_rfc5837_duplicate_role_ignored() {
+        let responder = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 3));
+        let our_id = 0x2222;
+        let probe_id = ProbeId::new(3, 1);
+
+        let mut packet = vec![0u8; 20 + 8 + 128 + 4 + 16 + 16];
+        packet[0] = 0x45;
+        packet[9] = 1;
+        packet[20] = 11;
+        packet[25] = 32;
+        packet[28] = 0x45;
+        packet[37] = 1;
+        packet[48] = 8;
+        packet[52] = 0x22;
+        packet[53] = 0x22;
+        let seq = probe_id.to_sequence();
+        packet[54] = (seq >> 8) as u8;
+        packet[55] = (seq & 0xFF) as u8;
+
+        let ext_off = 156;
+        packet[ext_off] = 0x20;
+
+        // Object 1: Role 0 (incoming), ifIndex=100
+        let obj1 = ext_off + 4;
+        packet[obj1..obj1 + 2].copy_from_slice(&8u16.to_be_bytes());
+        packet[obj1 + 2] = 2;
+        packet[obj1 + 3] = 0x08; // Role 0, ifIndex
+        packet[obj1 + 4..obj1 + 8].copy_from_slice(&100u32.to_be_bytes());
+
+        // Object 2: Duplicate Role 0 (incoming), ifIndex=200
+        let obj2 = obj1 + 8;
+        packet[obj2..obj2 + 2].copy_from_slice(&8u16.to_be_bytes());
+        packet[obj2 + 2] = 2;
+        packet[obj2 + 3] = 0x08; // Role 0, ifIndex
+        packet[obj2 + 4..obj2 + 8].copy_from_slice(&200u32.to_be_bytes());
+
+        let result = parse_icmp_response(&packet, responder, our_id, false);
+        assert!(result.is_some());
+        let parsed = result.unwrap();
+        let ifaces = parsed
+            .interface_info
+            .expect("interface info should be parsed");
+        // Duplicate role: first object wins, the repeat is ignored (lenient vs RFC 5837 §4.5)
+        assert_eq!(ifaces.len(), 1);
+        assert_eq!(ifaces[0].if_index, Some(100));
+    }
+
+    #[test]
+    fn test_rfc5837_and_mpls_together() {
+        let responder = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 4));
+        let our_id = 0x3333;
+        let probe_id = ProbeId::new(4, 1);
+
+        let mut packet = vec![0u8; 20 + 8 + 128 + 4 + 8 + 16];
+        packet[0] = 0x45;
+        packet[9] = 1;
+        packet[20] = 11;
+        packet[25] = 32;
+        packet[28] = 0x45;
+        packet[37] = 1;
+        packet[48] = 8;
+        packet[52] = 0x33;
+        packet[53] = 0x33;
+        let seq = probe_id.to_sequence();
+        packet[54] = (seq >> 8) as u8;
+        packet[55] = (seq & 0xFF) as u8;
+
+        let ext_off = 156;
+        packet[ext_off] = 0x20;
+
+        // Object 1: MPLS label stack (class=1, type=1)
+        let obj1 = ext_off + 4;
+        packet[obj1..obj1 + 2].copy_from_slice(&8u16.to_be_bytes());
+        packet[obj1 + 2] = 1; // Class 1
+        packet[obj1 + 3] = 1; // Type 1
+        let label_word: u32 = (18000 << 12) | (1 << 8) | 64;
+        packet[obj1 + 4..obj1 + 8].copy_from_slice(&label_word.to_be_bytes());
+
+        // Object 2: RFC 5837 Interface info (class=2)
+        let obj2 = obj1 + 8;
+        packet[obj2..obj2 + 2].copy_from_slice(&16u16.to_be_bytes());
+        packet[obj2 + 2] = 2; // Class 2
+        packet[obj2 + 3] = 0x08 | 0x02; // Role 0, ifIndex, Name
+        packet[obj2 + 4..obj2 + 8].copy_from_slice(&5u32.to_be_bytes());
+        packet[obj2 + 8] = 8;
+        packet[obj2 + 9..obj2 + 12].copy_from_slice(b"lo0");
+
+        let result = parse_icmp_response(&packet, responder, our_id, false);
+        assert!(result.is_some());
+        let parsed = result.unwrap();
+
+        // Verify BOTH MPLS and Interface info are parsed
+        assert!(parsed.mpls_labels.is_some());
+        assert_eq!(parsed.mpls_labels.unwrap()[0].label, 18000);
+
+        assert!(parsed.interface_info.is_some());
+        let ifaces = parsed.interface_info.unwrap();
+        assert_eq!(ifaces.len(), 1);
+        assert_eq!(ifaces[0].if_index, Some(5));
+        assert_eq!(ifaces[0].name.as_deref(), Some("lo0"));
+    }
+
+    #[test]
+    fn test_rfc5837_malformed_resilience() {
+        let responder = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5));
+        let our_id = 0x4444;
+        let probe_id = ProbeId::new(5, 1);
+
+        let mut packet = vec![0u8; 20 + 8 + 128 + 4 + 8];
+        packet[0] = 0x45;
+        packet[9] = 1;
+        packet[20] = 11;
+        packet[25] = 32;
+        packet[28] = 0x45;
+        packet[37] = 1;
+        packet[48] = 8;
+        packet[52] = 0x44;
+        packet[53] = 0x44;
+        let seq = probe_id.to_sequence();
+        packet[54] = (seq >> 8) as u8;
+        packet[55] = (seq & 0xFF) as u8;
+
+        let ext_off = 156;
+        packet[ext_off] = 0x20;
+
+        // Object with claims of ifIndex (0x08) and IP (0x04) but payload is only 2 bytes
+        let obj = ext_off + 4;
+        packet[obj..obj + 2].copy_from_slice(&6u16.to_be_bytes()); // obj len = 6, payload = 2 bytes
+        packet[obj + 2] = 2; // Class 2
+        packet[obj + 3] = 0x0C; // ifIndex + IP
+
+        // Must not panic, gracefully returns None for interface_info
+        let result = parse_icmp_response(&packet, responder, our_id, false);
+        assert!(result.is_some());
+        let parsed = result.unwrap();
+        assert!(parsed.interface_info.is_none());
+    }
+
+    /// Arista EOS 4.36 lab frame (issue #134): ICMPv4 Time Exceeded with an RFC 5837 Interface Information Object
+    const ARISTA_PKT1_V4: &[u8] = &[
+        104, 52, 33, 178, 14, 88, 4, 244, 28, 40, 230, 9, 8, 0, 69, 0, 0, 244, 109, 96, 64, 0, 63,
+        1, 152, 110, 198, 51, 100, 33, 10, 0, 0, 230, 11, 0, 244, 223, 0, 32, 0, 0, 69, 0, 0, 92,
+        22, 180, 0, 0, 1, 1, 109, 171, 10, 0, 0, 230, 198, 51, 100, 41, 8, 0, 246, 202, 0, 1, 1,
+        52, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 86, 229, 0, 52, 2, 15, 0, 0, 0, 1, 0, 1, 0, 0, 198,
+        51, 100, 33, 32, 69, 116, 104, 101, 114, 110, 101, 116, 49, 64, 97, 114, 105, 115, 116, 97,
+        45, 114, 102, 99, 53, 56, 51, 55, 45, 114, 116, 49, 0, 0, 0, 0, 0, 5, 220, 0, 32, 4, 6, 0,
+        1, 0, 0, 192, 0, 2, 11, 20, 97, 114, 105, 115, 116, 97, 45, 114, 102, 99, 53, 56, 51, 55,
+        45, 114, 116, 49, 0,
+    ];
+
+    /// Arista EOS 4.36 lab frame (issue #134): ICMPv6 Time Exceeded with an RFC 5837 Interface Information Object
+    const ARISTA_PKT1_V6: &[u8] = &[
+        104, 52, 33, 178, 14, 88, 4, 244, 28, 40, 230, 9, 134, 221, 96, 10, 214, 179, 0, 248, 58,
+        63, 32, 1, 13, 184, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 51, 32, 1, 13, 184, 222, 173, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 5, 3, 0, 23, 173, 16, 0, 0, 0, 96, 0, 0, 0, 0, 72, 58, 1, 32, 1, 13, 184,
+        222, 173, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 32, 1, 13, 184, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        65, 128, 0, 68, 203, 0, 1, 0, 75, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 32, 0, 152, 226, 0, 64, 2, 15, 0, 0, 0, 1, 0, 2, 0, 0, 32, 1, 13, 184, 0, 1, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 51, 32, 69, 116, 104, 101, 114, 110, 101, 116, 49, 64, 97, 114, 105, 115,
+        116, 97, 45, 114, 102, 99, 53, 56, 51, 55, 45, 114, 116, 49, 0, 0, 0, 0, 0, 5, 220, 0, 44,
+        4, 6, 0, 2, 0, 0, 222, 173, 190, 239, 0, 0, 0, 0, 0, 0, 0, 0, 0, 17, 222, 173, 20, 97, 114,
+        105, 115, 116, 97, 45, 114, 102, 99, 53, 56, 51, 55, 45, 114, 116, 49, 0,
+    ];
+
+    #[test]
+    fn test_arista_real_world_pcaps() {
+        // Real Arista EOS capture packet 1 (IPv4, Ethernet1@arista-rfc5837-rt1, MTU 1500)
+        let pkt1_v4 = ARISTA_PKT1_V4;
+        let ip_payload = &pkt1_v4[14..];
+        let responder = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 33));
+        let parsed_v4 =
+            parse_icmp_response(ip_payload, responder, 1, false).expect("pkt1_v4 should parse");
+        let ifaces_v4 = parsed_v4.interface_info.expect("pkt1_v4 interface_info");
+        assert_eq!(ifaces_v4.len(), 1);
+        assert_eq!(ifaces_v4[0].role, InterfaceRole::IncomingIp);
+        assert_eq!(ifaces_v4[0].if_index, Some(1));
+        assert_eq!(
+            ifaces_v4[0].ip_addr,
+            Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 33)))
+        );
+        assert_eq!(
+            ifaces_v4[0].name.as_deref(),
+            Some("Ethernet1@arista-rfc5837-rt1")
+        );
+        assert_eq!(ifaces_v4[0].mtu, Some(1500));
+
+        // Real Arista EOS capture packet 3 (IPv4, Port-Channel1, MTU 1470)
+        let pkt3_v4: &[u8] = &[
+            104, 52, 33, 178, 14, 88, 4, 244, 28, 40, 230, 9, 8, 0, 69, 0, 0, 196, 113, 246, 64, 0,
+            62, 1, 149, 6, 198, 51, 100, 35, 10, 0, 0, 230, 11, 0, 244, 223, 0, 32, 0, 0, 69, 0, 0,
+            92, 22, 183, 0, 0, 1, 1, 109, 168, 10, 0, 0, 230, 198, 51, 100, 41, 8, 0, 246, 199, 0,
+            1, 1, 55, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 248, 8, 0, 36, 2, 15, 0, 15, 66,
+            65, 0, 1, 0, 0, 198, 51, 100, 35, 16, 80, 111, 114, 116, 45, 67, 104, 97, 110, 110,
+            101, 108, 49, 0, 0, 0, 0, 5, 190,
+        ];
+        let parsed_pkt3 = parse_icmp_response(
+            &pkt3_v4[14..],
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 35)),
+            1,
+            false,
+        )
+        .unwrap();
+        let ifaces_pkt3 = parsed_pkt3.interface_info.unwrap();
+        assert_eq!(ifaces_pkt3[0].role, InterfaceRole::IncomingIp);
+        assert_eq!(ifaces_pkt3[0].if_index, Some(1000001));
+        assert_eq!(ifaces_pkt3[0].name.as_deref(), Some("Port-Channel1"));
+        assert_eq!(ifaces_pkt3[0].mtu, Some(1470));
+
+        // Real Arista EOS capture packet 7 (IPv4, Outgoing IP, Ethernet2@arista-rfc5837-rt3, MTU 1430)
+        let pkt7_v4: &[u8] = &[
+            104, 52, 33, 178, 14, 88, 4, 244, 28, 40, 230, 9, 8, 0, 69, 0, 0, 244, 112, 221, 64, 0,
+            61, 1, 150, 237, 198, 51, 100, 37, 10, 0, 0, 230, 3, 1, 252, 222, 0, 32, 0, 0, 69, 0,
+            0, 92, 22, 189, 0, 0, 1, 1, 109, 162, 10, 0, 0, 230, 198, 51, 100, 41, 8, 0, 246, 193,
+            0, 1, 1, 61, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 85, 144, 0, 52, 2, 143, 0, 0,
+            0, 2, 0, 1, 0, 0, 198, 51, 100, 38, 32, 69, 116, 104, 101, 114, 110, 101, 116, 50, 64,
+            97, 114, 105, 115, 116, 97, 45, 114, 102, 99, 53, 56, 51, 55, 45, 114, 116, 51, 0, 0,
+            0, 0, 0, 5, 150, 0, 32, 1, 6, 0, 1, 0, 0, 192, 0, 2, 31, 20, 97, 114, 105, 115, 116,
+            97, 45, 114, 102, 99, 53, 56, 51, 55, 45, 114, 116, 51, 0,
+        ];
+        let parsed_pkt7 = parse_icmp_response(
+            &pkt7_v4[14..],
+            IpAddr::V4(Ipv4Addr::new(198, 51, 100, 37)),
+            1,
+            false,
+        )
+        .unwrap();
+        let ifaces_pkt7 = parsed_pkt7.interface_info.unwrap();
+        assert_eq!(ifaces_pkt7[0].role, InterfaceRole::OutgoingIp);
+        assert_eq!(ifaces_pkt7[0].if_index, Some(2));
+        assert_eq!(
+            ifaces_pkt7[0].name.as_deref(),
+            Some("Ethernet2@arista-rfc5837-rt3")
+        );
+        assert_eq!(ifaces_pkt7[0].mtu, Some(1430));
+
+        // Real Arista EOS capture packet 1 (IPv6, Ethernet1@arista-rfc5837-rt1, MTU 1500)
+        let pkt1_v6 = ARISTA_PKT1_V6;
+        let icmp6_payload = &pkt1_v6[54..];
+        let responder_v6 = IpAddr::V6("2001:db8:1::33".parse().unwrap());
+        let parsed_v6 = parse_icmp_response(icmp6_payload, responder_v6, 1, true)
+            .expect("pkt1_v6 should parse");
+        let ifaces_v6 = parsed_v6.interface_info.expect("pkt1_v6 interface_info");
+        assert_eq!(ifaces_v6.len(), 1);
+        assert_eq!(ifaces_v6[0].role, InterfaceRole::IncomingIp);
+        assert_eq!(ifaces_v6[0].if_index, Some(1));
+        assert_eq!(ifaces_v6[0].ip_addr, Some(responder_v6));
+        assert_eq!(
+            ifaces_v6[0].name.as_deref(),
+            Some("Ethernet1@arista-rfc5837-rt1")
+        );
+        assert_eq!(ifaces_v6[0].mtu, Some(1500));
+
+        // Real Arista EOS capture packet 3 (IPv6, Port-Channel1, MTU 1470)
+        let pkt3_v6: &[u8] = &[
+            104, 52, 33, 178, 14, 88, 4, 244, 28, 40, 230, 9, 134, 221, 96, 13, 23, 51, 0, 188, 58,
+            62, 32, 1, 13, 184, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 53, 32, 1, 13, 184, 222, 173, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 5, 3, 0, 23, 232, 16, 0, 0, 0, 96, 0, 0, 0, 0, 72, 58, 1, 32,
+            1, 13, 184, 222, 173, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 32, 1, 13, 184, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 65, 128, 0, 68, 200, 0, 1, 0, 78, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 244, 100, 0, 48, 2, 15, 0, 15, 66, 65, 0, 2, 0, 0,
+            32, 1, 13, 184, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 53, 16, 80, 111, 114, 116, 45, 67,
+            104, 97, 110, 110, 101, 108, 49, 0, 0, 0, 0, 5, 190,
+        ];
+        let parsed_v6_3 = parse_icmp_response(
+            &pkt3_v6[54..],
+            IpAddr::V6("2001:db8::35".parse().unwrap()),
+            1,
+            true,
+        )
+        .unwrap();
+        let ifaces_v6_3 = parsed_v6_3.interface_info.unwrap();
+        assert_eq!(ifaces_v6_3[0].role, InterfaceRole::IncomingIp);
+        assert_eq!(ifaces_v6_3[0].if_index, Some(1000001));
+        assert_eq!(ifaces_v6_3[0].name.as_deref(), Some("Port-Channel1"));
+        assert_eq!(ifaces_v6_3[0].mtu, Some(1470));
+
+        // Real Arista EOS capture packet 7 (IPv6, Outgoing IP, Ethernet2@arista-rfc5837-rt3, MTU 1430)
+        let pkt7_v6: &[u8] = &[
+            104, 52, 33, 178, 14, 88, 4, 244, 28, 40, 230, 9, 134, 221, 96, 5, 171, 221, 0, 248,
+            58, 61, 32, 1, 13, 184, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 55, 32, 1, 13, 184, 222, 173,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 1, 3, 25, 167, 16, 0, 0, 0, 96, 0, 0, 0, 0, 72, 58, 1,
+            32, 1, 13, 184, 222, 173, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 32, 1, 13, 184, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 65, 128, 0, 68, 194, 0, 1, 0, 84, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 151, 130, 0, 64, 2, 143, 0, 0, 0, 2, 0, 2, 0, 0,
+            32, 1, 13, 184, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 56, 32, 69, 116, 104, 101, 114, 110,
+            101, 116, 50, 64, 97, 114, 105, 115, 116, 97, 45, 114, 102, 99, 53, 56, 51, 55, 45,
+            114, 116, 51, 0, 0, 0, 0, 0, 5, 150, 0, 44, 1, 6, 0, 2, 0, 0, 222, 173, 190, 239, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 49, 222, 173, 20, 97, 114, 105, 115, 116, 97, 45, 114, 102, 99,
+            53, 56, 51, 55, 45, 114, 116, 51, 0,
+        ];
+        let parsed_v6_7 = parse_icmp_response(
+            &pkt7_v6[54..],
+            IpAddr::V6("2001:db8::37".parse().unwrap()),
+            1,
+            true,
+        )
+        .unwrap();
+        let ifaces_v6_7 = parsed_v6_7.interface_info.unwrap();
+        assert_eq!(ifaces_v6_7[0].role, InterfaceRole::OutgoingIp);
+        assert_eq!(ifaces_v6_7[0].if_index, Some(2));
+        assert_eq!(
+            ifaces_v6_7[0].name.as_deref(),
+            Some("Ethernet2@arista-rfc5837-rt3")
+        );
+        assert_eq!(ifaces_v6_7[0].mtu, Some(1430));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20_000))]
+        /// Every router on the path can hand this parser arbitrary bytes: mutating
+        /// and truncating real RFC 5837 frames must never panic.
+        #[test]
+        fn proptest_icmp_extension_parser_never_panics(
+            is_v6 in any::<bool>(),
+            idx in 0usize..320,
+            byte in any::<u8>(),
+            cut in 1usize..320,
+        ) {
+            let base: &[u8] = if is_v6 { &ARISTA_PKT1_V6[54..] } else { &ARISTA_PKT1_V4[14..] };
+            let mut pkt = base.to_vec();
+            if idx < pkt.len() {
+                pkt[idx] = byte;
+            }
+            pkt.truncate(cut.min(pkt.len()));
+            let responder = if is_v6 {
+                IpAddr::V6(Ipv6Addr::LOCALHOST)
+            } else {
+                IpAddr::V4(Ipv4Addr::LOCALHOST)
+            };
+            let _ = parse_icmp_response(&pkt, responder, 1, is_v6);
+        }
     }
 }
