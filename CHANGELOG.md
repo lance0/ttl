@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **`rustls` 0.23.45 → 0.23.46** clears RUSTSEC-2026-0346 (`Debug` impls expose TLS secrets), RUSTSEC-2026-0347 (buffered data sent to the outer server after ECH rejection), RUSTSEC-2026-0348 (Brotli certificate decompression can allocate up to 1 GiB before authentication), and RUSTSEC-2026-0349 (unauthenticated ServerHello can downgrade later connections to classical key exchange). Reaches ttl via `reqwest` (PeeringDB) and `ureq` (update check).
+- **`quinn-proto` 0.11.15 → 0.11.19** clears RUSTSEC-2026-0338 through RUSTSEC-2026-0342. It is resolved in the lockfile through an optional QUIC dependency that ttl does not enable, so it was never compiled into ttl; bumped to keep `cargo audit` clean.
+
+### Dependencies
+- maxminddb 0.31 → 0.32 and getifs 0.6 → 0.7 (direct), clap 4.6.6 → 4.6.7, clap_complete 4.6.9 → 4.6.11, tokio 1.53.1 → 1.53.3, tokio-util 0.7.19 → 0.7.20, serde_json 1.0.151 → 1.0.154, toml 1.1.6 → 1.1.8, libc 0.2.189 → 0.2.190, and mio 1.2.0 → 1.2.4 (required on FreeBSD with libc 0.2.190).
+
 ## [0.23.0] - 2026-09-17
 
 ### Added
