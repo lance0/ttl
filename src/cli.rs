@@ -777,6 +777,7 @@ mod tests {
         assert!(args.validate().unwrap_err().contains("Invalid source IP"));
     }
 
+    #[cfg(unix)] // interface-name zones resolve via if_nametoindex (unix only)
     #[test]
     fn test_source_ip_invalid_zone_interface() {
         let mut args = make_args(|a| {

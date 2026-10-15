@@ -1,8 +1,8 @@
 use crate::probe::tcp::extract_probe_id_from_tcp;
 use crate::probe::udp::extract_probe_id_from_udp_payload;
 use crate::state::{IcmpInterfaceInfo, IcmpResponseType, InterfaceRole, MplsLabel, ProbeId};
-use pnet::packet::icmp::{IcmpPacket, IcmpTypes};
-use pnet::packet::ipv4::Ipv4Packet;
+use pnet_packet::icmp::{IcmpPacket, IcmpTypes};
+use pnet_packet::ipv4::Ipv4Packet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 // IP protocol numbers

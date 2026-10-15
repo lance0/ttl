@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Native Windows build** (#141): the crate now compiles and its test suite runs on Windows, checked by a new `build-windows` CI job. Live tracing still needs WSL2: on native Windows `ttl` exits with a pointer to WSL2 instead of probing, while `--replay` and `--diff` work. No pre-built Windows binaries yet. Contributed by @athallajovian9-cyber.
+
+### Changed
+- Depend on `pnet_packet` (plus `pnet_datalink` on unix) instead of the `pnet` umbrella crate, dropping the unused `pnet_transport`. `IP_HDRINCL` is now set through socket2 instead of a hand-written `setsockopt`.
+
 ### Security
 - **`rustls` 0.23.45 → 0.23.46** clears RUSTSEC-2026-0346 (`Debug` impls expose TLS secrets), RUSTSEC-2026-0347 (buffered data sent to the outer server after ECH rejection), RUSTSEC-2026-0348 (Brotli certificate decompression can allocate up to 1 GiB before authentication), and RUSTSEC-2026-0349 (unauthenticated ServerHello can downgrade later connections to classical key exchange). Reaches ttl via `reqwest` (PeeringDB) and `ureq` (update check).
 - **`quinn-proto` 0.11.15 → 0.11.19** clears RUSTSEC-2026-0338 through RUSTSEC-2026-0342. It is resolved in the lockfile through an optional QUIC dependency that ttl does not enable, so it was never compiled into ttl; bumped to keep `cargo audit` clean.

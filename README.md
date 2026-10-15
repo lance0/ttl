@@ -354,11 +354,13 @@ ttl 1.1.1.1 --theme dracula    # Start with theme
 | FreeBSD | Experimental** |
 | NetBSD | Experimental** |
 | Windows (WSL2) | Full support |
-| Windows (native) | Not supported |
+| Windows (native) | Builds; no tracing yet*** |
 
 *Pre-built binaries are built on `macos-latest` (Tahoe). Older macOS versions may have display issues - use `cargo install ttl` to compile from source.
 
 **FreeBSD/NetBSD support is experimental. Requires `sudo`. Interface binding (`-i`) is not supported. Please report issues at https://github.com/lance0/ttl/issues
+
+***`cargo install ttl` builds on native Windows and `--replay` / `--diff` work, but live tracing is not implemented there yet. Use WSL2.
 
 ### Windows via WSL2
 

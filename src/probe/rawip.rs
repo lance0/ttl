@@ -41,6 +41,9 @@ use std::time::Duration;
 use crate::probe::bind_to_source_ip;
 use crate::probe::interface::{InterfaceInfo, bind_socket_to_interface};
 
+/// `IPPROTO_RAW` (255) has the same value on every platform; libc only defines it on unix.
+const IPPROTO_RAW: i32 = 255;
+
 /// IPv4 header length with no options.
 pub const IPV4_HEADER_SIZE: usize = 20;
 /// UDP header length.
@@ -204,13 +207,9 @@ pub fn create_raw_hdrincl_socket_with_interface(
     // IPPROTO_RAW is the conventional "send any protocol via the header" choice. On
     // Linux it also implies IP_HDRINCL, but the BSDs do not, so we always set it
     // explicitly below.
-    let socket = Socket::new(
-        Domain::IPV4,
-        Type::RAW,
-        Some(Protocol::from(libc::IPPROTO_RAW)),
-    )?;
+    let socket = Socket::new(Domain::IPV4, Type::RAW, Some(Protocol::from(IPPROTO_RAW)))?;
 
-    set_ip_hdrincl(&socket)?;
+    socket.set_header_included_v4(true)?;
 
     socket.set_nonblocking(false)?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
@@ -227,34 +226,6 @@ pub fn create_raw_hdrincl_socket_with_interface(
     }
 
     Ok(socket)
-}
-
-/// Enable IP_HDRINCL on a raw IPv4 socket via setsockopt (portable across platforms;
-/// avoids depending on a specific socket2 helper name).
-fn set_ip_hdrincl(socket: &Socket) -> Result<()> {
-    use std::os::unix::io::AsRawFd;
-    let one: libc::c_int = 1;
-    // SAFETY: `socket.as_raw_fd()` yields a valid open file descriptor for the
-    // lifetime of the borrow (the `Socket` outlives this call). `IPPROTO_IP` and
-    // `IP_HDRINCL` are compile-time constants. `one` is a stack `c_int` that lives
-    // until after the call returns, so the `*const c_void` pointer and the
-    // `size_of_val(&one)` length denote a valid, initialized `c_int` for the
-    // duration of `setsockopt`. `setsockopt` itself is thread-safe and performs no
-    // synchronization that could deadlock. The only error mode is a negative
-    // return, which we translate below via `last_os_error()`.
-    let ret = unsafe {
-        libc::setsockopt(
-            socket.as_raw_fd(),
-            libc::IPPROTO_IP,
-            libc::IP_HDRINCL,
-            &one as *const _ as *const libc::c_void,
-            std::mem::size_of_val(&one) as libc::socklen_t,
-        )
-    };
-    if ret != 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    Ok(())
 }
 
 /// Send a fully-formed IPv4 packet (built with [`build_ipv4_packet`]) to `dst`.
@@ -446,7 +417,7 @@ mod tests {
     #[test]
     #[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "netbsd")))]
     fn test_header_parses_with_pnet_on_network_order() {
-        use pnet::packet::ipv4::Ipv4Packet;
+        use pnet_packet::ipv4::Ipv4Packet;
         let src = Ipv4Addr::new(192, 168, 0, 1);
         let dst = Ipv4Addr::new(9, 9, 9, 9);
         let transport = vec![0u8; 12];

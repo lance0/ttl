@@ -205,6 +205,7 @@ The macOS single-hop fix (#12) removes the stale-TTL race from the probe send pa
 ## Low Priority
 
 ### Windows Native
+- [x] Crate builds and tests pass on native Windows (CI job; binary points to WSL2)
 - [ ] Basic ICMP traceroute (Npcap or Winsock raw sockets)
 - [ ] TUI compatibility with Windows Terminal
 - [ ] Pre-built binaries

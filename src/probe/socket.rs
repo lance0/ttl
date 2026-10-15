@@ -2,11 +2,14 @@ use anyhow::{Result, anyhow};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 use std::time::Duration;
+#[cfg(windows)]
+use windows_sys::Win32::Networking::WinSock;
 
 /// Socket capability level
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketCapability {
     /// Full raw socket access - can send/receive with custom IP headers
+    #[cfg_attr(windows, allow(dead_code))] // check_permissions always errors on Windows
     Raw,
     /// Unprivileged ICMP socket (limited functionality)
     /// Note: Only used on Linux; macOS always requires Raw for receiving ICMP errors
@@ -84,9 +87,23 @@ pub fn check_permissions() -> Result<SocketCapability> {
     Ok(SocketCapability::Raw)
 }
 
+/// Native Windows probing isn't implemented yet: fail before any socket work.
+#[cfg(windows)]
+pub fn check_permissions() -> Result<SocketCapability> {
+    Err(anyhow!(
+        "Native Windows probing is not supported yet; run ttl under WSL2.\n\
+         (--replay and --diff work natively.)"
+    ))
+}
+
 /// Check socket permissions and return capability level
 /// On Linux, requires RAW sockets for traceroute functionality
-#[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "netbsd")))]
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    windows
+)))]
 pub fn check_permissions() -> Result<SocketCapability> {
     // RAW sockets required - DGRAM can't receive Time Exceeded from intermediate routers
     if create_raw_icmp_socket(false).is_ok() {
@@ -268,7 +285,11 @@ pub fn set_ttl(socket: &Socket, ttl: u8, ipv6: bool) -> Result<()> {
 pub fn set_dscp(socket: &Socket, dscp: u8, ipv6: bool) -> Result<()> {
     let tos = (dscp as u32) << 2;
     if ipv6 {
+        #[cfg(unix)]
         socket.set_tclass_v6(tos)?;
+        // socket2 exposes IPV6_TCLASS only on unix.
+        #[cfg(windows)]
+        win_setsockopt(socket, WinSock::IPPROTO_IPV6, WinSock::IPV6_TCLASS, tos)?;
     } else {
         socket.set_tos_v4(tos)?;
     }
@@ -409,6 +430,38 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
         if ret != 0 {
             return Err(std::io::Error::last_os_error().into());
         }
+    }
+    Ok(())
+}
+
+/// Set Don't Fragment flag (Windows): IP_DONTFRAGMENT / IPV6_DONTFRAG.
+#[cfg(windows)]
+pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
+    if ipv6 {
+        win_setsockopt(socket, WinSock::IPPROTO_IPV6, WinSock::IPV6_DONTFRAG, 1)
+    } else {
+        win_setsockopt(socket, WinSock::IPPROTO_IP, WinSock::IP_DONTFRAGMENT, 1)
+    }
+}
+
+/// `setsockopt` with a `u32` value, for Winsock options socket2 doesn't expose.
+#[cfg(windows)]
+fn win_setsockopt(socket: &Socket, level: i32, name: i32, val: u32) -> Result<()> {
+    use std::os::windows::io::AsRawSocket;
+    // SAFETY: `as_raw_socket()` is a valid open SOCKET for the borrow of `socket`.
+    // `val` is an initialized stack u32 that outlives the call, and the length
+    // passed is exactly its size.
+    let ret = unsafe {
+        WinSock::setsockopt(
+            socket.as_raw_socket() as WinSock::SOCKET,
+            level,
+            name,
+            (&val as *const u32).cast(),
+            size_of::<u32>() as i32,
+        )
+    };
+    if ret != 0 {
+        return Err(std::io::Error::last_os_error().into());
     }
     Ok(())
 }
@@ -556,6 +609,27 @@ unsafe fn read_cmsg_ttl(data_ptr: *const libc::c_uchar, data_len: usize) -> u8 {
     } else {
         unsafe { std::ptr::read_unaligned(data_ptr) }
     }
+}
+
+/// Windows receive path. No msghdr/cmsg here, so the response TTL is unavailable.
+#[cfg(windows)]
+pub fn recv_icmp_with_ttl(socket: &Socket, buffer: &mut [u8], _ipv6: bool) -> Result<RecvResult> {
+    // SAFETY: `[u8]` and `[MaybeUninit<u8>]` share layout, and the buffer is already
+    // initialized; `recv_from` only writes initialized bytes into it.
+    let buf = unsafe { &mut *(buffer as *mut [u8] as *mut [std::mem::MaybeUninit<u8>]) };
+    // WouldBlock/TimedOut propagate as io::Error so the receiver treats them as timeouts.
+    let (len, from) = socket.recv_from(buf)?;
+    let (source, scope_id) = match from.as_socket() {
+        Some(SocketAddr::V4(a)) => (IpAddr::V4(*a.ip()), None),
+        Some(SocketAddr::V6(a)) => (IpAddr::V6(*a.ip()), Some(a.scope_id()).filter(|&s| s != 0)),
+        None => anyhow::bail!("peer address was not an IP socket address"),
+    };
+    Ok(RecvResult {
+        len,
+        source,
+        scope_id,
+        response_ttl: None,
+    })
 }
 
 /// Extract TTL/hop limit from control message
@@ -715,6 +789,37 @@ mod tests {
         assert_eq!(decoded.seq, 42);
     }
 
+    /// Reads back the Don't Fragment options; guards the Winsock option constants.
+    #[cfg(windows)]
+    #[test]
+    fn test_windows_dont_fragment_readback() {
+        use std::os::windows::io::AsRawSocket;
+        let get = |socket: &Socket, level: i32, name: i32| {
+            let mut val = 0u32;
+            let mut len = size_of::<u32>() as i32;
+            // SAFETY: valid SOCKET for the borrow; `val` and `len` are live, correctly
+            // sized out-params.
+            let ret = unsafe {
+                WinSock::getsockopt(
+                    socket.as_raw_socket() as WinSock::SOCKET,
+                    level,
+                    name,
+                    (&mut val as *mut u32).cast(),
+                    &mut len,
+                )
+            };
+            assert_eq!(ret, 0, "{}", std::io::Error::last_os_error());
+            val
+        };
+        let v4 = Socket::new(Domain::IPV4, Type::DGRAM, None).unwrap();
+        set_dont_fragment(&v4, false).unwrap();
+        assert_eq!(get(&v4, WinSock::IPPROTO_IP, WinSock::IP_DONTFRAGMENT), 1);
+        let v6 = Socket::new(Domain::IPV6, Type::DGRAM, None).unwrap();
+        set_dont_fragment(&v6, true).unwrap();
+        assert_eq!(get(&v6, WinSock::IPPROTO_IPV6, WinSock::IPV6_DONTFRAG), 1);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn test_parse_sockaddr_storage_ipv6_scope_id() {
         use std::mem;
@@ -732,6 +837,7 @@ mod tests {
         assert_eq!(scope_id, Some(3));
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_parse_sockaddr_storage_ipv6_no_scope_id() {
         use std::mem;
@@ -751,6 +857,7 @@ mod tests {
         assert_eq!(scope_id, None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_parse_sockaddr_storage_ipv4() {
         use std::mem;

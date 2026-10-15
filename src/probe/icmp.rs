@@ -1,6 +1,6 @@
-use pnet::packet::MutablePacket;
-use pnet::packet::icmp::echo_request::MutableEchoRequestPacket;
-use pnet::packet::icmp::{IcmpCode, IcmpType, IcmpTypes, checksum};
+use pnet_packet::MutablePacket;
+use pnet_packet::icmp::echo_request::MutableEchoRequestPacket;
+use pnet_packet::icmp::{IcmpCode, IcmpType, IcmpTypes, checksum};
 use std::net::Ipv6Addr;
 
 /// ICMP header size (fixed)
@@ -152,7 +152,7 @@ pub fn build_echo_request(
         // If no addresses provided, leave checksum as 0 (legacy behavior)
     } else {
         // IPv4 ICMP checksum (no pseudo-header needed)
-        let cksum = checksum(&pnet::packet::icmp::IcmpPacket::new(&buffer).unwrap());
+        let cksum = checksum(&pnet_packet::icmp::IcmpPacket::new(&buffer).unwrap());
         let mut packet = MutableEchoRequestPacket::new(&mut buffer).unwrap();
         packet.set_checksum(cksum);
     }

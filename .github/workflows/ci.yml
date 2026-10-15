@@ -54,6 +54,30 @@ jobs:
       - name: Format check
         run: cargo fmt -- --check
 
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --verbose
+
+      # Native Windows probing isn't supported yet (the binary refuses to probe and
+      # points at WSL2); this keeps the crate building and the platform-neutral core
+      # (parsing, exports, state, lookup, CLI validation) tested on Windows.
+      - name: Run tests
+        run: cargo test --verbose
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
   build-macos:
     runs-on: macos-latest
     timeout-minutes: 30
