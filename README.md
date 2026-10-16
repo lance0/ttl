@@ -311,10 +311,6 @@ sudo ttl --resolve-all google.com
 
 When a hostname resolves to multiple IPs (round-robin DNS, CDN load balancing), trace all of them to compare paths. Press `l` to see all resolved targets with their stats.
 
-Large saved recordings can be opened with `--replay-size-limit 64` (MiB;
-default 10). This also applies to `--diff`. See [saving and loading long
-recordings](docs/FEATURES.md#saving-and-loading-long-recordings).
-
 ## Keybindings
 
 | Key | Action |
