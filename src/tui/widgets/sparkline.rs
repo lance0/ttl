@@ -1,7 +1,10 @@
+use crate::tui::theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
+use std::collections::VecDeque;
 use std::time::Duration;
 
 /// Unicode block characters for sparkline
@@ -88,19 +91,31 @@ impl Widget for RttSparkline<'_> {
     }
 }
 
-/// Generate sparkline string for loss pattern (bool = success/failure)
-/// Shows █ for success, × for timeout/loss
+/// Plain block representation retained for callers of the original helper.
+/// The TUI uses `loss_history_line` for individually styled outcomes.
+#[allow(dead_code)]
 pub fn loss_sparkline_string(data: &[bool], width: usize) -> String {
-    if data.is_empty() {
-        return String::new();
-    }
-
-    let samples: Vec<_> = data.iter().rev().take(width).rev().collect();
-
-    samples
-        .iter()
-        .map(|&&success| if success { '█' } else { '×' })
+    data.iter()
+        .skip(data.len().saturating_sub(width))
+        .map(|&success| if success { '█' } else { '×' })
         .collect()
+}
+
+/// Recent probe outcomes, oldest to newest. Quiet dots distinguish replies
+/// from loss crosses without making a healthy route a wall of bright blocks.
+pub fn loss_history_line(data: &VecDeque<bool>, width: usize, theme: &Theme) -> Line<'static> {
+    let start = data.len().saturating_sub(width);
+    Line::from(
+        data.iter()
+            .skip(start)
+            .map(|&success| {
+                Span::styled(
+                    if success { "·" } else { "×" },
+                    Style::default().fg(if success { theme.text_dim } else { theme.error }),
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// Generate sparkline string from RTT data
@@ -141,4 +156,25 @@ pub fn sparkline_string(data: &[Option<Duration>], width: usize) -> String {
             None => '×',
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_preserves_order_and_marks_each_loss_independently() {
+        let data = VecDeque::from([false, true, false, true, true, false]);
+        let theme = Theme::dracula();
+        let line = loss_history_line(&data, 4, &theme);
+        assert_eq!(line.to_string(), "×··×");
+        assert_eq!(line.spans[0].style.fg, Some(theme.error));
+        assert_eq!(line.spans[1].style.fg, Some(theme.text_dim));
+        assert!(loss_history_line(&data, 0, &theme).spans.is_empty());
+        assert!(
+            loss_history_line(&VecDeque::new(), 10, &theme)
+                .spans
+                .is_empty()
+        );
+    }
 }

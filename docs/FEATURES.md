@@ -420,6 +420,8 @@ High jitter indicates path instability from congestion, route changes, or load b
 | `Down` / `j` | Move selection down |
 | `Enter` | Expand selected hop details |
 | `Esc` | Close popup / Deselect |
+| `PgUp` / `PgDn` | Scroll help or hop details |
+| `Home` / `End` | Jump to top/bottom of help or hop details |
 | *Replay* | *See [Replay Controls](#replay-controls) for seek, speed, and position keys* |
 
 ## Settings Modal
@@ -443,15 +445,19 @@ Press `s` to open the settings modal. Configure:
 
 ### Display Mode
 
-The display mode controls Host and ASN column widths:
+The display mode sets preferred Host and ASN widths:
 
 | Mode | Description | Host Width | ASN Width |
 |------|-------------|------------|-----------|
-| **Auto** (default) | Fits to content | 12-60 chars | 8-30 chars |
-| **Compact** | Minimal widths | 20 chars | 12 chars |
-| **Wide** | Generous widths | 45 chars | 24 chars |
+| **Auto** (default) | Fits to content | 12-60 cells | 8-40 cells |
+| **Compact** | Compact preferences | 20 cells | 12 cells |
+| **Wide** | Generous widths, plus JAvg/JMax | 45 cells | 36 cells |
 
-Press `w` in the main view (or `Enter` in the Display Mode settings section) to cycle through modes. Auto mode is recommended for most use cases - it adapts to your content while respecting maximum caps to prevent layout issues.
+Press `w` in the main view (or `Enter` in the Display Mode settings section) to cycle through modes. All modes adapt to the available terminal width: secondary columns disappear before numeric cells are squeezed, and Enter opens all statistics for the selected hop. Large counters or RTTs use scientific notation when needed. Latency values are in milliseconds.
+
+Hop and target selections scroll into view automatically. Help supports PgUp/PgDn and Home/End; settings keeps the active section visible. Close and navigation hints stay at the bottom of each overlay. Ctrl+C exits from every overlay, including text inputs.
+
+The **Recent** column shows the latest ten probe outcomes, oldest to newest: a quiet `·` means a reply and a colored `×` means a timeout. A zero-loss percentage uses a quiet color, leaving warnings and losses more prominent. RGB themes adjust selected-row foreground colors to a minimum 4.5:1 contrast against their selection background; ANSI colors in the default theme remain controlled by the terminal.
 
 ### PeeringDB Section
 
