@@ -6,25 +6,30 @@ This document describes the internal architecture of ttl.
 
 ```
 src/
-├── main.rs              # Entry point, CLI parsing, mode dispatch
-├── cli.rs               # Clap argument definitions
+├── main.rs              # Entry point, mode dispatch (TUI, batch, streaming, replay, diff)
+├── cli.rs               # Clap argument definitions and validation
+├── config.rs            # Runtime probe configuration derived from CLI args
 ├── lib.rs               # Library entry point
-├── prefs.rs             # User preferences (theme persistence)
+├── prefs.rs             # User preferences (config.toml)
+├── persistence.rs       # Atomic file writes for preferences and exports
+├── update.rs            # Startup release check and install-method detection
+├── metrics.rs           # Prometheus/OpenMetrics endpoint (/metrics, /healthz)
 ├── probe/               # Packet crafting and ICMP parsing
 │   ├── icmp.rs          # ICMP Echo probe construction
 │   ├── udp.rs           # UDP probe construction
 │   ├── tcp.rs           # TCP SYN probe construction
-│   ├── socket.rs        # Raw socket creation
-│   ├── correlate.rs     # ICMP response parsing
+│   ├── rawip.rs         # IPv4 header construction for IP_HDRINCL sends
+│   ├── socket.rs        # Socket creation and permission checks
+│   ├── correlate.rs     # ICMP response parsing and ICMP extensions
 │   └── interface.rs     # Network interface binding
 ├── trace/               # Probe orchestration
-│   ├── engine.rs        # Per-target probe scheduler
+│   ├── engine.rs        # Per-target probe scheduler (and PMTUD)
 │   ├── receiver.rs      # Shared ICMP response handler
 │   └── pending.rs       # Pending probe correlation map
 ├── state/               # Session and hop state
-│   ├── session.rs       # Per-target session state
+│   ├── session.rs       # Session, Hop, ResponderStats, ProbeId, PMTUD state
 │   ├── ratelimit.rs     # ICMP rate limit detection
-│   └── mod.rs           # Hop, FlowStats, PMTUD types
+│   └── mod.rs           # Re-exports
 ├── lookup/              # Enrichment lookups
 │   ├── asn.rs           # Team Cymru ASN lookup
 │   ├── rdns.rs          # Reverse DNS resolution
@@ -33,12 +38,14 @@ src/
 ├── tui/                 # Terminal user interface
 │   ├── app.rs           # TUI main loop and event handling
 │   ├── theme.rs         # Color themes
-│   ├── views/           # Main view, hop detail, help
+│   ├── views/           # Main table, hop detail, help, settings, target list, add-target input
 │   └── widgets/         # Custom widgets (sparkline)
 └── export/              # Output formats
     ├── json.rs          # JSON export
     ├── csv.rs           # CSV export
-    └── report.rs        # Text report
+    ├── report.rs        # Text report
+    ├── stream.rs        # Line-delimited JSON events (--stream-json)
+    └── diff.rs          # Session comparison (--diff)
 ```
 
 ## Data Flow
@@ -99,19 +106,19 @@ The receiver runs on a dedicated thread because:
 ### Session (`state/session.rs`)
 
 Per-target session containing:
-- `target: IpAddr` - Destination IP
-- `hops: Vec<Option<Hop>>` - Hop data indexed by TTL
+- `target: Target` - Target as given, resolved IP, and hostname
+- `hops: Vec<Hop>` - One entry per TTL up to `--max-ttl`
 - `complete: bool` - Whether destination was reached
 - `dest_ttl: Option<u8>` - TTL at which destination was reached
 - `pmtud: Option<PmtudState>` - Path MTU discovery state
+- `events: Vec<ProbeEvent>` - Recorded probe outcomes for replay (not kept in `--daemon`, Prometheus-only, or plain `--no-tui` runs)
 
-### Hop (`state/mod.rs`)
+### Hop (`state/session.rs`)
 
 Per-hop statistics:
-- `responders: HashMap<IpAddr, ResponseStats>` - Per-IP stats for ECMP
-- `flow_stats: Vec<FlowStats>` - Per-flow stats for Paris traceroute
-- `samples: VecDeque<Duration>` - RTT history for percentiles
-- NAT detection, MPLS labels, rate limit detection
+- `responders: HashMap<IpAddr, ResponderStats>` - Per-IP stats for ECMP, each with RTT/jitter stats, the last 256 RTT samples for percentiles, enrichment, MPLS labels, and RFC 5837 interface data
+- `flow_paths: HashMap<u8, FlowPathStats>` - Per-flow stats for Paris traceroute
+- `nat_info`, `rate_limit`, `route_changes`, `asymmetry`, `ttl_manip` - Detection state
 
 ### PendingMap (`trace/pending.rs`)
 
@@ -120,11 +127,13 @@ Maps `(ProbeId, flow_id, target, is_pmtud)` to `PendingProbe`:
 - Engines insert before sending probes
 - Receiver removes when responses arrive or timeout
 
-### ProbeId (`state/mod.rs`)
+### ProbeId (`state/session.rs`)
 
 Identifies a probe:
 - `ttl: u8` - TTL/hop-limit of the probe
-- `seq: u16` - Sequence number (ICMP) or checksum (UDP)
+- `seq: u8` - Round sequence number (wraps at 256)
+
+Both are packed into a 16-bit value (`ttl << 8 | seq`) carried in the ICMP Echo sequence field, the first two bytes of the UDP payload, or the upper half of the TCP sequence number.
 
 ## PMTUD Algorithm
 
@@ -147,7 +156,7 @@ Multi-flow probing for ECMP path enumeration:
 - ECMP routers hash on (src_ip, dst_ip, src_port, dst_port, protocol)
 - Different source ports cause different path selections
 - Flow ID derived from returned source port in ICMP error payload
-- TUI shows "Paths" column when multiple responders per hop/flow
+- TUI shows a "Paths" column when `--flows > 1`; flows require UDP or TCP probes
 
 ### Enrichment progress and shutdown
 

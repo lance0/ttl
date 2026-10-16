@@ -45,7 +45,7 @@ How ttl compares to other traceroute and network diagnostic tools.
 
 :white_check_mark: = supported | :x: = not supported
 
-## For Windows/Enterprise Users: TTL vs pathping
+## For Windows/Enterprise Users: ttl vs pathping
 
 If you're coming from a Windows environment, you're probably familiar with `pathping`. Here's how ttl compares:
 
@@ -57,7 +57,7 @@ If you're coming from a Windows environment, you're probably familiar with `path
 | **Enrichment** | ASN, GeoIP, IX, DNS | DNS only |
 | **Analysis** | Rate limit detection, NAT detection, route flaps | Basic loss stats |
 | **Cost** | Free, open source | Built into Windows |
-| **Platforms** | Linux, macOS, FreeBSD, NetBSD | Windows only |
+| **Platforms** | Linux, macOS, FreeBSD, NetBSD, Windows via WSL2 | Windows only |
 
 **Why switch from pathping?**
 - No more waiting 5+ minutes for results - ttl shows stats immediately
@@ -65,32 +65,12 @@ If you're coming from a Windows environment, you're probably familiar with `path
 - Identify *why* there's packet loss (rate limiting vs real drops)
 - See which ISP/AS each hop belongs to
 
-### Running TTL on Windows via WSL
+### Running ttl on Windows
 
-TTL works great on Windows through WSL2. Setup takes under 2 minutes:
-
-```powershell
-# 1. Install WSL (if not already installed)
-wsl --install
-# Restart your computer, then open Ubuntu from Start menu
-```
-
-```bash
-# 2. In Ubuntu, install ttl (choose one):
-
-# Option A: Pre-built binary (fastest)
-curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
-
-# Option B: Build from source
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-cargo install ttl
-
-# 3. Run ttl
-sudo ttl 8.8.8.8
-```
-
-WSL2 has full network stack access, so all ttl features work including ICMP, UDP, and TCP probes.
+ttl traces from WSL2, which has a full Linux network stack, so ICMP, UDP and
+TCP probes all work there. Native Windows builds can replay and diff saved
+sessions but cannot trace yet. Setup steps are in
+[INSTALL.md](INSTALL.md#windows).
 
 ## When to Use Each Tool
 
@@ -123,5 +103,5 @@ WSL2 has full network stack access, so all ttl features work including ICMP, UDP
 |----------|:---:|:------:|:---:|:---------:|
 | Linux | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | macOS | :white_check_mark: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
-| Windows | :x: | :white_check_mark: | :white_check_mark: | :white_check_mark: |
+| Windows | WSL2 only | :white_check_mark: | :white_check_mark: | :white_check_mark: |
 | BSD | :construction: | :white_check_mark: | :white_check_mark: | :x: |

@@ -4,455 +4,126 @@
 
 # ttl
 
-Network diagnostic tool that goes beyond traceroute: MTU discovery, NAT detection, route flap alerts, IX identification, and more.
-
-<p align="center">
-  <img src="docs/demo.gif" alt="ttl live traceroute TUI: hops with ASN and reverse-DNS enrichment, per-hop loss/latency/jitter stats, sparklines, and a hop detail view" width="900">
-</p>
-
 [![Crates.io](https://img.shields.io/crates/v/ttl.svg)](https://crates.io/crates/ttl)
 [![CI](https://github.com/lance0/ttl/actions/workflows/ci.yml/badge.svg)](https://github.com/lance0/ttl/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-tip-ff5e5b?logo=ko-fi)](https://ko-fi.com/lance0)
 
-## Quick Start
+**Network diagnostic tool that goes beyond traceroute: MTU discovery, NAT detection, route flap alerts, IX identification, and more.**
+
+ttl traces the path to one or more hosts continuously, keeps per-hop loss,
+latency and jitter statistics, and flags what it finds along the way. Use it as
+an interactive TUI, or run it headless with JSON, CSV, text report, streaming
+JSON, or Prometheus output.
+
+[Documentation](docs/README.md) · [Install](#install) ·
+[Releases](https://github.com/lance0/ttl/releases) · [Changelog](CHANGELOG.md)
+
+<p align="center">
+  <img src="docs/demo.gif" alt="ttl live traceroute TUI: hops with ASN and reverse-DNS enrichment, per-hop loss/latency/jitter stats, sparklines, and a hop detail view" width="900">
+</p>
+
+## Quick start
 
 ```bash
-# Basic usage
-ttl 8.8.8.8                          # Linux (after setcap)
-sudo ttl 8.8.8.8                     # macOS/BSD (always needs sudo)
+cargo install ttl                                # or: brew install ttl
+sudo setcap cap_net_raw+ep "$(command -v ttl)"   # Linux; on macOS/BSD run ttl with sudo
 
-# Common options
-ttl -p udp google.com                # UDP probes
-ttl --flows 8 cloudflare.com         # ECMP path discovery
-ttl --pmtud 1.1.1.1                  # Path MTU discovery
-ttl 8.8.8.8 1.1.1.1 9.9.9.9          # Multiple targets
-ttl --resolve-all google.com         # Trace all resolved IPs
+ttl 8.8.8.8                          # live TUI; press ? for keys
+ttl 8.8.8.8 1.1.1.1 9.9.9.9          # several targets; Tab switches
+ttl -p udp --flows 8 cloudflare.com  # ECMP path discovery
+ttl 1.1.1.1 -c 100 --report          # 100 rounds, then a text report
 ```
 
-See [Installation](#installation) below for setup instructions.
-
-## Features
-
-- **Fast continuous path monitoring** with detailed hop statistics
-- **Multiple simultaneous targets** - trace to several destinations at once
-- **Paris/Dublin traceroute** - multi-flow probing for ECMP path enumeration
-- **ECMP classification** - distinguishes per-flow vs per-packet load balancing
-- **Path MTU discovery** - binary search for maximum unfragmented size
-- **NAT detection** - identify when NAT devices rewrite source ports
-- **Route flap detection** - alert on path changes indicating routing instability
-- **Rich enrichment** - ASN, GeoIP, reverse DNS, IX detection (PeeringDB)
-- **MPLS label detection** from ICMP extensions
-- **Interface and next-hop identification** (RFC 5837 ICMP extensions); `+` marks hops with interface or MPLS details (Enter to inspect, PgUp/PgDn to scroll)
-- **ICMP, UDP, TCP probing** with auto-detection
-- **Great TUI** with themes, sparklines, and session export
-- **Update notifications** - in-app banner when new versions are available (opt out via `--no-update-check`, `DO_NOT_TRACK`, config, or a `--no-default-features` build)
-- **Scriptable** - JSON, CSV, text report, and line-delimited JSON streaming output
-- **Trace diffing** - compare two saved sessions for path and latency changes
-- **Daemon mode + Prometheus exporter** - headless continuous monitoring with `/metrics` and `/healthz`
-- **Docker-ready** - official Dockerfile, graceful SIGTERM shutdown
-
-See [docs/FEATURES.md](docs/FEATURES.md) for detailed documentation, including optional setup for [GeoIP](docs/FEATURES.md#geoip-location) and [IX detection](docs/FEATURES.md#ix-detection).
-
-## Installation
-
-### From crates.io (Recommended)
-
-Requires [Rust](https://www.rust-lang.org/tools/install):
-
-```bash
-# Install Rust (if not already installed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
-# Install ttl
-cargo install ttl
-```
-
-### Homebrew (macOS/Linux)
-
-```bash
-brew install ttl
-```
-
-Available directly from [Homebrew core](https://formulae.brew.sh/formula/ttl). (The `lance0/tap/ttl` tap also still works and may ship new releases slightly sooner.)
-
-### Alpine Linux
-
-```bash
-apk add ttl --repository=https://dl-cdn.alpinelinux.org/alpine/edge/testing
-```
-
-Currently in the `edge/testing` repository (community-maintained).
-
-### Arch Linux (AUR)
-
-```bash
-yay -S ttl-bin
-```
-
-### Gentoo
-
-```bash
-emerge net-analyzer/ttl
-```
-
-### NetBSD (pkgsrc)
-
-```bash
-pkgin install ttl
-```
-
-Or from source: `cd /usr/pkgsrc/net/ttl && make install`
-
-### NixOS / Nix
-
-```bash
-# Imperative install
-nix-env -iA nixpkgs.ttl
-
-# NixOS configuration
-environment.systemPackages = [ pkgs.ttl ];
-
-# Temporary shell
-nix-shell -p ttl
-```
-
-Available in `nixpkgs` unstable (community-maintained).
-
-### Pre-built Binaries
-
-Download from [GitHub Releases](https://github.com/lance0/ttl/releases):
-
-| Platform | Target |
-|----------|--------|
-| Linux x86_64 | `ttl-x86_64-unknown-linux-musl.tar.gz` |
-| Linux ARM64 | `ttl-aarch64-unknown-linux-gnu.tar.gz` |
-| macOS Apple Silicon | `ttl-aarch64-apple-darwin.tar.gz` |
-| macOS Intel | `ttl-x86_64-apple-darwin.tar.gz` |
-
-```bash
-# Download, verify, and install (Linux x86_64 example)
-curl -LO https://github.com/lance0/ttl/releases/latest/download/ttl-x86_64-unknown-linux-musl.tar.gz
-curl -LO https://github.com/lance0/ttl/releases/latest/download/SHA256SUMS
-sha256sum -c SHA256SUMS --ignore-missing  # macOS: shasum -a 256 -c
-tar xzf ttl-*.tar.gz && sudo mv ttl /usr/local/bin/
-```
-
-### Docker
-
-Multi-arch images (amd64/arm64) are published to GHCR on each release:
-
-```bash
-docker pull ghcr.io/lance0/ttl:latest
-docker run --rm -it ghcr.io/lance0/ttl 8.8.8.8
-
-# Headless monitoring with Prometheus metrics
-docker run -d -p 9090:9090 ghcr.io/lance0/ttl --daemon --prometheus :9090 8.8.8.8
-```
-
-Docker grants the required `NET_RAW` capability by default; stricter runtimes may need `--cap-add NET_RAW`.
-
-### From Source
-
-```bash
-git clone https://github.com/lance0/ttl
-cd ttl && cargo build --release
-sudo cp target/release/ttl /usr/local/bin/
-```
-
-### Quick Install Script
-
-> **Note**: Piping scripts from the internet to sh is convenient but bypasses your ability to review the code first. Consider using one of the methods above, or [review the script](https://github.com/lance0/ttl/blob/master/install.sh) before running.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
-```
-
-### Permissions (Linux)
-
-Raw sockets require elevated privileges. The easiest approach is to add the capability once:
-
-```bash
-# Add capability (works for any install location)
-sudo setcap cap_net_raw+ep $(which ttl)
-
-# Then run without sudo:
-ttl 8.8.8.8
-```
-
-### Shell Completions
-
-```bash
-# Bash
-ttl --completions bash > ~/.local/share/bash-completion/completions/ttl
-
-# Zsh (add ~/.zfunc to fpath in .zshrc first)
-ttl --completions zsh > ~/.zfunc/_ttl
-
-# Fish
-ttl --completions fish > ~/.config/fish/completions/ttl.fish
-
-# PowerShell (add to $PROFILE)
-ttl --completions powershell >> $PROFILE
-```
-
-## Usage Examples
-
-### Interactive TUI
-
-```bash
-ttl google.com
-ttl 8.8.8.8 1.1.1.1      # Multiple targets (Tab to switch)
-```
-
-### Report and Export
-
-```bash
-ttl 1.1.1.1 -c 100 --report    # Text report
-ttl 1.1.1.1 -c 100 --json      # JSON export
-ttl 1.1.1.1 -c 100 --csv       # CSV export
-ttl 1.1.1.1 --stream-json      # Stream events as line-delimited JSON
-ttl --diff before.json after.json    # Compare two saved sessions
-ttl --daemon --prometheus :9090 1.1.1.1   # Headless + Prometheus metrics
-ttl --replay results.json      # Replay saved session
-ttl --replay results.json --animate  # Animated replay
-```
-
-Text reports include available RFC 5837 interface details and MPLS label stacks below each hop, including additional ECMP responders.
-
-### Advanced Options
-
-```bash
-ttl -p tcp --port 443 host     # TCP probes to HTTPS
-ttl --flows 4 host             # ECMP path enumeration
-ttl --interface eth0 host      # Bind to interface
-ttl --size 1400 host           # Large packets for MTU testing
-ttl --dscp 46 host             # QoS marking (EF)
-ttl --wide host                # Wide mode for wider terminals
-ttl --no-update-check host     # Skip the startup release check (see also DO_NOT_TRACK)
-```
-
-See [docs/FEATURES.md](docs/FEATURES.md) for full CLI reference.
-
-## Real-World Use Cases
-
-### Find MTU Blackholes in VPNs
-
-VPN tunnels often have lower MTU than expected. Large packets get silently dropped, causing mysterious connection hangs.
-
-```bash
-sudo ttl --pmtud vpn-gateway.example.com
-```
-
-TTL binary-searches to find the maximum packet size that works. The `MTU 1400` title flag shows exactly where fragmentation occurs.
-
-### Detect Carrier-Grade NAT Breaking Your Flows
-
-Running multi-flow traceroute but getting inconsistent results? NAT devices may be rewriting your source ports.
-
-```bash
-sudo ttl --flows 4 target.com
-```
-
-TTL detects when returned source ports don't match what was sent. The `NAT` title flag warns you, and hop details show which device is doing the rewriting.
-
-### Identify Internet Exchange Points
-
-See exactly where your traffic peers with other networks:
-
-```bash
-sudo ttl cloudflare.com
-```
-
-TTL queries PeeringDB to identify IX points. The hop detail view shows IX name, city, and country. Works out of the box; optionally configure an API key via settings (`s` key) or `PEERINGDB_API_KEY` env var for higher rate limits. See [docs/FEATURES.md](docs/FEATURES.md#ix-detection) for setup details.
-
-### Catch Flapping Routes
-
-Unstable BGP or failover issues cause intermittent problems that are hard to catch:
-
-```bash
-sudo ttl -i 0.5 production-server.com
-```
-
-TTL tracks when the responding IP at a hop changes. The `!` indicator flags route flaps, and hop details show change history. ECMP load balancing shows `E` instead, so you can distinguish real instability from expected multi-path behavior.
-
-### Detect Transparent Proxies
-
-Some networks intercept traffic with transparent proxies that manipulate TTL values:
-
-```bash
-sudo ttl -p tcp --port 80 website.com
-```
-
-The `TTL!` title flag appears when TTL manipulation is detected.
-
-### Distinguish Real Loss from ICMP Rate Limiting
-
-That 30% packet loss at hop 5 might be fake - routers often rate-limit ICMP responses:
-
-```bash
-sudo ttl target.com
-```
-
-The `RL?` title flag and the `RL` tag after the loss (`50.0% RL`) tell you it's rate limiting, not actual packet drops.
-
-### Compare Multiple Paths
-
-```bash
-sudo ttl 8.8.8.8 1.1.1.1 9.9.9.9
-```
-
-Trace multiple destinations at once. Press `Tab` to switch between them, or `l` to see a list of all targets.
-
-### Trace All Resolved IPs (Round-Robin DNS)
-
-```bash
-sudo ttl --resolve-all google.com
-```
-
-When a hostname resolves to multiple IPs (round-robin DNS, CDN load balancing), trace all of them to compare paths. Press `l` to see all resolved targets with their stats.
-
-## Keybindings
-
-| Key | Action |
-|-----|--------|
-| `q` / `Ctrl+C` | Quit |
-| `p` / `Space` | Pause/Resume |
-| `r` | Reset stats |
-| `t` | Cycle theme |
-| `w` | Cycle display mode |
-| `s` | Settings |
-| `e` | Export JSON |
-| `?` | Help |
-| `u` | Dismiss update banner |
-| `o` | Add target |
-| `Tab` | Next target |
-| `l` | Target list |
-| `Enter` | Expand hop |
-| `PgUp` / `PgDn` | Scroll help / hop details |
-| `←` / `→` | Replay: seek ±0.5s |
-| `[` / `]` | Replay: seek ±5s |
-| `+` / `-` | Replay: speed ±0.5x |
-| `Home` / `End` | Replay: jump to start/end |
-
-*Replay controls are active in `--animate` replay mode only. See [docs/FEATURES.md](docs/FEATURES.md#replay-controls) for the full table.*
-
-## Themes
-
-11 built-in themes: `default`, `kawaii`, `cyber`, `dracula`, `monochrome`, `matrix`, `nord`, `gruvbox`, `catppuccin`, `tokyo_night`, `solarized`
-
-```bash
-ttl 1.1.1.1 --theme dracula    # Start with theme
-# Press 't' to cycle themes (saved to ~/.config/ttl/config.toml)
-```
-
-## Platform Support
+Run `ttl` with no target to open an empty session and add targets with `o`.
+
+## What it finds
+
+<a id="features"></a>
+<a id="real-world-use-cases"></a><a id="usage-examples"></a><a id="interactive-tui"></a><a id="report-and-export"></a><a id="advanced-options"></a>
+<a id="find-mtu-blackholes-in-vpns"></a><a id="detect-carrier-grade-nat-breaking-your-flows"></a><a id="identify-internet-exchange-points"></a><a id="catch-flapping-routes"></a>
+<a id="detect-transparent-proxies"></a><a id="distinguish-real-loss-from-icmp-rate-limiting"></a><a id="compare-multiple-paths"></a><a id="trace-all-resolved-ips-round-robin-dns"></a>
+
+- **MTU blackholes** in VPNs and tunnels: `--pmtud` binary-searches the largest
+  packet that reaches the destination. [Path MTU Discovery](docs/FEATURES.md#path-mtu-discovery-pmtud)
+- **Load-balanced paths**: `-p udp --flows N` enumerates ECMP paths and tells
+  per-flow from per-packet balancing. [Multi-flow ECMP](docs/FEATURES.md#multi-flow-ecmp-detection-parisdublin-traceroute)
+- **NAT rewriting your flows**, including carrier-grade NAT, shown as `NAT`.
+  [NAT Detection](docs/FEATURES.md#nat-detection)
+- **Rate limiting vs real loss**: the `RL?` title flag and `RL` loss tag mark routers that throttle
+  ICMP replies rather than drop traffic. [Detection Indicators](docs/FEATURES.md#detection-indicators)
+- **Flapping routes**: `!` marks a hop whose responder changed, kept apart
+  from expected ECMP (`E`). [Route Flap Detection](docs/FEATURES.md#route-flap-detection)
+- **Transparent proxies and asymmetric paths**: `TTL!` and `ASYM`.
+  [Detection Indicators](docs/FEATURES.md#detection-indicators)
+- **Who runs each hop**: ASN, reverse DNS, GeoIP, and Internet Exchange
+  points from PeeringDB. [Enrichment Lookups](docs/FEATURES.md#enrichment-lookups)
+- **MPLS labels and router interfaces** from ICMP extensions (RFC 4950,
+  RFC 5837), marked `+`. [ICMP Extension Details](docs/FEATURES.md#icmp-extension-details)
+- **Differences between paths**: trace several targets, or every address a
+  name resolves to with `--resolve-all`. [Multi-IP Resolution](docs/FEATURES.md#multi-ip-resolution)
+- **Changes over time**: save sessions, replay them, and compare two with
+  `--diff`. [Output Formats](docs/FEATURES.md#output-formats)
+
+For scripts and monitoring, ttl streams line-delimited JSON events, runs as a
+daemon with a Prometheus `/metrics` endpoint, and ships as a container image.
+See the [scripting guide](docs/SCRIPTING.md).
+
+## Install
+
+<a id="installation"></a><a id="from-cratesio-recommended"></a><a id="homebrew-macoslinux"></a><a id="quick-install-script"></a>
+<a id="pre-built-binaries"></a><a id="docker"></a><a id="from-source"></a><a id="alpine-linux"></a>
+<a id="arch-linux-aur"></a><a id="gentoo"></a><a id="netbsd-pkgsrc"></a><a id="nixos--nix"></a>
+<a id="permissions-linux"></a><a id="shell-completions"></a>
+
+ttl needs raw-socket privileges: `CAP_NET_RAW` on Linux, `sudo` on macOS and
+the BSDs. The [installation guide](docs/INSTALL.md) covers every channel,
+permissions, shell completions, and download verification.
+
+- **Cargo:** `cargo install ttl` (Rust 1.88+)
+- **Homebrew (macOS, Linux):** `brew install ttl`
+- **Install script (Linux, macOS):** `curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh` ([review it first](https://github.com/lance0/ttl/blob/master/install.sh))
+- **Pre-built binaries:** Linux x86_64/ARM64 and macOS from [GitHub Releases](https://github.com/lance0/ttl/releases), with `SHA256SUMS`
+- **Docker:** `docker run --rm -it ghcr.io/lance0/ttl 8.8.8.8`
+- **Distribution packages:** Alpine (edge/testing), Arch (AUR `ttl-bin`), Gentoo, NetBSD pkgsrc, nixpkgs ([commands](docs/INSTALL.md#distribution-packages))
+
+## Platform support
+
+<a id="windows-via-wsl2"></a><a id="known-issues"></a><a id="known-limitations"></a>
+<a id="permissions"></a><a id="protocol-limitations"></a><a id="multi-flow-mode"></a>
 
 | Platform | Status |
 |----------|--------|
 | Linux | Full support |
 | macOS (Tahoe 26+) | Full support |
-| macOS (Sequoia 15) | Build from source* |
-| FreeBSD | Experimental** |
-| NetBSD | Experimental** |
-| Windows (WSL2) | Full support |
-| Windows (native) | Builds; no tracing yet*** |
+| macOS (Sequoia 15) | Build from source\* |
+| FreeBSD, NetBSD | Experimental\*\* |
+| Windows (WSL2) | Full support ([setup](docs/INSTALL.md#windows)) |
+| Windows (native) | Builds; `--replay` and `--diff` only, no tracing yet |
 
-*Pre-built binaries are built on `macos-latest` (Tahoe). Older macOS versions may have display issues - use `cargo install ttl` to compile from source.
+\*Apple Silicon release binaries are built on the `macos-latest` runner. On an
+older macOS, build with `cargo install ttl` or use Homebrew.
+\*\*Requires `sudo`; `--interface` is not supported. Please
+[report issues](https://github.com/lance0/ttl/issues).
 
-**FreeBSD/NetBSD support is experimental. Requires `sudo`. Interface binding (`-i`) is not supported. Please report issues at https://github.com/lance0/ttl/issues
-
-***`cargo install ttl` builds on native Windows and `--replay` / `--diff` work, but live tracing is not implemented there yet. Use WSL2.
-
-### Windows via WSL2
-
-```powershell
-wsl --install                    # Install WSL if needed, then restart
-wsl                              # Open Ubuntu
-```
-
-Then in Ubuntu:
-
-```bash
-# Option 1: Install via cargo (recommended)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-cargo install ttl
-sudo ~/.cargo/bin/ttl 8.8.8.8
-
-# Option 2: Pre-built binary via install script
-curl -fsSL https://raw.githubusercontent.com/lance0/ttl/master/install.sh | sh
-sudo ttl 8.8.8.8
-```
-
-## Known Issues
-
-- **iTerm2 on macOS Sequoia**: Initial display may render incorrectly. Press `r` to reset, or use Terminal.app.
-
-## Known Limitations
-
-### Permissions
-- Linux: Requires `CAP_NET_RAW` capability or root (see [Permissions](#permissions-linux))
-- macOS/FreeBSD/NetBSD: Requires root (`sudo ttl target`) - RAW sockets are needed to receive ICMP Time Exceeded messages from intermediate routers
-
-### Protocol Limitations
-- ICMP probes: Some networks filter ICMP, try `-p udp` or `-p tcp`
-- TCP probes: Only SYN (no connection establishment)
-- UDP probes: High ports may be filtered by firewalls
-
-### Multi-flow Mode
-- NAT devices may rewrite source ports, breaking flow correlation
-- The `NAT` title flag warns when this is detected
+Limitations and platform caveats are listed in [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
 
 ## Documentation
 
-- [Features](docs/FEATURES.md) - Detailed feature documentation and CLI reference
-- [Scripting](docs/SCRIPTING.md) - CI/CD integration, JSON parsing, Docker usage
-- [Architecture](docs/ARCHITECTURE.md) - Internal design and module structure
-- [Contributing](CONTRIBUTING.md) - Development setup and guidelines
-- [Comparison](docs/COMPARISON.md) - Comparison with similar tools (including pathping)
-- [Changelog](CHANGELOG.md) - Release history
-- [Roadmap](ROADMAP.md) - Planned features
+<a id="keybindings"></a><a id="themes"></a>
+<a id="troubleshooting"></a><a id="sudo-ttl-command-not-found"></a><a id="permission-errors"></a>
+<a id="high-packet-loss"></a><a id="all-hops-showing---"></a><a id="themeconfig-not-persisting-macos"></a>
 
-## Troubleshooting
+Start with the [documentation index](docs/README.md), or go directly to your task:
 
-### "sudo: ttl: command not found"
-
-sudo uses a restricted PATH. Use the full path or copy to a sudo-accessible location:
-
-```bash
-# Option 1: Use full path
-sudo ~/.cargo/bin/ttl 8.8.8.8
-
-# Option 2: Copy to /usr/local/bin (one-time)
-sudo cp ~/.cargo/bin/ttl /usr/local/bin/
-
-# Option 3: Symlink (updates automatically with cargo install)
-sudo ln -sf ~/.cargo/bin/ttl /usr/local/bin/ttl
-```
-
-### Permission errors
-
-Raw ICMP sockets require `CAP_NET_RAW` or root. See [Permissions](#permissions-linux).
-
-### High packet loss
-
-Try increasing probe interval: `ttl target -i 2.0`
-
-Some routers rate-limit ICMP - look for the `RL?` title flag in the TUI.
-
-### All hops showing `* * *`
-
-Check firewall rules, VPN configuration, or try a different protocol: `ttl -p udp target`
-
-### Theme/config not persisting (macOS)
-
-As of v0.12.1, the config directory on macOS changed from `~/Library/Preferences/ttl/` to `~/Library/Application Support/ttl/` to align with Apple guidelines. If you have an existing config, move it:
-
-```bash
-mv ~/Library/Preferences/ttl ~/Library/Application\ Support/ttl
-```
+| Task | Guide |
+|------|-------|
+| Use the TUI | [Keybindings](docs/FEATURES.md#tui-keybindings) · [Detection indicators](docs/FEATURES.md#detection-indicators) · [Themes](docs/FEATURES.md#themes) · [Settings](docs/FEATURES.md#settings-modal) |
+| Script, export, or monitor | [Scripting guide](docs/SCRIPTING.md) · [Output formats](docs/FEATURES.md#output-formats) · [CLI reference](docs/FEATURES.md#cli-reference) |
+| Install and set permissions | [Installation](docs/INSTALL.md) · [Permissions](docs/INSTALL.md#permissions) · [Windows](docs/INSTALL.md#windows) |
+| Troubleshoot | [Troubleshooting](docs/INSTALL.md#troubleshooting) · [Known issues](KNOWN_ISSUES.md) |
+| Compare with other tools | [Comparison](docs/COMPARISON.md) (Trippy, MTR, NextTrace, pathping) |
+| Understand internals or contribute | [Architecture](docs/ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md) · [Roadmap](ROADMAP.md) · [Security](SECURITY.md) |
 
 ## License
 

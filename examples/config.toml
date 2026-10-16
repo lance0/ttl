@@ -1,5 +1,6 @@
 # ttl configuration file
-# Place at ~/.config/ttl/config.toml
+# Place at ~/.config/ttl/config.toml (Linux and BSD) or
+# ~/Library/Application Support/ttl/config.toml (macOS)
 #
 # ttl writes this file itself when you change settings in the TUI (theme,
 # display mode, PeeringDB key). You can also edit it by hand. Every key is

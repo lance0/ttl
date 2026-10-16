@@ -7,7 +7,7 @@ Thank you for your interest in contributing to ttl!
 ### Prerequisites
 
 - Rust 1.88+ (edition 2024)
-- Linux or macOS for live tracing (the crate builds and its tests run on native Windows, but tracing there needs WSL2)
+- Linux or macOS for live tracing (FreeBSD and NetBSD are experimental; the crate builds and its tests run on native Windows, but tracing there needs WSL2)
 - `CAP_NET_RAW` capability or root access for testing
 
 ### Building
@@ -121,14 +121,14 @@ Key directories:
 - `src/state/` - Session and hop state management
 - `src/tui/` - Terminal user interface
 - `src/lookup/` - ASN, GeoIP, DNS enrichment
-- `src/export/` - Output formats (JSON, CSV, report)
+- `src/export/` - Output formats (JSON, CSV, report, streaming JSON, diff)
 
 ## Pull Request Process
 
 1. Fork the repository
 2. Create a feature branch from `master`
 3. Make your changes
-4. Ensure all checks pass (`cargo build && cargo test && cargo clippy -- -D warnings && cargo fmt -- --check`)
+4. Ensure all checks pass (`cargo build && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt -- --check`)
 5. Submit a pull request
 
 ### Commit Messages
@@ -145,7 +145,7 @@ Good examples:
 ### What to Include
 
 - **Bug fixes**: Include steps to reproduce and verify the fix
-- **New features**: Update README.md and relevant docs
+- **New features**: Update [docs/FEATURES.md](docs/FEATURES.md) and any other affected page (see the [documentation index](docs/README.md)); the README stays a short overview
 - **Breaking changes**: Note in CHANGELOG.md
 
 ## Reporting Issues

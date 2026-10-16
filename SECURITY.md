@@ -13,6 +13,7 @@ If you discover a security vulnerability in ttl, please report it responsibly:
 
 Security issues of interest include:
 - Memory safety issues in packet parsing
+- Parsing of untrusted saved sessions (`--replay`, `--diff`) or GeoIP databases
 - Privilege escalation vulnerabilities
 - Information disclosure bugs
 
@@ -22,5 +23,5 @@ Only the latest release is supported with security updates.
 
 | Version | Supported |
 |---------|-----------|
-| 0.20.x  | Yes       |
-| < 0.20  | No        |
+| 0.23.x  | Yes       |
+| < 0.23  | No        |
