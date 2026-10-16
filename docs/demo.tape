@@ -21,7 +21,7 @@
 Output docs/demo.gif
 
 Set Width 1280
-Set Height 760
+Set Height 560
 Set FontSize 15
 Set Padding 16
 Set Theme "Catppuccin Mocha"
@@ -58,15 +58,9 @@ Sleep 700ms
 
 # --- hop detail (percentiles, jitter, routing symmetry, TTL) -------------------
 Enter
-Sleep 5s
+Sleep 6s
 Escape
-Sleep 1500ms
-
-# --- brief help flash ------------------------------------------------------------
-Type "?"
-Sleep 2500ms
-Escape
-Sleep 3s          # hold on the full table (final good frame)
+Sleep 4s          # hold on the full table (final good frame)
 
 # --- quit off-camera so the last frame is the TUI, not the shell prompt --------
 Hide
