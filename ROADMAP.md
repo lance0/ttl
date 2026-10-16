@@ -1,5 +1,7 @@
 # ttl Roadmap
 
+Current release: **v0.23.0**. Changes since then are listed under [Unreleased](CHANGELOG.md#unreleased) in the changelog.
+
 ## Market Context
 
 **mtr is the de facto standard** for interactive traceroute but hasn't seen major feature development in years. **trippy** (Rust) is the main modern alternative but focuses on a different feature set.
