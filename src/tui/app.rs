@@ -318,6 +318,26 @@ fn refresh_target_list_cache(ui_state: &mut UiState, sessions: &SessionMap, targ
     }
 }
 
+/// Help overlay keys: page by the visible rows so PgUp/PgDn never skip lines;
+/// any other key closes it.
+fn handle_help_key(ui_state: &mut UiState, code: KeyCode, area: Rect, theme: &Theme) {
+    let page = HelpView::visible_rows(area).max(1);
+    let max_scroll = HelpView::new(theme)
+        .with_replay(ui_state.replay_state.is_some())
+        .max_scroll(area);
+    let scroll = ui_state.help_scroll.min(max_scroll);
+    ui_state.help_scroll = match code {
+        KeyCode::PageUp => scroll.saturating_sub(page),
+        KeyCode::PageDown => scroll.saturating_add(page).min(max_scroll),
+        KeyCode::Home => 0,
+        KeyCode::End => max_scroll,
+        _ => {
+            ui_state.show_help = false;
+            scroll
+        }
+    };
+}
+
 /// Run the TUI application. Returns the final preferences for persistence.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tui(
@@ -853,22 +873,12 @@ where
             // Handle overlays first
             if ui_state.show_help {
                 let size = terminal.size()?;
-                let max_scroll = HelpView::new(&theme)
-                    .with_replay(ui_state.replay_state.is_some())
-                    .max_scroll(Rect::new(0, 0, size.width, size.height));
-                ui_state.help_scroll = ui_state.help_scroll.min(max_scroll);
-                match key.code {
-                    KeyCode::PageUp => {
-                        ui_state.help_scroll = ui_state.help_scroll.saturating_sub(10)
-                    }
-                    KeyCode::PageDown => {
-                        ui_state.help_scroll =
-                            ui_state.help_scroll.saturating_add(10).min(max_scroll)
-                    }
-                    KeyCode::Home => ui_state.help_scroll = 0,
-                    KeyCode::End => ui_state.help_scroll = max_scroll,
-                    _ => ui_state.show_help = false,
-                }
+                handle_help_key(
+                    ui_state,
+                    key.code,
+                    Rect::new(0, 0, size.width, size.height),
+                    &theme,
+                );
                 continue;
             }
 
@@ -1618,11 +1628,6 @@ fn draw_ui(
             Cow::Borrowed(msg.as_str()),
             Style::default().fg(theme.text_dim),
         )
-    } else if status_chunk.width < 60 {
-        (
-            Cow::Borrowed("q quit · p pause · Enter details"),
-            Style::default().fg(theme.text_dim),
-        )
     } else if status_chunk.width < 110 {
         let hints = if ui_state.replay_state.is_some() {
             "q quit · p pause · ←/→ seek · +/- speed · Home/End"
@@ -1630,6 +1635,12 @@ fn draw_ui(
             "q quit · p pause · o add · l targets · s settings · Enter details"
         } else {
             "q quit · p pause · o add · s settings · Enter details"
+        };
+        // Fall back to the shortest hints rather than clip after "? help · ".
+        let hints = if usize::from(status_chunk.width) < hints.chars().count() + 9 {
+            "q quit · p pause · Enter details"
+        } else {
+            hints
         };
         (Cow::Borrowed(hints), Style::default().fg(theme.text_dim))
     } else if ui_state.replay_state.is_some() {
@@ -1956,6 +1967,77 @@ mod tests {
         assert_eq!(current_gen, current_gen_after);
         assert_eq!(ui_state.target_list_tick, 30);
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn status_hints_are_never_clipped() {
+        use ratatui::backend::TestBackend;
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let session = Session::new(Target::new("example.net".into(), ip), Config::default());
+        for width in 41..110 {
+            for targets in [1, 2] {
+                let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+                terminal
+                    .draw(|f| {
+                        draw_ui(
+                            f,
+                            &session,
+                            &UiState::default(),
+                            &Theme::default(),
+                            targets,
+                            None,
+                            false,
+                        )
+                    })
+                    .unwrap();
+                let buf = terminal.backend().buffer();
+                let status: String = (0..width).map(|x| buf[(x, 11)].symbol()).collect();
+                assert!(
+                    status.trim_end().ends_with("Enter details"),
+                    "{width}: {status}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn help_paging_reaches_every_line_on_short_terminals() {
+        use ratatui::buffer::Buffer;
+        use ratatui::widgets::Widget;
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 60, 14);
+        let mut state = UiState {
+            show_help: true,
+            ..UiState::default()
+        };
+        let mut seen = Vec::new();
+        loop {
+            let mut buf = Buffer::empty(area);
+            HelpView::new(&theme)
+                .with_scroll(state.help_scroll)
+                .render(area, &mut buf);
+            seen.extend(
+                buf.content
+                    .chunks(60)
+                    .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>()),
+            );
+            let before = state.help_scroll;
+            handle_help_key(&mut state, KeyCode::PageDown, area, &theme);
+            if state.help_scroll == before {
+                break;
+            }
+        }
+        assert!(state.show_help);
+        for line in HelpView::new(&theme).wrapped_lines(area) {
+            let line = line.to_string();
+            let line = line.trim();
+            assert!(
+                line.is_empty() || seen.iter().any(|row| row.contains(line)),
+                "{line:?} never shown"
+            );
+        }
+        handle_help_key(&mut state, KeyCode::Esc, area, &theme);
+        assert!(!state.show_help);
     }
 
     #[test]

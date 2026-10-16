@@ -146,13 +146,22 @@ impl<'a> HelpView<'a> {
         lines
     }
 
-    pub fn max_scroll(&self, area: Rect) -> u16 {
+    /// Content lines wrapped to the popup width for `area`.
+    pub fn wrapped_lines(&self, area: Rect) -> Vec<Line<'static>> {
         let width = 50.min(area.width.saturating_sub(4)).saturating_sub(2);
-        let height = area.height.saturating_sub(7);
         super::hop::wrap_lines(self.lines(), width)
+    }
+
+    pub fn max_scroll(&self, area: Rect) -> u16 {
+        self.wrapped_lines(area)
             .len()
-            .saturating_sub(usize::from(height))
+            .saturating_sub(usize::from(Self::visible_rows(area)))
             .min(usize::from(u16::MAX)) as u16
+    }
+
+    /// Help rows visible at once: popup margin (4), borders (2) and footer (1).
+    pub fn visible_rows(area: Rect) -> u16 {
+        area.height.saturating_sub(7)
     }
 }
 
@@ -160,7 +169,7 @@ impl Widget for HelpView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Calculate centered popup area
         let popup_width = 50.min(area.width.saturating_sub(4));
-        let lines = super::hop::wrap_lines(self.lines(), popup_width.saturating_sub(2));
+        let lines = self.wrapped_lines(area);
         let popup_height = (lines.len() + 3).min(usize::from(area.height.saturating_sub(4))) as u16;
         let popup_x = (area.width - popup_width) / 2 + area.x;
         let popup_y = (area.height - popup_height) / 2 + area.y;
