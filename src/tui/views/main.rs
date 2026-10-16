@@ -603,7 +603,6 @@ impl Widget for MainView<'_> {
             .collect();
 
         let table = Table::new(rows, layout.widths)
-            .style(Style::default().fg(self.theme.text))
             .header(header)
             .row_highlight_style(Style::default().bg(self.theme.highlight_bg));
         let mut state = TableState::default().with_selected(self.selected);
@@ -652,6 +651,25 @@ mod tests {
             assert!(compact.len() <= 7);
             assert!(compact.parse::<f64>().is_ok());
         }
+    }
+
+    #[test]
+    fn unselected_rows_keep_terminal_foreground() {
+        use crate::{config::Config, state::Target};
+        use ratatui::style::Color;
+        let mut session = Session::new(
+            Target::new("example.net".into(), "192.0.2.1".parse().unwrap()),
+            Config::default(),
+        );
+        session.hops[0].sent = 1;
+        session.hops[1].sent = 1;
+        let area = Rect::new(0, 0, 80, 10);
+        let mut buf = Buffer::empty(area);
+        MainView::new(&session, Some(0), false, &Theme::default()).render(area, &mut buf);
+        // Row 3 is hop 2: border, header, selected hop 1, then this row. The
+        // default ANSI theme must not force White text onto light terminals.
+        assert_eq!(buf[(1, 3)].symbol(), "2");
+        assert_eq!(buf[(1, 3)].fg, Color::Reset);
     }
 
     #[test]

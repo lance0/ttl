@@ -91,16 +91,6 @@ impl Widget for RttSparkline<'_> {
     }
 }
 
-/// Plain block representation retained for callers of the original helper.
-/// The TUI uses `loss_history_line` for individually styled outcomes.
-#[allow(dead_code)]
-pub fn loss_sparkline_string(data: &[bool], width: usize) -> String {
-    data.iter()
-        .skip(data.len().saturating_sub(width))
-        .map(|&success| if success { '█' } else { '×' })
-        .collect()
-}
-
 /// Recent probe outcomes, oldest to newest. Quiet dots distinguish replies
 /// from loss crosses without making a healthy route a wall of bright blocks.
 pub fn loss_history_line(data: &VecDeque<bool>, width: usize, theme: &Theme) -> Line<'static> {
