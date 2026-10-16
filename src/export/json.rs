@@ -28,7 +28,7 @@ pub fn export_json_file(session: &Session) -> Result<String> {
 }
 
 fn export_json_to_path(session: &Session, path: &std::path::Path) -> Result<()> {
-    crate::persistence::atomic_write(path, |writer| export_json(session, writer))
+    crate::persistence::atomic_write(path, false, |writer| export_json(session, writer))
 }
 
 /// Sanitize a string for safe use as a filename component.

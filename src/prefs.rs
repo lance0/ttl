@@ -105,7 +105,11 @@ impl Prefs {
             fs::create_dir_all(parent)?;
         }
         let data = toml::to_string_pretty(self)?;
-        crate::persistence::atomic_write(path, |writer| Ok(writer.write_all(data.as_bytes())?))
+        crate::persistence::atomic_write(
+            path,
+            true,
+            |writer| Ok(writer.write_all(data.as_bytes())?),
+        )
     }
 }
 
