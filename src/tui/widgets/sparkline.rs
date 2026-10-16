@@ -1,95 +1,11 @@
 use crate::tui::theme::Theme;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Widget;
 use std::collections::VecDeque;
 use std::time::Duration;
 
 /// Unicode block characters for sparkline
 const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
-/// A sparkline widget for displaying RTT history
-#[allow(dead_code)]
-pub struct RttSparkline<'a> {
-    data: &'a [Option<Duration>],
-    style: Style,
-    timeout_style: Style,
-}
-
-#[allow(dead_code)]
-impl<'a> RttSparkline<'a> {
-    pub fn new(data: &'a [Option<Duration>]) -> Self {
-        Self {
-            data,
-            style: Style::default().fg(Color::Green),
-            timeout_style: Style::default().fg(Color::Red),
-        }
-    }
-
-    pub fn style(mut self, style: Style) -> Self {
-        self.style = style;
-        self
-    }
-
-    pub fn timeout_style(mut self, style: Style) -> Self {
-        self.timeout_style = style;
-        self
-    }
-}
-
-impl Widget for RttSparkline<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        if area.width == 0 || area.height == 0 || self.data.is_empty() {
-            return;
-        }
-
-        // Find min/max for scaling
-        let rtts: Vec<f64> = self
-            .data
-            .iter()
-            .filter_map(|d| d.as_ref())
-            .map(|d| d.as_secs_f64() * 1000.0)
-            .collect();
-
-        if rtts.is_empty() {
-            return;
-        }
-
-        let min_rtt = rtts.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max_rtt = rtts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let range = if (max_rtt - min_rtt).abs() < 0.001 {
-            1.0
-        } else {
-            max_rtt - min_rtt
-        };
-
-        // Take last N samples that fit in the width
-        let width = area.width as usize;
-        let samples: Vec<_> = self.data.iter().rev().take(width).rev().collect();
-
-        for (i, sample) in samples.iter().enumerate() {
-            let x = area.x + i as u16;
-            if x >= area.x + area.width {
-                break;
-            }
-
-            let (ch, style) = match sample {
-                Some(d) => {
-                    let ms = d.as_secs_f64() * 1000.0;
-                    let normalized = (ms - min_rtt) / range;
-                    let idx = (normalized * 7.0).round() as usize;
-                    let idx = idx.min(7);
-                    (BLOCKS[idx], self.style)
-                }
-                None => ('×', self.timeout_style),
-            };
-
-            buf[(x, area.y)].set_char(ch).set_style(style);
-        }
-    }
-}
 
 /// Recent probe outcomes, oldest to newest. Quiet dots distinguish replies
 /// from loss crosses without making a healthy route a wall of bright blocks.
@@ -116,42 +32,41 @@ pub fn loss_history_line(
     )
 }
 
-/// Generate sparkline string from RTT data
-pub fn sparkline_string(data: &[Option<Duration>], width: usize) -> String {
-    if data.is_empty() {
-        return String::new();
-    }
-
-    let rtts: Vec<f64> = data
+/// Scale range of an RTT sparkline in ms: the 5th..95th percentile of the
+/// replies, so one spike cannot flatten everything else (outliers clamp to
+/// the end blocks). `None` when nothing replied.
+pub fn sparkline_range(data: &[Option<Duration>]) -> Option<(f64, f64)> {
+    let mut rtts: Vec<f64> = data
         .iter()
-        .filter_map(|d| d.as_ref())
+        .flatten()
         .map(|d| d.as_secs_f64() * 1000.0)
         .collect();
+    rtts.sort_by(f64::total_cmp);
+    let at = |p: f64| rtts[((rtts.len() - 1) as f64 * p).round() as usize];
+    (!rtts.is_empty()).then(|| (at(0.05), at(0.95)))
+}
 
-    if rtts.is_empty() {
-        return "×".repeat(data.len().min(width));
-    }
-
-    let min_rtt = rtts.iter().cloned().fold(f64::INFINITY, f64::min);
-    let max_rtt = rtts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let range = if (max_rtt - min_rtt).abs() < 0.001 {
-        1.0
-    } else {
-        max_rtt - min_rtt
+/// The newest `width` samples as bars on the [`sparkline_range`] scale, in
+/// the header color; timeouts are crosses in the error color.
+pub fn sparkline_spans(
+    data: &[Option<Duration>],
+    width: usize,
+    theme: &Theme,
+) -> Vec<Span<'static>> {
+    let Some((lo, hi)) = sparkline_range(data) else {
+        return Vec::new();
     };
-
-    let samples: Vec<_> = data.iter().rev().take(width).rev().collect();
-
-    samples
-        .iter()
+    let range = (hi - lo).max(f64::EPSILON);
+    let bar = Style::default().fg(theme.header);
+    let timeout = Style::default().fg(theme.error);
+    data.iter()
+        .skip(data.len().saturating_sub(width))
         .map(|sample| match sample {
             Some(d) => {
-                let ms = d.as_secs_f64() * 1000.0;
-                let normalized = (ms - min_rtt) / range;
-                let idx = (normalized * 7.0).round() as usize;
-                BLOCKS[idx.min(7)]
+                let level = ((d.as_secs_f64() * 1000.0 - lo) / range).clamp(0.0, 1.0);
+                Span::styled(BLOCKS[(level * 7.0).round() as usize].to_string(), bar)
             }
-            None => '×',
+            None => Span::styled("×", timeout),
         })
         .collect()
 }
