@@ -3,8 +3,8 @@ name: CI
 on:
   push:
     branches: [master]
+  # Validate stacked pull requests before they are retargeted to master.
   pull_request:
-    branches: [master]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
