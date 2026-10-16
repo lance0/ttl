@@ -98,7 +98,19 @@ fn parse_icmp_extensions(
         return ParsedIcmpExtensions::default();
     }
 
-    // Skip checksum validation for now (optional in compliant mode)
+    // RFC 4884 §§5.2, 5.5: without an explicit quote length, version alone
+    // cannot distinguish extensions from quoted packet data. Legacy detection
+    // requires a transmitted, valid checksum. With an explicit length, zero
+    // means no checksum was transmitted (§7); validate every nonzero checksum.
+    let checksum = u16::from_be_bytes([ext_header[2], ext_header[3]]);
+    if checksum == 0 {
+        if icmp_length == 0 {
+            return ParsedIcmpExtensions::default();
+        }
+    } else if !validate_icmp_checksum(ext_header) {
+        return ParsedIcmpExtensions::default();
+    }
+
     // Parse extension objects starting at offset 4
     let mut offset = 4;
     let mut labels = Vec::new();
@@ -112,7 +124,8 @@ fn parse_icmp_extensions(
         let obj_type = ext_header[offset + 3];
 
         // Validate object length (must be >= 4 to contain header and advance)
-        if obj_length < 4 || offset + obj_length > ext_header.len() {
+        if obj_length < 4 || !obj_length.is_multiple_of(4) || offset + obj_length > ext_header.len()
+        {
             break;
         }
 
@@ -1540,6 +1553,94 @@ mod tests {
     }
 
     #[test]
+    fn extension_checksum_and_legacy_detection() {
+        for is_ipv6 in [false, true] {
+            for quote_len in [128, 160] {
+                let length = (quote_len / if is_ipv6 { 8 } else { 4 }) as u8;
+                let mut payload = vec![0; quote_len];
+                // An unknown object followed by a known MPLS object. The
+                // checksum covers both objects, including the unknown one.
+                payload.extend_from_slice(&[
+                    0x20, 0, 0, 0, 0, 8, 250, 1, 1, 2, 3, 4, 0, 8, 1, 1, 0x05, 0xdc, 0x07, 0x3e,
+                ]);
+                assert_eq!(
+                    parse_icmp_extensions(&payload, length, is_ipv6)
+                        .mpls_labels
+                        .unwrap()[0]
+                        .label,
+                    24000
+                ); // Explicit length permits an omitted checksum.
+                assert!(
+                    parse_icmp_extensions(&payload, 0, is_ipv6)
+                        .mpls_labels
+                        .is_none()
+                );
+
+                set_icmp_checksum(&mut payload[quote_len..]);
+                assert!(
+                    parse_icmp_extensions(&payload, length, is_ipv6)
+                        .mpls_labels
+                        .is_some()
+                );
+                if quote_len == 128 {
+                    assert!(
+                        parse_icmp_extensions(&payload, 0, is_ipv6)
+                            .mpls_labels
+                            .is_some()
+                    );
+                }
+
+                // Corrupt an unknown object's payload: validating just the
+                // known object would miss this damage.
+                payload[quote_len + 8] ^= 1;
+                assert!(
+                    parse_icmp_extensions(&payload, length, is_ipv6)
+                        .mpls_labels
+                        .is_none()
+                );
+                assert!(
+                    parse_icmp_extensions(&payload, 0, is_ipv6)
+                        .mpls_labels
+                        .is_none()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_extension_checksum_keeps_correlated_response() {
+        for (base, responder, is_v6, ext_start) in [
+            (&ARISTA_PKT1_V4[14..], "198.51.100.33", false, 20 + 8 + 128),
+            (&ARISTA_PKT1_V6[54..], "2001:db8:1::33", true, 8 + 128),
+        ] {
+            let mut packet = base.to_vec();
+            // Damage the advertised interface MTU, leaving a valid ICMP
+            // envelope. The response must still correlate, without metadata.
+            packet[ext_start + 4 + 7] ^= 1;
+            if !is_v6 {
+                set_icmp_checksum(&mut packet[20..]);
+            }
+            let parsed = parse_icmp_response(&packet, responder.parse().unwrap(), 1, is_v6)
+                .expect("extension damage must not turn a response into a timeout");
+            assert_eq!(parsed.response_type, IcmpResponseType::TimeExceeded(0));
+            assert!(parsed.interface_info.is_none());
+            assert!(parsed.mpls_labels.is_none());
+        }
+    }
+
+    #[test]
+    fn extension_objects_require_whole_words() {
+        let mut payload = vec![0; 128];
+        payload.extend_from_slice(&[0x20, 0, 0, 0, 0, 9, 1, 1, 0x05, 0xdc, 0x07, 0x3e, 0]);
+        set_icmp_checksum(&mut payload[128..]);
+        assert!(
+            parse_icmp_extensions(&payload, 32, false)
+                .mpls_labels
+                .is_none()
+        );
+    }
+
+    #[test]
     fn test_probe_id_round_trip() {
         let original = ProbeId::new(15, 42);
         let sequence = original.to_sequence();
@@ -2131,10 +2232,10 @@ mod tests {
         packet[55] = (seq & 0xFF) as u8;
 
         // ICMP Extension header (at offset 156 = 28 + 128)
-        // Version 2, reserved, checksum (we skip checksum validation)
+        // Version 2, reserved, checksum
         packet[156] = 0x20; // Version 2 in high nibble
         packet[157] = 0x00;
-        packet[158] = 0x00; // Checksum (not validated)
+        packet[158] = 0x00; // Filled below after the objects
         packet[159] = 0x00;
 
         // MPLS extension object header (at offset 160)
@@ -2148,6 +2249,8 @@ mod tests {
         let label_word: u32 = (24000 << 12) | (3 << 9) | (1 << 8) | 62;
         let label_bytes = label_word.to_be_bytes();
         packet[164..168].copy_from_slice(&label_bytes);
+
+        set_icmp_checksum(&mut packet[156..]);
 
         let result = parse_icmp_response(&packet, responder, our_id, false);
         assert!(result.is_some());
