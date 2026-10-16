@@ -219,6 +219,8 @@ ttl --replay results.json      # Replay saved session
 ttl --replay results.json --animate  # Animated replay
 ```
 
+Text reports include available RFC 5837 interface details and MPLS label stacks below each hop, including additional ECMP responders.
+
 ### Advanced Options
 
 ```bash
