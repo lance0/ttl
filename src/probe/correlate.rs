@@ -74,8 +74,10 @@ fn parse_icmp_extensions(
     // RFC 4884:
     // - For IPv4: byte 5 of ICMP header, measured in 32-bit words (4 octets)
     // - For IPv6: byte 4 of ICMPv6 header, measured in 64-bit words (8 octets)
-    // If non-zero, extensions start at that word offset.
-    // If zero (legacy), extensions start at 128 bytes (if present).
+    // RFC 4884 §4 requires at least 128 bytes of padded original datagram.
+    // Some routers advertise the unpadded quote length instead, so honor the
+    // minimum even for a non-zero length. Larger advertised quotes still win.
+    // A zero length uses the same minimum for legacy extensions.
     let ext_start = if icmp_length > 0 {
         if is_ipv6 {
             (icmp_length as usize) * 8
@@ -84,7 +86,8 @@ fn parse_icmp_extensions(
         }
     } else {
         MIN_ORIGINAL_DATAGRAM
-    };
+    }
+    .max(MIN_ORIGINAL_DATAGRAM);
 
     if icmp_payload.len() < ext_start + 4 {
         return ParsedIcmpExtensions::default();
@@ -2092,6 +2095,57 @@ mod tests {
         assert_eq!(parsed2.ttl, 62);
     }
 
+    // Reporter-supplied frame from issue #134, Ethernet header removed:
+    // https://www.ltri.net/download/19b9cd22-2f03-4d38-9a5e-21b6bd908b33/icmp-mpls-trace-1-frame.pcap
+    // The router reports the unpadded quote length (17 words), but places the
+    // extension after 128 bytes. Its checksum is valid and label is 416760.
+    const MPLS_SHORT_LENGTH_V4: &[u8] = &[
+        69, 0, 0, 168, 233, 158, 0, 0, 245, 1, 110, 186, 62, 115, 140, 202, 159, 69, 2, 121, 11, 0,
+        244, 238, 0, 17, 0, 0, 69, 0, 0, 84, 19, 211, 0, 0, 1, 1, 142, 205, 159, 69, 2, 121, 162,
+        33, 211, 41, 8, 0, 43, 67, 75, 229, 9, 0, 75, 229, 9, 0, 240, 42, 8, 133, 0, 1, 2, 3, 4, 5,
+        6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+        30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 248, 53, 0, 8, 1, 1, 101, 191, 129, 1,
+    ];
+
+    #[test]
+    fn test_mpls_capture_with_unpadded_length() {
+        let packet = MPLS_SHORT_LENGTH_V4;
+        let our_id = u16::from_be_bytes([packet[52], packet[53]]);
+        let responder = IpAddr::V4(Ipv4Addr::new(
+            packet[12], packet[13], packet[14], packet[15],
+        ));
+        let parsed = parse_icmp_response(packet, responder, our_id, false).unwrap();
+        let labels = parsed.mpls_labels.expect("MPLS stack after padded quote");
+        assert_eq!(labels.len(), 1);
+        assert_eq!(labels[0].label, 416760);
+        assert_eq!(labels[0].exp, 0);
+        assert!(labels[0].bottom);
+        assert_eq!(labels[0].ttl, 1);
+    }
+
+    #[test]
+    fn test_ipv6_extensions_with_unpadded_length() {
+        let mut payload = vec![0; 128];
+        payload.extend_from_slice(&[0x20, 0, 0, 0, 0, 8, 1, 1, 0x65, 0xbf, 0x81, 1]);
+        // 8 * 8 = 64 quoted bytes; the extension follows the required padding.
+        let labels = parse_icmp_extensions(&payload, 8, true)
+            .mpls_labels
+            .unwrap();
+        assert_eq!(labels[0].label, 416760);
+    }
+
+    #[test]
+    fn test_short_extension_length_still_requires_padding() {
+        // Do not interpret bytes inside a short, unpadded quote as extensions.
+        let mut payload = vec![0; 68];
+        payload.extend_from_slice(&[0x20, 0, 0, 0, 0, 8, 1, 1, 0x65, 0xbf, 0x81, 1]);
+        let parsed = parse_icmp_extensions(&payload, 17, false);
+        assert!(parsed.mpls_labels.is_none());
+        assert!(parsed.interface_info.is_none());
+    }
+
     #[test]
     fn test_time_exceeded_with_mpls_extension() {
         let responder = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
@@ -2174,9 +2228,9 @@ mod tests {
         let our_id = 0x1234;
 
         // Layout with RFC 4884 length field:
-        // Original datagram = 48 bytes (12 * 4), so length field = 12
-        // Extensions start at offset 28 + 48 = 76
-        let mut packet = vec![0u8; 100];
+        // Original datagram = 160 bytes (40 * 4), so length field = 40
+        // Extensions start at offset 28 + 160 = 188
+        let mut packet = vec![0u8; 200];
 
         // Outer IPv4 header
         packet[0] = 0x45;
@@ -2185,7 +2239,7 @@ mod tests {
         // ICMP Time Exceeded with RFC 4884 length field
         packet[20] = 11; // Type: Time Exceeded
         packet[21] = 0; // Code: TTL exceeded
-        packet[25] = 12; // Length = 12 (48 bytes of original datagram)
+        packet[25] = 40; // Length = 40 (160 bytes of padded original datagram)
 
         // Original IP header (at offset 28)
         packet[28] = 0x45;
@@ -2200,22 +2254,22 @@ mod tests {
         packet[54] = (seq >> 8) as u8;
         packet[55] = (seq & 0xFF) as u8;
 
-        // Extension header at offset 76 (28 + 48)
-        packet[76] = 0x20; // Version 2
-        packet[77] = 0x00;
-        packet[78] = 0x00; // Checksum
-        packet[79] = 0x00;
+        // Extension header at offset 188 (28 + 160)
+        packet[188] = 0x20; // Version 2
+        packet[189] = 0x00;
+        packet[190] = 0x00; // Checksum
+        packet[191] = 0x00;
 
-        // MPLS object header at offset 80
-        packet[80] = 0x00;
-        packet[81] = 0x08; // Length = 8
-        packet[82] = 0x01; // Class = 1 (MPLS)
-        packet[83] = 0x01; // Type = 1
+        // MPLS object header at offset 192
+        packet[192] = 0x00;
+        packet[193] = 0x08; // Length = 8
+        packet[194] = 0x01; // Class = 1 (MPLS)
+        packet[195] = 0x01; // Type = 1
 
         // MPLS label: label=16000, exp=0, S=1, TTL=64
         let label_word: u32 = (16000 << 12) | (1 << 8) | 64;
         let label_bytes = label_word.to_be_bytes();
-        packet[84..88].copy_from_slice(&label_bytes);
+        packet[196..200].copy_from_slice(&label_bytes);
 
         let result = parse_icmp_response(&packet, responder, our_id, false);
         assert!(result.is_some());
