@@ -112,7 +112,13 @@ impl<'a> HelpView<'a> {
                 Span::styled("  +       ", Style::default().fg(self.theme.shortcut)),
                 Span::raw("Hop has interface/MPLS details"),
             ]),
+            Line::from(vec![
+                Span::styled("  Recent  ", Style::default().fg(self.theme.shortcut)),
+                Span::raw("· reply  × timeout (old → new)"),
+            ]),
             Line::from(""),
+            Line::from("  Narrow windows omit secondary columns;"),
+            Line::from("  press Enter for all hop statistics."),
         ];
 
         if self.is_replay {

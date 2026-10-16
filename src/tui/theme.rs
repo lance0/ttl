@@ -260,6 +260,25 @@ impl Theme {
         }
     }
 
+    /// Preserve each palette's hue while giving every selected-row foreground
+    /// at least 4.5:1 contrast against its known RGB selection background.
+    /// ANSI colors remain terminal controlled; their actual RGB values are unknown.
+    pub fn for_selection(&self) -> Self {
+        let mut selected = self.clone();
+        for foreground in [
+            &mut selected.text,
+            &mut selected.text_dim,
+            &mut selected.success,
+            &mut selected.warning,
+            &mut selected.error,
+            &mut selected.shortcut,
+            &mut selected.header,
+        ] {
+            *foreground = readable_on(*foreground, self.highlight_bg);
+        }
+        selected
+    }
+
     /// Get a theme by name
     pub fn by_name(name: &str) -> Self {
         match name.to_lowercase().as_str() {
@@ -302,9 +321,101 @@ impl Theme {
     }
 }
 
+/// Relative luminance and contrast follow the sRGB definition used by W3C.
+/// This is a readability target for the known color pair, not a claim about
+/// accessibility of a user's terminal or its configurable ANSI palette.
+fn luminance(rgb: [u8; 3]) -> f64 {
+    let linear = rgb.map(|channel| {
+        let value = f64::from(channel) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722
+}
+
+fn contrast(a: [u8; 3], b: [u8; 3]) -> f64 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+fn readable_on(foreground: Color, background: Color) -> Color {
+    let (Color::Rgb(r, g, b), Color::Rgb(br, bg, bb)) = (foreground, background) else {
+        return foreground;
+    };
+    let original = [r, g, b];
+    let backdrop = [br, bg, bb];
+    if contrast(original, backdrop) >= 4.5 {
+        return foreground;
+    }
+    let target = if contrast([255; 3], backdrop) >= contrast([0; 3], backdrop) {
+        255
+    } else {
+        0
+    };
+    let blend = |amount: u16| {
+        original.map(|c| ((u16::from(c) * (255 - amount) + target * amount) / 255) as u8)
+    };
+    let (mut low, mut high) = (0, 255);
+    while low < high {
+        let middle = (low + high) / 2;
+        if contrast(blend(middle), backdrop) >= 4.5 {
+            high = middle;
+        } else {
+            low = middle + 1;
+        }
+    }
+    let [r, g, b] = blend(low);
+    Color::Rgb(r, g, b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_rgb_themes_keep_selected_text_and_status_colors_readable() {
+        for name in Theme::list() {
+            let theme = Theme::by_name(name).for_selection();
+            let Color::Rgb(r, g, b) = theme.highlight_bg else {
+                continue;
+            };
+            for color in [
+                theme.text,
+                theme.text_dim,
+                theme.success,
+                theme.warning,
+                theme.error,
+                theme.shortcut,
+                theme.header,
+            ] {
+                let Color::Rgb(fr, fg, fb) = color else {
+                    panic!("RGB theme has ANSI foreground");
+                };
+                assert!(
+                    contrast([fr, fg, fb], [r, g, b]) >= 4.5,
+                    "{name}: {color:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn selection_adjustment_supports_light_backgrounds_and_preserves_ansi() {
+        assert!(contrast([0; 3], [255; 3]) > 20.9);
+        assert_eq!(readable_on(Color::White, Color::DarkGray), Color::White);
+        let Color::Rgb(r, g, b) = readable_on(Color::Rgb(240, 240, 240), Color::Rgb(255, 255, 255))
+        else {
+            unreachable!()
+        };
+        assert!(contrast([r, g, b], [255; 3]) >= 4.5);
+        assert_eq!(
+            readable_on(Color::Rgb(255, 255, 255), Color::Rgb(0, 0, 0)),
+            Color::Rgb(255, 255, 255)
+        );
+    }
 
     #[test]
     fn test_by_name_default() {

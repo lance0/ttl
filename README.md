@@ -330,6 +330,7 @@ When a hostname resolves to multiple IPs (round-robin DNS, CDN load balancing), 
 | `Tab` | Next target |
 | `l` | Target list |
 | `Enter` | Expand hop |
+| `PgUp` / `PgDn` | Scroll help / hop details |
 | `←` / `→` | Replay: seek ±0.5s |
 | `[` / `]` | Replay: seek ±5s |
 | `+` / `-` | Replay: speed ±0.5x |

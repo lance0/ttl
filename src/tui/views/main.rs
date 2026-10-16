@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, Cell, Row, StatefulWidget, Table, TableSt
 use crate::prefs::DisplayMode;
 use crate::state::{PmtudPhase, Session};
 use crate::tui::theme::Theme;
-use crate::tui::widgets::loss_sparkline_string;
+use crate::tui::widgets::loss_history_line;
 
 /// Column width limits for autosize mode
 const MAX_HOST_WIDTH: u16 = 60;
@@ -395,6 +395,7 @@ impl Widget for MainView<'_> {
                 .map(|&i| all_headers[i].clone())
                 .collect::<Vec<_>>(),
         );
+        let selected_theme = self.theme.for_selection();
         let rows: Vec<Row> = self
             .session
             .hops
@@ -403,6 +404,11 @@ impl Widget for MainView<'_> {
             .enumerate()
             .map(|(idx, hop)| {
                 let is_selected = self.selected == Some(idx);
+                let theme = if is_selected {
+                    &selected_theme
+                } else {
+                    self.theme
+                };
 
                 let (host, asn_display) = if let Some(stats) = hop.primary_stats() {
                     let display = if let Some(ref hostname) = stats.hostname {
@@ -451,24 +457,7 @@ impl Widget for MainView<'_> {
                     ("???".to_string(), String::new())
                 };
 
-                // Generate sparkline from hop-level results (shows both responses and timeouts)
-                let recent: Vec<_> = hop.recent_results.iter().cloned().collect();
-                let sparkline = loss_sparkline_string(&recent, 10);
-
-                // Color sparkline based on recent loss rate
-                let recent_loss = if recent.is_empty() {
-                    0.0
-                } else {
-                    let failures = recent.iter().filter(|&&r| !r).count();
-                    (failures as f64 / recent.len() as f64) * 100.0
-                };
-                let sparkline_color = if recent_loss > 50.0 {
-                    self.theme.error
-                } else if recent_loss > 10.0 {
-                    self.theme.warning
-                } else {
-                    self.theme.success
-                };
+                let history = loss_history_line(&hop.recent_results, 10, theme);
 
                 let (last, avg, min, max, stddev, jitter) = if let Some(stats) = hop.primary_stats()
                 {
@@ -531,13 +520,17 @@ impl Widget for MainView<'_> {
 
                 let loss_style = if rate_limited {
                     // Rate limited: show in different color to indicate it's not real loss
-                    Style::default().fg(self.theme.shortcut)
+                    Style::default().fg(theme.shortcut)
                 } else if hop.loss_pct() > 50.0 {
-                    Style::default().fg(self.theme.error)
+                    Style::default().fg(theme.error)
                 } else if hop.loss_pct() > 10.0 {
-                    Style::default().fg(self.theme.warning)
+                    Style::default().fg(theme.warning)
                 } else {
-                    Style::default().fg(self.theme.success)
+                    Style::default().fg(if hop.loss_pct() == 0.0 {
+                        theme.text_dim
+                    } else {
+                        theme.success
+                    })
                 };
 
                 // Format loss with "RL" indicator if rate limited
@@ -549,7 +542,8 @@ impl Widget for MainView<'_> {
 
                 let row_style = if is_selected {
                     Style::default()
-                        .bg(self.theme.highlight_bg)
+                        .fg(theme.text)
+                        .bg(theme.highlight_bg)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
@@ -558,7 +552,7 @@ impl Widget for MainView<'_> {
                 let mut cells = vec![
                     Cell::from(hop.ttl.to_string()),
                     Cell::from(host),
-                    Cell::from(asn_display).style(Style::default().fg(self.theme.text_dim)),
+                    Cell::from(asn_display).style(Style::default().fg(theme.text_dim)),
                     Cell::from(loss_display).style(loss_style),
                     Cell::from(numeric_cell(hop.sent.to_string())),
                     Cell::from(numeric_cell(last)),
@@ -578,7 +572,7 @@ impl Widget for MainView<'_> {
                     // NAT indicator
                     let nat_display = if hop.has_nat() { "!" } else { "" };
                     let nat_style = if hop.has_nat() {
-                        Style::default().fg(self.theme.warning)
+                        Style::default().fg(theme.warning)
                     } else {
                         Style::default()
                     };
@@ -588,14 +582,14 @@ impl Widget for MainView<'_> {
                     let path_count = hop.path_count();
                     let paths_style = if hop.has_ecmp() {
                         // ECMP detected - highlight with warning color
-                        Style::default().fg(self.theme.warning)
+                        Style::default().fg(theme.warning)
                     } else {
                         Style::default()
                     };
                     cells.push(Cell::from(path_count.to_string()).style(paths_style));
                 }
 
-                cells.push(Cell::from(sparkline).style(Style::default().fg(sparkline_color)));
+                cells.push(Cell::from(history));
 
                 Row::new(
                     layout
@@ -657,6 +651,25 @@ mod tests {
             assert!(compact.len() <= 7);
             assert!(compact.parse::<f64>().is_ok());
         }
+    }
+
+    #[test]
+    fn unselected_rows_keep_terminal_foreground() {
+        use crate::{config::Config, state::Target};
+        use ratatui::style::Color;
+        let mut session = Session::new(
+            Target::new("example.net".into(), "192.0.2.1".parse().unwrap()),
+            Config::default(),
+        );
+        session.hops[0].sent = 1;
+        session.hops[1].sent = 1;
+        let area = Rect::new(0, 0, 80, 10);
+        let mut buf = Buffer::empty(area);
+        MainView::new(&session, Some(0), false, &Theme::default()).render(area, &mut buf);
+        // Row 3 is hop 2: border, header, selected hop 1, then this row. The
+        // default ANSI theme must not force White text onto light terminals.
+        assert_eq!(buf[(1, 3)].symbol(), "2");
+        assert_eq!(buf[(1, 3)].fg, Color::Reset);
     }
 
     #[test]

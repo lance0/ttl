@@ -1617,8 +1617,13 @@ fn draw_ui(
         } else {
             0.0
         };
+        let selected_theme = theme.for_selection();
         let gauge = LineGauge::default()
-            .filled_style(Style::default().fg(theme.success).bg(theme.highlight_bg))
+            .filled_style(
+                Style::default()
+                    .fg(selected_theme.success)
+                    .bg(theme.highlight_bg),
+            )
             .label(label)
             .ratio(ratio);
         f.render_widget(gauge, chunk);

@@ -119,6 +119,7 @@ impl Widget for TargetListView<'_> {
             .saturating_add(1)
             .saturating_sub(visible);
         let mut lines = Vec::new();
+        let selected_theme = self.theme.for_selection();
         for (i, info) in self
             .target_infos
             .iter()
@@ -129,7 +130,7 @@ impl Widget for TargetListView<'_> {
             let selected = i == self.selected_index;
             let style = if selected {
                 Style::default()
-                    .fg(self.theme.text)
+                    .fg(selected_theme.text)
                     .bg(self.theme.highlight_bg)
                     .add_modifier(Modifier::BOLD)
             } else {
