@@ -8,8 +8,8 @@ use crate::lookup::sanitize_display;
 use crate::trace::receiver::SessionMap;
 use anyhow::{Context, Result};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
 /// Metric definitions in output order: (name, type, help)
@@ -219,37 +219,106 @@ pub async fn run_metrics_server(
     }
 }
 
-async fn handle_connection(mut stream: TcpStream, sessions: SessionMap) -> Result<()> {
-    // Read the request head; 1KB is plenty for "GET /metrics HTTP/1.1" + headers
-    let mut buf = [0u8; 1024];
-    let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
-        .await
-        .context("request read timed out")??;
-    let request = String::from_utf8_lossy(&buf[..n]);
-    let mut parts = request.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let path = parts.next().unwrap_or("/");
+// Prometheus request headers can exceed a single TCP read. Keep a bound on
+// the complete head and apply one deadline to the whole read, not each chunk.
+const MAX_REQUEST_HEAD_BYTES: usize = 8 * 1024;
 
-    let (status, content_type, body) = if method != "GET" {
-        (
+#[derive(Debug)]
+enum RequestHead {
+    Complete(Vec<u8>),
+    Incomplete,
+    TooLarge,
+}
+
+async fn read_request_head<R: AsyncRead + Unpin>(stream: &mut R) -> std::io::Result<RequestHead> {
+    let mut head = Vec::new();
+    let mut chunk = [0u8; 1024];
+    while head.len() < MAX_REQUEST_HEAD_BYTES {
+        let available = chunk.len().min(MAX_REQUEST_HEAD_BYTES - head.len());
+        let n = stream.read(&mut chunk[..available]).await?;
+        if n == 0 {
+            return Ok(RequestHead::Incomplete);
+        }
+        let scan_from = head.len().saturating_sub(3);
+        head.extend_from_slice(&chunk[..n]);
+        if let Some(end) = head[scan_from..]
+            .windows(4)
+            .position(|bytes| bytes == b"\r\n\r\n")
+        {
+            head.truncate(scan_from + end + 4);
+            return Ok(RequestHead::Complete(head));
+        }
+    }
+    Ok(RequestHead::TooLarge)
+}
+
+fn route_request(head: &[u8], sessions: &SessionMap) -> (&'static str, &'static str, String) {
+    // Only the request line needs to be UTF-8/ASCII for routing. Header values
+    // may contain other octets and are otherwise ignored by this endpoint.
+    let line = head.split(|byte| *byte == b'\r').next().unwrap_or_default();
+    let Ok(line) = std::str::from_utf8(line) else {
+        return (
+            "400 Bad Request",
+            "text/plain; charset=utf-8",
+            "bad request\n".into(),
+        );
+    };
+    let mut parts = line.split_ascii_whitespace();
+    let method = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
+    let version = parts.next().unwrap_or("");
+    if method.is_empty()
+        || path.is_empty()
+        || !matches!(version, "HTTP/1.0" | "HTTP/1.1")
+        || parts.next().is_some()
+    {
+        return (
+            "400 Bad Request",
+            "text/plain; charset=utf-8",
+            "bad request\n".into(),
+        );
+    }
+    if method != "GET" {
+        return (
             "405 Method Not Allowed",
             "text/plain; charset=utf-8",
-            "method not allowed\n".to_string(),
-        )
-    } else {
-        match path {
-            "/metrics" => (
-                "200 OK",
-                "text/plain; version=0.0.4; charset=utf-8",
-                render_metrics(&sessions),
-            ),
-            "/healthz" | "/health" => ("200 OK", "text/plain; charset=utf-8", "ok\n".to_string()),
-            _ => (
-                "404 Not Found",
-                "text/plain; charset=utf-8",
-                "not found\n".to_string(),
-            ),
-        }
+            "method not allowed\n".into(),
+        );
+    }
+    match path {
+        "/metrics" => (
+            "200 OK",
+            "text/plain; version=0.0.4; charset=utf-8",
+            render_metrics(sessions),
+        ),
+        "/healthz" | "/health" => ("200 OK", "text/plain; charset=utf-8", "ok\n".into()),
+        _ => (
+            "404 Not Found",
+            "text/plain; charset=utf-8",
+            "not found\n".into(),
+        ),
+    }
+}
+
+async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin>(
+    mut stream: S,
+    sessions: SessionMap,
+) -> Result<()> {
+    let head = tokio::time::timeout(Duration::from_secs(5), read_request_head(&mut stream))
+        .await
+        .context("request head read timed out")??;
+    let (status, content_type, body) = match head {
+        RequestHead::Complete(head) => route_request(&head, &sessions),
+        RequestHead::Incomplete => (
+            "400 Bad Request",
+            "text/plain; charset=utf-8",
+            "incomplete request\n".into(),
+        ),
+        RequestHead::TooLarge => (
+            "431 Request Header Fields Too Large",
+            "text/plain; charset=utf-8",
+            "request headers too large\n".into(),
+        ),
     };
 
     let response = format!(
@@ -273,6 +342,7 @@ mod tests {
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
     use std::sync::Arc;
+    use tokio::net::TcpStream;
 
     fn make_session_map() -> SessionMap {
         let target_ip = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
@@ -343,6 +413,94 @@ mod tests {
         assert_eq!(escape_label("back\\slash"), "back\\\\slash");
         // Control chars stripped by sanitize_display before escaping
         assert_eq!(escape_label("evil\x1b[31m"), "evil[31m");
+    }
+
+    async fn request_over_duplex(request: &[u8], capacity: usize) -> String {
+        let (client, server) = tokio::io::duplex(capacity);
+        let task = tokio::spawn(handle_connection(server, make_session_map()));
+        let (mut reader, mut writer) = tokio::io::split(client);
+        let write = async {
+            let _ = writer.write_all(request).await;
+            let _ = writer.shutdown().await;
+        };
+        let read = async {
+            let mut response = String::new();
+            reader.read_to_string(&mut response).await.unwrap();
+            response
+        };
+        let (_, response) =
+            tokio::time::timeout(Duration::from_secs(5), async { tokio::join!(write, read) })
+                .await
+                .expect("HTTP exchange should finish");
+        task.await.unwrap().unwrap();
+        response
+    }
+
+    #[tokio::test]
+    async fn test_http_request_arriving_one_byte_at_a_time() {
+        for path in ["/metrics", "/healthz"] {
+            // The one-byte duplex buffer guarantees read() cannot receive a
+            // complete method, path, request line or CRLF terminator at once.
+            let request = format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n");
+            let response = request_over_duplex(request.as_bytes(), 1).await;
+            assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_incomplete_and_malformed_requests_are_rejected() {
+        for request in [
+            "GET /metrics HTTP/1.1\r\nHost: x\r\n",
+            "GET /metrics\r\n\r\n",
+        ] {
+            let response = request_over_duplex(request.as_bytes(), 1024).await;
+            assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_headers_larger_than_one_read_and_at_size_limit() {
+        let prefix = "GET /metrics HTTP/1.1\r\nX-Test: ";
+        for length in [2048, MAX_REQUEST_HEAD_BYTES] {
+            let request = format!("{prefix}{}\r\n\r\n", "x".repeat(length - prefix.len() - 4));
+            let response = request_over_duplex(request.as_bytes(), 64).await;
+            assert!(response.starts_with("HTTP/1.1 200 OK"));
+            assert!(response.contains("ttl_probes_sent_total"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_headers_over_size_limit_are_rejected() {
+        let request = format!(
+            "GET /metrics HTTP/1.1\r\nX-Test: {}\r\n\r\n",
+            "x".repeat(MAX_REQUEST_HEAD_BYTES)
+        );
+        let response = request_over_duplex(request.as_bytes(), 64).await;
+        assert!(response.starts_with("HTTP/1.1 431"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_incomplete_request_has_a_total_read_deadline() {
+        let (mut client, server) = tokio::io::duplex(64);
+        let trickle = async {
+            client.write_all(b"G").await.unwrap();
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            client.write_all(b"E").await.unwrap();
+            std::future::pending::<()>().await;
+        };
+        tokio::select! {
+            result = tokio::time::timeout(Duration::from_secs(6), handle_connection(server, make_session_map())) => {
+                let error = result.expect("partial reads must not restart the five-second deadline").unwrap_err();
+                assert!(error.to_string().contains("timed out"));
+            }
+            _ = trickle => unreachable!(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_valid_unsupported_method_still_returns_405() {
+        let response = request_over_duplex(b"POST /metrics HTTP/1.1\r\nHost: x\r\n\r\n", 1).await;
+        assert!(response.starts_with("HTTP/1.1 405"));
     }
 
     #[tokio::test]
