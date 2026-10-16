@@ -193,6 +193,29 @@ impl Receiver {
         None
     }
 
+    /// Remove the pending probe a response answers, keyed by the destination
+    /// it is about: the quoted original destination for ICMP errors, the
+    /// responder for Echo Replies (see `ParsedResponse::original_dest`).
+    ///
+    /// A miss is a late reply or someone else's probe (e.g. another ttl
+    /// instance with the same ICMP identifier, as with PID 1 in containers),
+    /// so never fall back to matching by sequence against other targets.
+    fn take_pending(
+        pending: &mut HashMap<PendingKey, PendingProbe>,
+        probe_id: ProbeId,
+        original_dest: Option<IpAddr>,
+        flow_hint: Option<u8>,
+        is_pmtud_response: bool,
+    ) -> Option<PendingProbe> {
+        Self::remove_pending_by_flow_hint(
+            pending,
+            probe_id,
+            original_dest?,
+            flow_hint,
+            is_pmtud_response,
+        )
+    }
+
     /// Run the receiver on a dedicated thread (blocking I/O)
     pub fn run_blocking(mut self) -> Result<()> {
         let identifier = get_identifier();
@@ -247,45 +270,13 @@ impl Receiver {
                                 || is_packet_too_big(parsed.response_type, self.config.ipv6);
 
                             // Find matching pending probe (key includes flow_id, target, is_pmtud)
-                            let mut found_probe = None;
-                            {
-                                // Collect target list before acquiring pending. Avoid holding
-                                // sessions and pending locks at the same time.
-                                let fallback_targets: Vec<IpAddr> = {
-                                    let sessions = self.sessions.read();
-                                    sessions.keys().copied().collect()
-                                };
-                                // sessions guard dropped here
-
-                                let mut pending = self.pending.write();
-
-                                // If we have original_dest from ICMP error, use direct lookup
-                                if let Some(dest) = parsed.original_dest {
-                                    found_probe = Self::remove_pending_by_flow_hint(
-                                        &mut pending,
-                                        parsed.probe_id,
-                                        dest,
-                                        flow_hint,
-                                        is_pmtud_response,
-                                    );
-                                }
-
-                                // Fallback: iterate targets (for Echo Reply which has no quoted dest)
-                                if found_probe.is_none() {
-                                    for target in &fallback_targets {
-                                        if let Some(probe) = Self::remove_pending_by_flow_hint(
-                                            &mut pending,
-                                            parsed.probe_id,
-                                            *target,
-                                            flow_hint,
-                                            is_pmtud_response,
-                                        ) {
-                                            found_probe = Some(probe);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
+                            let found_probe = Self::take_pending(
+                                &mut self.pending.write(),
+                                parsed.probe_id,
+                                parsed.original_dest,
+                                flow_hint,
+                                is_pmtud_response,
+                            );
                             if let Some(probe) = found_probe {
                                 let rtt = Instant::now().saturating_duration_since(probe.sent_at);
 
@@ -669,6 +660,42 @@ mod tests {
     fn test_derive_flow_hint_none_single_flow_is_zero() {
         let receiver = test_receiver(1);
         assert_eq!(receiver.derive_flow_hint(None), Some(0));
+    }
+
+    #[test]
+    fn take_pending_only_matches_the_probed_destination() {
+        let probe_id = ProbeId::new(3, 7);
+        let target: IpAddr = "192.0.2.1".parse().unwrap();
+        let mut pending: HashMap<PendingKey, PendingProbe> = HashMap::new();
+        pending.insert(
+            (probe_id, 0, target, false),
+            PendingProbe {
+                sent_at: Instant::now(),
+                target,
+                flow_id: 0,
+                original_src_port: None,
+                packet_size: None,
+            },
+        );
+
+        // Time Exceeded quoting another instance's destination: not ours
+        let foreign: IpAddr = "198.51.100.7".parse().unwrap();
+        assert!(
+            Receiver::take_pending(&mut pending, probe_id, Some(foreign), Some(0), false).is_none()
+        );
+        assert_eq!(pending.len(), 1, "our probe must stay pending");
+
+        // Echo Reply from a host that isn't the probed target: not ours
+        let router: IpAddr = "192.0.2.254".parse().unwrap();
+        assert!(
+            Receiver::take_pending(&mut pending, probe_id, Some(router), Some(0), false).is_none()
+        );
+        assert_eq!(pending.len(), 1);
+
+        // Normal path: Time Exceeded quoting our target / Echo Reply from it
+        let removed = Receiver::take_pending(&mut pending, probe_id, Some(target), Some(0), false);
+        assert_eq!(removed.map(|p| p.target), Some(target));
+        assert!(pending.is_empty());
     }
 
     #[test]
