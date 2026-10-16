@@ -46,6 +46,9 @@ pub struct ReplayState {
     pub finished: bool,
     /// Adjusted elapsed ms at time of pause (for accurate resume)
     pub paused_at_elapsed_ms: u64,
+    /// The loaded session, source of the per-responder enrichment (hostname,
+    /// ASN, geo, IX, ICMP extensions) that events don't carry
+    pub source: Option<Session>,
 }
 
 impl ReplayState {
@@ -60,6 +63,18 @@ impl ReplayState {
             paused: false,
             finished: false,
             paused_at_elapsed_ms: 0,
+            source: None,
+        }
+    }
+
+    /// Apply `events[range]` to `session`, then fill in enrichment for the
+    /// responders they introduced from the loaded session.
+    fn apply_events(&self, session: &mut Session, range: std::ops::Range<usize>) {
+        for event in &self.events[range] {
+            session.apply_replay_event(event);
+        }
+        if let Some(source) = &self.source {
+            session.copy_enrichment_from(source);
         }
     }
 }
@@ -116,6 +131,9 @@ pub struct UiState {
     pub show_target_input: bool,
     /// Target input modal state
     pub target_input: TargetInputState,
+    /// Update check is off for this run via --no-update-check or env opt-out,
+    /// so the settings toggle shows off and can't be flipped.
+    pub update_check_locked: bool,
 }
 
 impl UiState {
@@ -201,6 +219,7 @@ fn render_fingerprint(
         target_list_tick: _,
         show_target_input,
         target_input,
+        update_check_locked: _, // only gates the toggle; settings.update_check is hashed
     } = ui_state;
     let SettingsState {
         selected_section,
@@ -227,6 +246,7 @@ fn render_fingerprint(
             paused: replay_paused,
             finished,
             paused_at_elapsed_ms: _,
+            source: _, // fixed after load
         } = r;
         (
             *replay_paused,
@@ -351,6 +371,7 @@ pub async fn run_tui(
     update_rx: Option<std::sync::mpsc::Receiver<Option<String>>>,
     replay_state: Option<ReplayState>,
     add_target_tx: Option<tokio::sync::mpsc::UnboundedSender<AddTargetRequest>>,
+    update_check_locked: bool,
 ) -> Result<Prefs> {
     // Setup terminal
     enable_raw_mode()?;
@@ -378,7 +399,8 @@ pub async fn run_tui(
 
     let mut settings = SettingsState::new(initial_index, display_mode, api_key);
     // Toggle shows "enabled"; the pref stores the negated "disabled" form.
-    settings.update_check = !initial_prefs.no_update_check.unwrap_or(false);
+    let saved_no_update_check = initial_prefs.no_update_check;
+    settings.update_check = !update_check_locked && !saved_no_update_check.unwrap_or(false);
 
     let mut ui_state = UiState {
         theme_index: initial_index,
@@ -386,6 +408,7 @@ pub async fn run_tui(
         settings,
         update_rx,
         replay_state,
+        update_check_locked,
         ..Default::default()
     };
     let tick_rate = Duration::from_millis(16); // ~60fps for responsive per-probe updates
@@ -433,9 +456,26 @@ pub async fn run_tui(
         theme: Some(theme_names[ui_state.theme_index].to_string()),
         display_mode: Some(ui_state.display_mode),
         peeringdb_api_key: final_api_key,
-        // Toggle holds "enabled"; persist the negated "disabled" form.
-        no_update_check: Some(!ui_state.settings.update_check),
+        // Toggle holds "enabled"; persist the negated "disabled" form. A
+        // flag/env lock is per-run, so leave the saved choice alone.
+        no_update_check: if update_check_locked {
+            saved_no_update_check
+        } else {
+            Some(!ui_state.settings.update_check)
+        },
     })
+}
+
+/// Flip the settings update-check toggle unless --no-update-check / env
+/// opt-out has it locked off for this run.
+fn toggle_update_check(ui_state: &mut UiState) {
+    if ui_state.update_check_locked {
+        ui_state.set_status(
+            "Update check disabled by --no-update-check or DO_NOT_TRACK/TTL_NO_UPDATE_CHECK",
+        );
+    } else {
+        ui_state.settings.update_check = !ui_state.settings.update_check;
+    }
 }
 
 /// Toggle pause/resume for replay animation
@@ -589,9 +629,7 @@ fn seek_replay_to(
             let target = session.target.clone();
             let config = session.config.clone();
             *session = Session::new(target, config);
-            for event in &replay.events[..target_index] {
-                session.apply_replay_event(event);
-            }
+            replay.apply_events(&mut session, 0..target_index);
         }
     } else {
         // Forward seek: apply events incrementally
@@ -599,9 +637,7 @@ fn seek_replay_to(
         let sessions_read = sessions.read();
         if let Some(session_lock) = sessions_read.get(&target_ip) {
             let mut session = session_lock.write();
-            for event in &replay.events[current_index..target_index] {
-                session.apply_replay_event(event);
-            }
+            replay.apply_events(&mut session, current_index..target_index);
         }
     }
 
@@ -637,9 +673,7 @@ fn seek_replay_to_end(ui_state: &mut UiState, sessions: &SessionMap, target_ip: 
         let sessions_read = sessions.read();
         if let Some(session_lock) = sessions_read.get(&target_ip) {
             let mut session = session_lock.write();
-            for event in &replay.events[current_index..target_index] {
-                session.apply_replay_event(event);
-            }
+            replay.apply_events(&mut session, current_index..target_index);
         }
     }
 
@@ -792,9 +826,7 @@ where
                     let sessions_read = sessions.read();
                     if let Some(session_lock) = sessions_read.get(&target_ip) {
                         let mut session = session_lock.write();
-                        for event in &replay.events[start..end] {
-                            session.apply_replay_event(event);
-                        }
+                        replay.apply_events(&mut session, start..end);
                     }
                     replay.current_index = end;
                 }
@@ -1000,7 +1032,7 @@ where
                         if ui_state.settings.selected_section
                             == SettingsState::update_check_section(ix_enabled)
                         {
-                            ui_state.settings.update_check = !ui_state.settings.update_check;
+                            toggle_update_check(ui_state);
                         } else {
                             ui_state.settings.select();
                             // Live preview display mode changes
@@ -1982,6 +2014,7 @@ mod tests {
                 paused: false,
                 finished: false,
                 paused_at_elapsed_ms: 0,
+                source: None,
             }),
             ..UiState::default()
         };
@@ -2000,6 +2033,54 @@ mod tests {
     }
 
     #[test]
+    fn animated_replay_carries_enrichment_from_loaded_session() {
+        use crate::state::session::AsnInfo;
+        let target = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+        let router = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let fresh = || Session::new(Target::new("t".to_string(), target), Config::default());
+
+        // Loaded session: hop 1 responder enriched by the original run
+        let mut loaded = fresh();
+        let hop = loaded.hop_mut(1).unwrap();
+        hop.record_response(router, Duration::from_millis(1));
+        let stats = hop.responders.get_mut(&router).unwrap();
+        stats.hostname = Some("gw.example".into());
+        stats.asn = Some(AsnInfo {
+            number: 64500,
+            name: "EXAMPLE".into(),
+            prefix: Some("10.0.0.0/8".into()),
+        });
+
+        let sessions = make_single_session_map(target, fresh());
+        let mut replay = ReplayState::new(
+            vec![ProbeEvent {
+                offset_ms: 0,
+                ttl: 1,
+                seq: 0,
+                flow_id: 0,
+                outcome: ProbeOutcome::Reply {
+                    addr: router,
+                    rtt_us: 1000,
+                },
+            }],
+            1.0,
+        );
+        replay.source = Some(loaded);
+        let mut ui_state = UiState {
+            replay_state: Some(replay),
+            ..UiState::default()
+        };
+
+        seek_replay_to_end(&mut ui_state, &sessions, target);
+
+        let session_lock = sessions.read().get(&target).cloned().unwrap();
+        let session = session_lock.read();
+        let stats = &session.hop(1).unwrap().responders[&router];
+        assert_eq!(stats.hostname.as_deref(), Some("gw.example"));
+        assert_eq!(stats.asn.as_ref().map(|a| a.number), Some(64500));
+    }
+
+    #[test]
     fn test_seek_replay_to_same_position_is_noop_for_session_state() {
         let target = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
         let session = Session::new(Target::new("t".to_string(), target), Config::default());
@@ -2015,6 +2096,7 @@ mod tests {
                 paused: false,
                 finished: false,
                 paused_at_elapsed_ms: 0,
+                source: None,
             }),
             ..UiState::default()
         };
@@ -2076,6 +2158,23 @@ mod tests {
         assert!(!ui_state.show_target_input);
         assert!(ui_state.status_message.is_some());
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn update_check_toggle_respects_flag_or_env_lock() {
+        let mut ui_state = UiState::default();
+        ui_state.settings.update_check = true;
+        toggle_update_check(&mut ui_state);
+        assert!(!ui_state.settings.update_check);
+
+        let mut locked = UiState {
+            update_check_locked: true,
+            ..UiState::default()
+        };
+        locked.settings.update_check = false;
+        toggle_update_check(&mut locked);
+        assert!(!locked.settings.update_check, "locked toggle must stay off");
+        assert!(locked.status_message.is_some());
     }
 
     #[test]
