@@ -44,8 +44,45 @@ impl HopDetailView<'_> {
 
     /// Build all content lines for the modal
     fn build_lines(&self, inner_width: u16) -> Vec<Line<'static>> {
+        use crate::state::IcmpResponseType;
+
         let mut lines = Vec::new();
         let stats = self.hop.primary_stats();
+
+        // Put actionable rejections first, including secondary ECMP responders.
+        let mut errors: Vec<_> = self
+            .hop
+            .responders
+            .values()
+            .filter_map(|stats| stats.last_icmp_error.map(|error| (stats.ip, error)))
+            .collect();
+        errors.sort_by_key(|(ip, _)| *ip);
+        for (ip, error) in errors {
+            let Some(reason) = error.processing_error_reason() else {
+                continue;
+            };
+            lines.push(Line::styled(
+                format!("  Last rejection from {ip}"),
+                Style::default().fg(self.theme.warning),
+            ));
+            let (kind, pointer) = match error {
+                IcmpResponseType::ParameterProblem { code, pointer } => (
+                    format!("  ICMPv6 Parameter Problem code {code}"),
+                    Some(pointer),
+                ),
+                IcmpResponseType::HeadersTooLong { pointer } => (
+                    "  ICMPv6 Destination Unreachable code 8".to_string(),
+                    pointer,
+                ),
+                _ => continue,
+            };
+            lines.push(Line::from(kind));
+            lines.push(Line::from(format!("  {reason}")));
+            if let Some(pointer) = pointer {
+                lines.push(Line::from(format!("  Pointer: byte {pointer}")));
+            }
+            lines.push(Line::from(""));
+        }
 
         if let Some(stats) = stats {
             // Hostname
@@ -819,5 +856,40 @@ mod tests {
                 .all(|span| span.style == style)
         );
         assert!(wrap_lines(vec![Line::from(value)], 0).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod processing_error_tests {
+    use super::*;
+    use crate::state::IcmpResponseType;
+    use std::time::Duration;
+
+    #[test]
+    fn secondary_responder_rejection_and_large_pointer_are_visible() {
+        let mut hop = Hop::new(5);
+        let primary = "2001:db8::1".parse().unwrap();
+        let secondary = "2001:db8::2".parse().unwrap();
+        for _ in 0..3 {
+            hop.record_sent();
+            hop.record_response(primary, Duration::from_millis(1));
+        }
+        hop.record_sent();
+        hop.record_response(secondary, Duration::from_millis(2));
+        hop.record_icmp_error(
+            secondary,
+            IcmpResponseType::ParameterProblem {
+                code: 6,
+                pointer: u32::MAX,
+            },
+        );
+        assert_eq!(hop.primary, Some(primary));
+        let area = Rect::new(0, 0, 80, 35);
+        let mut buffer = Buffer::empty(area);
+        HopDetailView::new(&hop, &Theme::default()).render(area, &mut buffer);
+        let text: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("Last rejection from 2001:db8::2"));
+        assert!(text.contains("Extension header too big"));
+        assert!(text.contains("byte 4294967295"));
     }
 }

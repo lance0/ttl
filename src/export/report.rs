@@ -90,6 +90,27 @@ pub fn generate_report<W: Write>(session: &Session, mut writer: W) -> std::io::R
         }
     }
 
+    let mut errors: Vec<_> = session
+        .hops
+        .iter()
+        .filter(|hop| hop.sent > 0 && hop.ttl <= max_ttl)
+        .flat_map(|hop| {
+            hop.responders.values().filter_map(move |stats| {
+                stats
+                    .last_icmp_error
+                    .and_then(|error| error.processing_error_message())
+                    .map(|message| (hop.ttl, stats.ip, message))
+            })
+        })
+        .collect();
+    errors.sort_by_key(|(ttl, ip, _)| (*ttl, *ip));
+    if !errors.is_empty() {
+        writeln!(writer, "\nICMPv6 rejections (last observed per responder):")?;
+        for (ttl, ip, message) in errors {
+            writeln!(writer, "  Hop {ttl}, from {ip}: {message}")?;
+        }
+    }
+
     Ok(())
 }
 

@@ -47,6 +47,56 @@ pub enum IcmpResponseType {
     DestUnreachable(u8),
     /// ICMPv6 Type 2 - Packet Too Big (for PMTUD)
     PacketTooBig,
+    /// ICMPv6 Type 4, including processing-limit codes from RFC 8883.
+    ParameterProblem {
+        code: u8,
+        pointer: u32,
+    },
+    /// ICMPv6 Destination Unreachable Code 8 (RFC 8883).
+    HeadersTooLong {
+        pointer: Option<u32>,
+    },
+}
+
+impl IcmpResponseType {
+    /// Human-readable reason for an IPv6 header-processing rejection.
+    pub fn processing_error_reason(self) -> Option<&'static str> {
+        match self {
+            Self::ParameterProblem { code, .. } => Some(match code {
+                0 => "Erroneous header field",
+                1 => "Unrecognized Next Header",
+                2 => "Unrecognized IPv6 option",
+                3 => "Incomplete first-fragment header chain",
+                4 => "Upper-layer header error",
+                5 => "Unrecognized Next Header at intermediate node",
+                6 => "Extension header too big",
+                7 => "Extension header chain too long",
+                8 => "Too many extension headers",
+                9 => "Too many options in extension header",
+                10 => "Option too big",
+                _ => "Unknown Parameter Problem code",
+            }),
+            Self::HeadersTooLong { .. } => Some("Headers too long"),
+            _ => None,
+        }
+    }
+
+    /// Diagnostic text; pointer offsets are reported without indexing the quote.
+    pub fn processing_error_message(self) -> Option<String> {
+        let reason = self.processing_error_reason()?;
+        let (kind, pointer) = match self {
+            Self::ParameterProblem { code, pointer } => (
+                format!("ICMPv6 Parameter Problem code {code}"),
+                Some(pointer),
+            ),
+            Self::HeadersTooLong { pointer } => {
+                ("ICMPv6 Destination Unreachable code 8".to_string(), pointer)
+            }
+            _ => return None,
+        };
+        let offset = pointer.map(|p| format!(" (byte {p})")).unwrap_or_default();
+        Some(format!("{kind}: {reason}{offset}"))
+    }
 }
 
 /// MPLS label from ICMP extension (RFC 4950)
@@ -182,6 +232,10 @@ pub struct ResponderStats {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interface_info: Option<Vec<IcmpInterfaceInfo>>,
 
+    /// Most recent IPv6 header-processing error observed from this responder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_icmp_error: Option<IcmpResponseType>,
+
     // Counters
     // Note: sent is kept for JSON schema compatibility but not used in TUI
     // (we can't attribute probes to responders before receiving a reply;
@@ -226,6 +280,7 @@ impl ResponderStats {
             interface_info: None,
             sent: 0,
             received: 0,
+            last_icmp_error: None,
             min_rtt: Duration::MAX,
             max_rtt: Duration::ZERO,
             mean_rtt: 0.0,
@@ -555,6 +610,16 @@ pub enum ProbeOutcome {
         addr: IpAddr,
         /// Round-trip time in microseconds
         rtt_us: u64,
+    },
+    /// A correlated ICMPv6 header-processing rejection, not destination delivery.
+    #[serde(rename = "icmp_error")]
+    IcmpError {
+        addr: IpAddr,
+        rtt_us: u64,
+        response_type: IcmpResponseType,
+        /// Late errors retain diagnostics without changing timeout accounting.
+        #[serde(default)]
+        late: bool,
     },
     /// Probe timed out with no response
     #[serde(rename = "timeout")]
@@ -1075,7 +1140,17 @@ impl Hop {
         self.update_primary();
     }
 
-    /// Record a response from a responder with optional MPLS labels
+    /// Retain a correlated header-processing error, separately from RTT counters.
+    pub fn record_icmp_error(&mut self, ip: IpAddr, response_type: IcmpResponseType) {
+        if response_type.processing_error_reason().is_some() {
+            self.responders
+                .entry(ip)
+                .or_insert_with(|| ResponderStats::new(ip))
+                .last_icmp_error = Some(response_type);
+        }
+    }
+
+    /// Record a response from a responder with optional MPLS labels.
     pub fn record_response_with_mpls(
         &mut self,
         ip: IpAddr,
@@ -1571,6 +1646,27 @@ impl Session {
                         }
                     }
                     self.total_sent += 1;
+                }
+                ProbeOutcome::IcmpError {
+                    addr,
+                    rtt_us,
+                    response_type,
+                    late,
+                } => {
+                    if !late {
+                        hop.record_sent();
+                        let rtt = Duration::from_micros(*rtt_us);
+                        if single_flow {
+                            hop.record_response_detecting_flaps(*addr, rtt, None);
+                        } else {
+                            hop.record_response_with_mpls(*addr, rtt, None);
+                        }
+                        hop.record_flow_response(event.flow_id, *addr, rtt);
+                    }
+                    hop.record_icmp_error(*addr, *response_type);
+                    if !late {
+                        self.total_sent += 1;
+                    }
                 }
                 ProbeOutcome::Timeout => {
                     hop.record_sent();

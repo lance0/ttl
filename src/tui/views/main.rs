@@ -383,11 +383,20 @@ impl Widget for MainView<'_> {
             .map(|(idx, hop)| {
                 let is_selected = self.selected == Some(idx);
 
+                let has_icmp_error = hop
+                    .responders
+                    .values()
+                    .any(|stats| stats.last_icmp_error.is_some());
                 let (host, asn_display) = if let Some(stats) = hop.primary_stats() {
                     let display = if let Some(ref hostname) = stats.hostname {
                         hostname.clone()
                     } else {
                         stats.ip.to_string()
+                    };
+                    let display = if has_icmp_error {
+                        format!("[ICMP] {display}")
+                    } else {
+                        display
                     };
                     let asn = if let Some(ref asn_info) = stats.asn {
                         // Use computed ASN width (minus 1 for padding)
@@ -421,6 +430,8 @@ impl Widget for MainView<'_> {
                     let max_len = (col_widths.host as usize).saturating_sub(indicators.len());
                     let truncated = truncate_with_ellipsis(&display, max_len);
                     (format!("{}{}", truncated, indicators), asn)
+                } else if has_icmp_error {
+                    ("[ICMP] * * *".to_string(), String::new())
                 } else if hop.received == 0 {
                     ("* * *".to_string(), String::new())
                 } else {
