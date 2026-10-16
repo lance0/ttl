@@ -549,6 +549,7 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
             None,
             replay_state,
             None, // add_target_tx (replay mode has no live probing)
+            update::check_disabled(update::env_opt_out(), args.no_update_check, None),
         )
         .await?;
 
@@ -967,6 +968,7 @@ async fn run_interactive_mode(
         update_rx,
         None, // replay_state (live mode)
         Some(add_target_tx),
+        update::check_disabled(update::env_opt_out(), args.no_update_check, None),
     )
     .await?;
 

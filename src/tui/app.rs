@@ -116,6 +116,9 @@ pub struct UiState {
     pub show_target_input: bool,
     /// Target input modal state
     pub target_input: TargetInputState,
+    /// Update check is off for this run via --no-update-check or env opt-out,
+    /// so the settings toggle shows off and can't be flipped.
+    pub update_check_locked: bool,
 }
 
 impl UiState {
@@ -201,6 +204,7 @@ fn render_fingerprint(
         target_list_tick: _,
         show_target_input,
         target_input,
+        update_check_locked: _, // only gates the toggle; settings.update_check is hashed
     } = ui_state;
     let SettingsState {
         selected_section,
@@ -350,6 +354,7 @@ pub async fn run_tui(
     update_rx: Option<std::sync::mpsc::Receiver<Option<String>>>,
     replay_state: Option<ReplayState>,
     add_target_tx: Option<tokio::sync::mpsc::UnboundedSender<AddTargetRequest>>,
+    update_check_locked: bool,
 ) -> Result<Prefs> {
     // Setup terminal
     enable_raw_mode()?;
@@ -377,7 +382,8 @@ pub async fn run_tui(
 
     let mut settings = SettingsState::new(initial_index, display_mode, api_key);
     // Toggle shows "enabled"; the pref stores the negated "disabled" form.
-    settings.update_check = !initial_prefs.no_update_check.unwrap_or(false);
+    let saved_no_update_check = initial_prefs.no_update_check;
+    settings.update_check = !update_check_locked && !saved_no_update_check.unwrap_or(false);
 
     let mut ui_state = UiState {
         theme_index: initial_index,
@@ -385,6 +391,7 @@ pub async fn run_tui(
         settings,
         update_rx,
         replay_state,
+        update_check_locked,
         ..Default::default()
     };
     let tick_rate = Duration::from_millis(16); // ~60fps for responsive per-probe updates
@@ -432,9 +439,26 @@ pub async fn run_tui(
         theme: Some(theme_names[ui_state.theme_index].to_string()),
         display_mode: Some(ui_state.display_mode),
         peeringdb_api_key: final_api_key,
-        // Toggle holds "enabled"; persist the negated "disabled" form.
-        no_update_check: Some(!ui_state.settings.update_check),
+        // Toggle holds "enabled"; persist the negated "disabled" form. A
+        // flag/env lock is per-run, so leave the saved choice alone.
+        no_update_check: if update_check_locked {
+            saved_no_update_check
+        } else {
+            Some(!ui_state.settings.update_check)
+        },
     })
+}
+
+/// Flip the settings update-check toggle unless --no-update-check / env
+/// opt-out has it locked off for this run.
+fn toggle_update_check(ui_state: &mut UiState) {
+    if ui_state.update_check_locked {
+        ui_state.set_status(
+            "Update check disabled by --no-update-check or DO_NOT_TRACK/TTL_NO_UPDATE_CHECK",
+        );
+    } else {
+        ui_state.settings.update_check = !ui_state.settings.update_check;
+    }
 }
 
 /// Toggle pause/resume for replay animation
@@ -999,7 +1023,7 @@ where
                         if ui_state.settings.selected_section
                             == SettingsState::update_check_section(ix_enabled)
                         {
-                            ui_state.settings.update_check = !ui_state.settings.update_check;
+                            toggle_update_check(ui_state);
                         } else {
                             ui_state.settings.select();
                             // Live preview display mode changes
@@ -2055,6 +2079,23 @@ mod tests {
         assert!(!ui_state.show_target_input);
         assert!(ui_state.status_message.is_some());
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn update_check_toggle_respects_flag_or_env_lock() {
+        let mut ui_state = UiState::default();
+        ui_state.settings.update_check = true;
+        toggle_update_check(&mut ui_state);
+        assert!(!ui_state.settings.update_check);
+
+        let mut locked = UiState {
+            update_check_locked: true,
+            ..UiState::default()
+        };
+        locked.settings.update_check = false;
+        toggle_update_check(&mut locked);
+        assert!(!locked.settings.update_check, "locked toggle must stay off");
+        assert!(locked.status_message.is_some());
     }
 
     #[test]
