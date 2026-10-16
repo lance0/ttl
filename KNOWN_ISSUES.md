@@ -17,11 +17,11 @@ This document tracks known limitations and edge cases that are documented but no
 
 ### Multi-flow Mode Behind NAT
 
-NAT devices may rewrite source ports, which breaks flow correlation for `--flows`. ttl detects this and shows the `[NAT]` indicator ([NAT Detection](docs/FEATURES.md#nat-detection)).
+NAT devices may rewrite source ports, which breaks flow correlation for `--flows`. ttl detects this and shows the `NAT` title flag ([NAT Detection](docs/FEATURES.md#nat-detection)).
 
 ### PMTUD Requires ICMP Probing
 
-`--pmtud` sends ICMP Echo probes, so it has an effect only when ttl probes with ICMP (`-p icmp`, or `-p auto` when it selects ICMP). With `-p udp` or `-p tcp` no PMTUD probes are sent.
+`--pmtud` sends ICMP Echo probes, so it works only when ttl probes with ICMP (`-p icmp`, or `-p auto` when it selects ICMP). `--pmtud` with `-p udp` or `-p tcp` is rejected at startup.
 
 ### Interface Binding Unavailable on FreeBSD/NetBSD
 
@@ -135,6 +135,10 @@ The "isolated hop loss" heuristic requires a downstream hop for comparison. At t
 
 Linux delivers ICMPv6 Echo Reply only to the socket that sent the request, not to the separate receive socket. The engine polls the send socket for Echo Replies after each probe round. macOS delivers to any raw ICMPv6 socket, so the receiver handles it there.
 
+### Replies Behind Destination NAT Need a Single Target
+
+Past a destination NAT (for example a load-balancer VIP), routers quote the translated address in their Time Exceeded messages. With one target, ttl still attributes those replies to it. With several targets the quoted destination is ambiguous, so such replies are dropped and those hops appear as timeouts. Trace a DNAT'd address on its own to see them.
+
 ### Last RTT Not Persisted in JSON
 
 `last_rtt` is intentionally `#[serde(skip)]` — it represents a live-only sample. The `Last` column in TUI and `last_ms` in CSV are sourced from the current primary responder's `last_rtt`, and will show "-"/empty for replayed sessions. All other RTT and jitter stats are persisted and display correctly.
@@ -153,6 +157,8 @@ The following issues have been fixed and are listed here for reference.
 - **Sent count double-counting** — IPv6 Echo Reply handler incremented sent count on response, duplicating the engine-side count. Fixed by removing receiver-side counting.
 - **DFZ router startup hang** (#16) — Gateway detection shelled out to `ip route` which hung on systems with millions of routes. Fixed with direct kernel API calls (netlink/sysctl).
 - **ICMPv6 checksum computation** — IPv6 traceroute didn't detect destinations due to checksum 0. Fixed with manual ICMPv6 checksum using RFC 8200 pseudo-header.
+- **Concurrent ttl instances picked up each other's replies** — The ICMP identifier was the process ID, so instances in separate containers (all PID 1) shared it. Each process now picks a random identifier, and replies are matched only against the destination they quote, never another target's probes.
+- **Silent hops flagged as rate limited** — A hop that never answered showed `100% RL` and put `RL?` in the title. Rate-limit detection now requires at least one reply.
 - **macOS/FreeBSD/NetBSD minimum inter-probe delay** — A 500µs delay masked BSD kernels sending queued probes with a stale TTL. Retired once IPv4 moved to `IP_HDRINCL` (TTL in the header) and IPv6 to per-probe sockets on BSD-derived platforms; only the `--rate` delay remains.
 - **NetBSD IPv4 PMTUD unavailable** — NetBSD lacks `IP_DONTFRAG`. IPv4 now sets Don't Fragment in the hand-built IP header, so IPv4 PMTUD works on NetBSD.
 - **TCP probes ignored `--rate`** — TCP probing now applies the `--rate` delay like ICMP and UDP.

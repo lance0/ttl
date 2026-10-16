@@ -229,8 +229,8 @@ On Linux, re-run `setcap` after every upgrade.
 ### High packet loss
 
 Routers often rate-limit the ICMP replies ttl relies on, which looks like loss
-at that hop but not beyond it. Look for the `[RL?]` indicator and `%RL` in the
-loss column (see [Detection Indicators](FEATURES.md#detection-indicators)), or
+at that hop but not beyond it. Look for the `RL?` title flag and the `RL` tag after
+the loss value (see [Detection Indicators](FEATURES.md#detection-indicators)), or
 slow the probes down with `-i 2.0`.
 
 ### All hops show `* * *`

@@ -18,7 +18,7 @@ short overview; everything else lives here.
 |------|-------|
 | [CLI reference](FEATURES.md#cli-reference) | Every flag, its default and range, and which modes combine. |
 | [Keybindings](FEATURES.md#tui-keybindings) | Main view, overlays, and [replay controls](FEATURES.md#replay-controls). |
-| [Detection indicators](FEATURES.md#detection-indicators) | What `[NAT]`, `[RL?]`, `[ASYM]`, `[TTL!]`, `E`, `!`, `~`, `^`, and `+` mean. |
+| [Detection indicators](FEATURES.md#detection-indicators) | What the title flags (`NAT`, `RL?`, `ASYM`, `TTL!`, `MTU`, `max_ttl`), the `RL` loss tag, and the host markers `E`, `!`, `~`, `^`, `+` mean. |
 | [Config file](FEATURES.md#config-file) | Location and keys of `config.toml`; [example](../examples/config.toml). |
 | [Prometheus metrics](FEATURES.md#daemon-mode--prometheus-exporter) | Endpoints, metric names, and labels. |
 | [Known issues](../KNOWN_ISSUES.md) | Limitations, edge cases, by-design behavior, and resolved issues. |
