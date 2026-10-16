@@ -130,11 +130,11 @@ pub struct Args {
     pub no_update_check: bool,
 
     /// Output JSON (batch mode, requires -c)
-    #[arg(long = "json")]
+    #[arg(long = "json", conflicts_with_all = ["csv", "report"])]
     pub json: bool,
 
     /// Output CSV (batch mode, requires -c)
-    #[arg(long = "csv")]
+    #[arg(long = "csv", conflicts_with = "report")]
     pub csv: bool,
 
     /// Report mode (batch, requires -c)
@@ -146,7 +146,7 @@ pub struct Args {
     pub replay: Option<String>,
 
     /// Animate replay showing probe-by-probe discovery
-    #[arg(long = "animate", requires = "replay")]
+    #[arg(long = "animate", requires = "replay", conflicts_with_all = ["json", "csv", "report", "no_tui"])]
     pub animate: bool,
 
     /// Replay speed multiplier (1.0 = realtime, 10.0 = 10x faster)
@@ -154,7 +154,7 @@ pub struct Args {
     pub speed: f32,
 
     /// Compare two saved sessions: show added/removed hops, path and latency changes
-    #[arg(long = "diff", num_args = 2, value_names = ["BEFORE", "AFTER"], conflicts_with_all = ["targets", "replay"])]
+    #[arg(long = "diff", num_args = 2, value_names = ["BEFORE", "AFTER"], conflicts_with_all = ["targets", "replay", "csv", "report"])]
     pub diff: Option<Vec<String>>,
 
     /// Stream probe events as line-delimited JSON to stdout (implies --no-tui)
@@ -271,23 +271,6 @@ impl Args {
         // Replay/diff modes don't probe — they load saved sessions and
         // export/diff them. Skip live-probe validations for those modes.
         let replay_or_diff = self.replay.is_some() || self.diff.is_some();
-
-        let output_modes = [self.json, self.csv, self.report]
-            .into_iter()
-            .filter(|enabled| *enabled)
-            .count();
-        if output_modes > 1 {
-            return Err("Choose only one output format: --json, --csv, or --report".into());
-        }
-        if self.diff.is_some() && (self.csv || self.report) {
-            return Err(
-                "--diff supports text output or --json; --csv and --report are not supported"
-                    .into(),
-            );
-        }
-        if self.animate && (self.is_batch_mode() || self.no_tui) {
-            return Err("--animate requires the interactive TUI; remove --json, --csv, --report, and --no-tui".into());
-        }
 
         // Interactive TUI mode supports starting empty (add targets with 'o');
         // every other mode needs at least one target up front
@@ -532,10 +515,8 @@ mod tests {
             ["--json", "--report"],
             ["--csv", "--report"],
         ] {
-            let mut args =
-                Args::try_parse_from(["ttl", "-c", "1", flags[0], flags[1], "192.0.2.1"]).unwrap();
             assert!(
-                args.validate().is_err(),
+                Args::try_parse_from(["ttl", "-c", "1", flags[0], flags[1], "192.0.2.1"]).is_err(),
                 "accepted conflicting modes: {flags:?}"
             );
         }
@@ -544,19 +525,18 @@ mod tests {
     #[test]
     fn test_diff_rejects_unsupported_csv_and_report_outputs() {
         for flag in ["--csv", "--report"] {
-            let mut args =
-                Args::try_parse_from(["ttl", "--diff", "before.json", "after.json", flag]).unwrap();
-            assert!(args.validate().is_err(), "diff silently ignores {flag}");
+            assert!(
+                Args::try_parse_from(["ttl", "--diff", "before.json", "after.json", flag]).is_err(),
+                "diff silently ignores {flag}"
+            );
         }
     }
 
     #[test]
     fn test_animation_requires_interactive_output() {
         for flag in ["--json", "--csv", "--report", "--no-tui"] {
-            let mut args =
-                Args::try_parse_from(["ttl", "--replay", "trace.json", "--animate", flag]).unwrap();
             assert!(
-                args.validate().is_err(),
+                Args::try_parse_from(["ttl", "--replay", "trace.json", "--animate", flag]).is_err(),
                 "animation silently ignored with {flag}"
             );
         }
