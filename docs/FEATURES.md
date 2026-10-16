@@ -221,12 +221,12 @@ Discover the path MTU using binary search:
 
 1. Sends probes with Don't Fragment (DF) flag set
 2. Binary searches between min (68 for IPv4, 1280 for IPv6) and max (1500 or 9216)
-3. Uses ICMP "Fragmentation Needed" / "Packet Too Big" responses
+3. Uses ICMP "Fragmentation Needed" / "Packet Too Big" responses to narrow the search, then confirms the size with two Echo Replies from the destination
 4. Results displayed in TUI title bar
 
 By default, PMTUD uses 1500 bytes as the upper bound (standard ethernet MTU). Use `--jumbo` to search up to 9216 bytes for jumbo frame environments (data centers, 10GbE networks with 9000-byte MTUs).
 
-PMTUD runs in the background after the destination is discovered, without interrupting normal tracing.
+PMTUD runs in the background after the destination is discovered, without interrupting normal tracing. A router hint is an upper bound: another link may have a smaller MTU. Timeouts, local size errors, and intermediate ICMP replies cannot confirm delivery. If no size is confirmed, the TUI shows `MTU: unconfirmed` and JSON leaves `discovered_mtu` null. A confirmed result is the largest positively tested size within the configured ceiling and the search's 8-byte tolerance; loss or filtering can make it conservative. This is ICMP Echo probing, not a complete datagram DPLPMTUD implementation.
 
 **Note:** For IPv4, the Don't Fragment bit is set directly in the IP header (via `IP_HDRINCL`), so PMTUD works on all supported platforms — including NetBSD, which lacks the `IP_DONTFRAG` socket option the previous implementation relied on.
 
@@ -246,6 +246,7 @@ The JSON output includes PMTUD state:
     "current_size": 1400,
     "successes": 0,
     "failures": 0,
+    "confirmed_size": 1400,
     "discovered_mtu": 1400,
     "phase": "Complete"
   }
@@ -253,10 +254,11 @@ The JSON output includes PMTUD state:
 ```
 
 Fields:
-- `min_size`: Lower bound (known to work)
+- `min_size`: Search floor (initially the protocol minimum; not evidence of delivery)
 - `max_size`: Upper bound (known to fail or untested)
 - `current_size`: Size being tested in current binary search step
-- `discovered_mtu`: Final MTU when `phase` is `Complete`
+- `confirmed_size`: Largest size confirmed by two destination Echo Replies
+- `discovered_mtu`: Confirmed result when `phase` is `Complete`, or null if no size was confirmed
 - `phase`: `WaitingForDestination`, `Searching`, or `Complete`
 
 ## Enrichment Lookups
