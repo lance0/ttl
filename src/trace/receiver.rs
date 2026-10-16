@@ -197,23 +197,37 @@ impl Receiver {
     /// it is about: the quoted original destination for ICMP errors, the
     /// responder for Echo Replies (see `ParsedResponse::original_dest`).
     ///
-    /// A miss is a late reply or someone else's probe (e.g. another ttl
-    /// instance with the same ICMP identifier, as with PID 1 in containers),
-    /// so never fall back to matching by sequence against other targets.
+    /// An ICMP error quoting some other destination is still ours when we
+    /// trace a single target: past a destination NAT (e.g. a load-balancer
+    /// VIP) routers quote the translated address. With several targets that
+    /// is ambiguous, so the response is dropped rather than credited to
+    /// whichever target has the same sequence pending. Echo Replies must
+    /// always come from the target itself.
     fn take_pending(
         pending: &mut HashMap<PendingKey, PendingProbe>,
         probe_id: ProbeId,
         original_dest: Option<IpAddr>,
+        is_echo_reply: bool,
+        sole_target: Option<IpAddr>,
         flow_hint: Option<u8>,
         is_pmtud_response: bool,
     ) -> Option<PendingProbe> {
-        Self::remove_pending_by_flow_hint(
-            pending,
-            probe_id,
-            original_dest?,
-            flow_hint,
-            is_pmtud_response,
-        )
+        let dest = original_dest?;
+        if let Some(probe) =
+            Self::remove_pending_by_flow_hint(pending, probe_id, dest, flow_hint, is_pmtud_response)
+        {
+            return Some(probe);
+        }
+        match sole_target {
+            Some(target) if !is_echo_reply && target != dest => Self::remove_pending_by_flow_hint(
+                pending,
+                probe_id,
+                target,
+                flow_hint,
+                is_pmtud_response,
+            ),
+            _ => None,
+        }
     }
 
     /// Run the receiver on a dedicated thread (blocking I/O)
@@ -269,11 +283,23 @@ impl Receiver {
                             let is_pmtud_response = parsed.is_pmtud
                                 || is_packet_too_big(parsed.response_type, self.config.ipv6);
 
+                            // Read before taking the pending lock: never hold
+                            // sessions and pending at the same time.
+                            let sole_target = {
+                                let sessions = self.sessions.read();
+                                let mut keys = sessions.keys();
+                                match (keys.next(), keys.next()) {
+                                    (Some(&only), None) => Some(only),
+                                    _ => None,
+                                }
+                            };
                             // Find matching pending probe (key includes flow_id, target, is_pmtud)
                             let found_probe = Self::take_pending(
                                 &mut self.pending.write(),
                                 parsed.probe_id,
                                 parsed.original_dest,
+                                matches!(parsed.response_type, IcmpResponseType::EchoReply),
+                                sole_target,
                                 flow_hint,
                                 is_pmtud_response,
                             );
@@ -662,11 +688,8 @@ mod tests {
         assert_eq!(receiver.derive_flow_hint(None), Some(0));
     }
 
-    #[test]
-    fn take_pending_only_matches_the_probed_destination() {
-        let probe_id = ProbeId::new(3, 7);
-        let target: IpAddr = "192.0.2.1".parse().unwrap();
-        let mut pending: HashMap<PendingKey, PendingProbe> = HashMap::new();
+    fn one_pending(probe_id: ProbeId, target: IpAddr) -> HashMap<PendingKey, PendingProbe> {
+        let mut pending = HashMap::new();
         pending.insert(
             (probe_id, 0, target, false),
             PendingProbe {
@@ -677,25 +700,70 @@ mod tests {
                 packet_size: None,
             },
         );
+        pending
+    }
 
-        // Time Exceeded quoting another instance's destination: not ours
-        let foreign: IpAddr = "198.51.100.7".parse().unwrap();
-        assert!(
-            Receiver::take_pending(&mut pending, probe_id, Some(foreign), Some(0), false).is_none()
-        );
+    #[test]
+    fn take_pending_multi_target_only_matches_the_probed_destination() {
+        let probe_id = ProbeId::new(3, 7);
+        let target: IpAddr = "192.0.2.1".parse().unwrap();
+        let mut pending = one_pending(probe_id, target);
+        let take = |pending: &mut _, dest: &str, echo| {
+            Receiver::take_pending(
+                pending,
+                probe_id,
+                Some(dest.parse().unwrap()),
+                echo,
+                None, // several targets
+                Some(0),
+                false,
+            )
+        };
+
+        // Time Exceeded quoting a destination that isn't one of ours
+        assert!(take(&mut pending, "198.51.100.7", false).is_none());
         assert_eq!(pending.len(), 1, "our probe must stay pending");
-
-        // Echo Reply from a host that isn't the probed target: not ours
-        let router: IpAddr = "192.0.2.254".parse().unwrap();
-        assert!(
-            Receiver::take_pending(&mut pending, probe_id, Some(router), Some(0), false).is_none()
-        );
+        // Echo Reply from a host that isn't the probed target
+        assert!(take(&mut pending, "192.0.2.254", true).is_none());
         assert_eq!(pending.len(), 1);
-
         // Normal path: Time Exceeded quoting our target / Echo Reply from it
-        let removed = Receiver::take_pending(&mut pending, probe_id, Some(target), Some(0), false);
-        assert_eq!(removed.map(|p| p.target), Some(target));
+        assert_eq!(
+            take(&mut pending, "192.0.2.1", false).map(|p| p.target),
+            Some(target)
+        );
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn take_pending_single_target_accepts_dnat_quoted_destination() {
+        let probe_id = ProbeId::new(9, 1);
+        let vip: IpAddr = "192.0.2.80".parse().unwrap();
+        let backend: IpAddr = "10.1.2.3".parse().unwrap();
+
+        // Echo Reply from anything but the target is still rejected
+        let mut pending = one_pending(probe_id, vip);
+        let echo = Receiver::take_pending(
+            &mut pending,
+            probe_id,
+            Some(backend),
+            true,
+            Some(vip),
+            Some(0),
+            false,
+        );
+        assert!(echo.is_none());
+
+        // Router past the NAT quotes the translated (backend) destination
+        let removed = Receiver::take_pending(
+            &mut pending,
+            probe_id,
+            Some(backend),
+            false,
+            Some(vip),
+            Some(0),
+            false,
+        );
+        assert_eq!(removed.map(|p| p.target), Some(vip));
     }
 
     #[test]
