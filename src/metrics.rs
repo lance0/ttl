@@ -328,7 +328,13 @@ async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin>(
         body.len(),
         body
     );
-    stream.write_all(response.as_bytes()).await?;
+    // A client that never reads must not pin this task and its response buffer
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        stream.write_all(response.as_bytes()),
+    )
+    .await
+    .context("response write timed out")??;
     stream.shutdown().await.ok();
     Ok(())
 }
@@ -494,6 +500,26 @@ mod tests {
                 assert!(error.to_string().contains("timed out"));
             }
             _ = trickle => unreachable!(),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_client_that_never_reads_response_times_out() {
+        // The 1-byte duplex buffer fills immediately and the client never drains it
+        let (mut client, server) = tokio::io::duplex(1);
+        let request = b"GET /metrics HTTP/1.1\r\n\r\n";
+        let send = async {
+            for byte in request {
+                client.write_all(&[*byte]).await.unwrap();
+            }
+            std::future::pending::<()>().await;
+        };
+        tokio::select! {
+            result = tokio::time::timeout(Duration::from_secs(11), handle_connection(server, make_session_map())) => {
+                let error = result.expect("a stalled response write must time out").unwrap_err();
+                assert!(error.to_string().contains("write timed out"), "{error}");
+            }
+            _ = send => unreachable!(),
         }
     }
 
