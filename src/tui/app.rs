@@ -7,7 +7,7 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{LineGauge, Paragraph};
 use scopeguard::defer;
@@ -150,6 +150,9 @@ impl UiState {
     }
 }
 
+/// Address, name, hops, loss and RTT of one target-list row.
+type TargetRow = (IpAddr, String, String, String, String);
+
 /// Post-poll render fingerprint (LAN-1222). Built after status expiry,
 /// add-target, update check, IX cache status, and target-list refresh so
 /// idle skip cannot leave those chrome surfaces stale.
@@ -184,7 +187,7 @@ struct RenderFingerprint {
         bool,
     ),
     ix_cache: Option<(bool, usize, Option<u64>, bool, bool)>,
-    target_list_rows: Option<Vec<(IpAddr, String, String, String)>>,
+    target_list_rows: Option<Vec<TargetRow>>,
 }
 
 fn render_fingerprint(
@@ -303,8 +306,15 @@ fn render_fingerprint(
                         hostname,
                         hops_str,
                         loss_str,
+                        rtt_str,
                     } = t;
-                    (*ip, hostname.clone(), hops_str.clone(), loss_str.clone())
+                    (
+                        *ip,
+                        hostname.clone(),
+                        hops_str.clone(),
+                        loss_str.clone(),
+                        rtt_str.clone(),
+                    )
                 })
                 .collect()
         }),
@@ -1480,6 +1490,30 @@ fn handle_target_input_key(
     }
 }
 
+/// Replay position label: `▶ 0:45 / 4:23 · 5× `.
+fn replay_label(replay: &ReplayState, current_ms: u64, total_ms: u64) -> String {
+    let icon = if replay.finished {
+        "■"
+    } else if replay.paused {
+        "‖"
+    } else {
+        "▶"
+    };
+    let speed = replay.speed_multiplier;
+    let speed = if speed.fract() == 0.0 {
+        format!("{speed:.0}×")
+    } else {
+        format!("{speed:.1}×")
+    };
+    let clock = |ms: u64| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60);
+    let time = if total_ms == 0 && !replay.events.is_empty() {
+        "instant".to_string()
+    } else {
+        format!("{} / {}", clock(current_ms), clock(total_ms))
+    };
+    format!("{icon} {time} · {speed} ")
+}
+
 /// Bottom row: key hints on the left. A transient status message sits
 /// right-aligned on the same row, so it never hides the hints entirely.
 fn draw_status_bar(
@@ -1624,14 +1658,27 @@ fn draw_ui(
     // Update notification banner (if available)
     if has_update {
         if let Some(ref version) = ui_state.update_available {
-            let update_text = format!(
-                " Update available: v{} -> {} | Press 'u' to dismiss ",
-                env!("CARGO_PKG_VERSION"),
-                version
-            );
-            let update_bar = Paragraph::new(update_text)
-                .style(Style::default().fg(Color::Black).bg(Color::Yellow));
-            f.render_widget(update_bar, chunks[idx]);
+            let chunk = Rect {
+                x: chunks[idx].x.saturating_add(1),
+                width: chunks[idx].width.saturating_sub(2),
+                ..chunks[idx]
+            };
+            let mut line = ratatui::text::Line::from(vec![
+                Span::styled(
+                    " UPDATE ",
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                ),
+                Span::styled(
+                    format!(" v{} → {}  ", env!("CARGO_PKG_VERSION"), version),
+                    Style::default().fg(theme.text),
+                ),
+            ]);
+            let room = chunk.width.saturating_sub(line.width() as u16);
+            line.spans
+                .extend(hint_line(&[("u", "dismiss"), ("?", "update command")], room, theme).spans);
+            f.render_widget(Paragraph::new(line), chunk);
         }
         idx += 1;
     }
@@ -1659,43 +1706,26 @@ fn draw_ui(
     if let (Some(chunk), Some(replay)) = (progress_chunk, &ui_state.replay_state) {
         let current_ms = replay_current_ms(replay);
         let total_ms = replay.events.last().map_or(0, |e| e.offset_ms);
-        let icon = if replay.finished {
-            "--"
-        } else if replay.paused {
-            "||"
-        } else {
-            ">>"
-        };
-        let instant_suffix = if total_ms == 0 && !replay.events.is_empty() {
-            " instant"
-        } else {
-            ""
-        };
-        let label = format!(
-            " {} {}/{} {} / {} {:.1}x{} ",
-            icon,
-            replay.current_index,
-            replay.events.len(),
-            format_replay_time(current_ms),
-            format_replay_time(total_ms),
-            replay.speed_multiplier,
-            instant_suffix,
-        );
+        let label = replay_label(replay, current_ms, total_ms);
         let ratio = if total_ms > 0 {
             (current_ms as f64 / total_ms as f64).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let selected_theme = theme.for_selection();
         let gauge = LineGauge::default()
-            .filled_style(
-                Style::default()
-                    .fg(selected_theme.success)
-                    .bg(theme.highlight_bg),
-            )
-            .label(label)
+            .filled_style(Style::default().fg(theme.header))
+            .unfilled_style(Style::default().fg(theme.text_dim))
+            .label(Span::styled(label, Style::default().fg(theme.text)))
             .ratio(ratio);
-        f.render_widget(gauge, chunk);
+        // Inset to line up with the table content.
+        f.render_widget(
+            gauge,
+            Rect {
+                x: chunk.x.saturating_add(1),
+                width: chunk.width.saturating_sub(2),
+                ..chunk
+            },
+        );
     }
 
     // Hints in priority order; the lowest-priority pairs drop first.
@@ -1950,6 +1980,18 @@ mod tests {
             flow_id: 0,
             outcome: ProbeOutcome::Timeout,
         }
+    }
+
+    #[test]
+    fn replay_label_shows_clock_and_speed_without_event_counts() {
+        let mut replay = ReplayState::new(vec![make_timeout_event(263_000, 1, 0)], 5.0);
+        assert_eq!(
+            replay_label(&replay, 45_000, 263_000),
+            "▶ 0:45 / 4:23 · 5× "
+        );
+        replay.paused = true;
+        replay.speed_multiplier = 2.5;
+        assert_eq!(replay_label(&replay, 0, 263_000), "‖ 0:00 / 4:23 · 2.5× ");
     }
 
     #[test]

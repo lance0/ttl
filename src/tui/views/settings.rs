@@ -227,10 +227,7 @@ impl Widget for SettingsView<'_> {
         } else {
             Style::default().fg(self.theme.text_dim)
         };
-        lines.push(Line::from(vec![Span::styled(
-            "  Theme",
-            theme_header_style,
-        )]));
+        lines.push(Line::from(vec![Span::styled("Theme", theme_header_style)]));
 
         // Show visible themes (5 at a time)
         let visible_themes = 5.min(self.theme_names.len());
@@ -240,7 +237,7 @@ impl Widget for SettingsView<'_> {
         // Scroll indicator (up)
         if start > 0 {
             lines.push(Line::from(vec![Span::styled(
-                "    \u{25b2} more",
+                "  \u{25b2} more",
                 Style::default().fg(self.theme.text_dim),
             )]));
         } else {
@@ -254,7 +251,7 @@ impl Widget for SettingsView<'_> {
             let bullet = if is_selected { "\u{25cf}" } else { "\u{25cb}" };
             let style = if is_selected && self.state.selected_section == 0 {
                 Style::default()
-                    .fg(self.theme.shortcut)
+                    .fg(self.theme.header)
                     .add_modifier(Modifier::BOLD)
             } else if is_selected {
                 Style::default().fg(self.theme.text)
@@ -262,7 +259,7 @@ impl Widget for SettingsView<'_> {
                 Style::default().fg(self.theme.text_dim)
             };
             lines.push(Line::from(vec![Span::styled(
-                format!("    {} {}", bullet, name),
+                format!("  {} {}", bullet, name),
                 style,
             )]));
         }
@@ -270,7 +267,7 @@ impl Widget for SettingsView<'_> {
         // Scroll indicator (down)
         if end < self.theme_names.len() {
             lines.push(Line::from(vec![Span::styled(
-                "    \u{25bc} more",
+                "  \u{25bc} more",
                 Style::default().fg(self.theme.text_dim),
             )]));
         } else {
@@ -289,18 +286,15 @@ impl Widget for SettingsView<'_> {
             Style::default().fg(self.theme.text_dim)
         };
         lines.push(Line::from(vec![Span::styled(
-            "  Display Mode",
+            "Display Mode",
             display_header_style,
         )]));
 
         // Display mode selector
-        let mode_text = format!(
-            "    [{}]  (Enter to cycle)",
-            self.state.display_mode.label()
-        );
+        let mode_text = format!("  [{}]  (Enter to cycle)", self.state.display_mode.label());
         let mode_style = if self.state.selected_section == 1 {
             Style::default()
-                .fg(self.theme.shortcut)
+                .fg(self.theme.header)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(self.theme.text_dim)
@@ -314,7 +308,7 @@ impl Widget for SettingsView<'_> {
             DisplayMode::Wide => "generous column widths",
         };
         lines.push(Line::from(vec![Span::styled(
-            format!("    {}", desc),
+            format!("  {}", desc),
             Style::default().fg(self.theme.text_dim),
         )]));
 
@@ -332,7 +326,7 @@ impl Widget for SettingsView<'_> {
                 Style::default().fg(self.theme.text_dim)
             };
             lines.push(Line::from(vec![Span::styled(
-                "  PeeringDB (IX Detection)",
+                "PeeringDB (IX Detection)",
                 pdb_header_style,
             )]));
 
@@ -344,7 +338,7 @@ impl Widget for SettingsView<'_> {
             };
 
             // Build the API key display with cursor
-            let label = "    API Key: ";
+            let label = "  API Key: ";
             let display_key = if self.state.api_key.is_empty() {
                 "(not set)".to_string()
             } else {
@@ -374,7 +368,7 @@ impl Widget for SettingsView<'_> {
                     display_key,
                     if self.state.selected_section == 2 {
                         Style::default()
-                            .fg(self.theme.shortcut)
+                            .fg(self.theme.header)
                             .add_modifier(Modifier::BOLD)
                     } else {
                         api_key_style
@@ -385,9 +379,9 @@ impl Widget for SettingsView<'_> {
             // Cache status
             if let Some(ref status) = self.cache_status {
                 let status_text = if status.refreshing {
-                    "    Cache: Refreshing...".to_string()
+                    "  Cache: Refreshing...".to_string()
                 } else if !status.loaded && status.prefix_count == 0 {
-                    "    Cache: Not loaded".to_string()
+                    "  Cache: Not loaded".to_string()
                 } else {
                     let age_str = status
                         .fetched_at
@@ -395,7 +389,7 @@ impl Widget for SettingsView<'_> {
                         .unwrap_or_else(|| "unknown".to_string());
                     let status_indicator = if status.expired { " (expired)" } else { "" };
                     format!(
-                        "    Cache: {} prefixes, {}{}",
+                        "  Cache: {} prefixes, {}{}",
                         status.prefix_count, age_str, status_indicator
                     )
                 };
@@ -407,7 +401,7 @@ impl Widget for SettingsView<'_> {
                 // Refresh hint when in PeeringDB section
                 if self.state.selected_section == 2 && !status.refreshing {
                     lines.push(Line::from(vec![Span::styled(
-                        "    Press Ctrl+R to refresh cache",
+                        "  Press Ctrl+R to refresh cache",
                         Style::default().fg(self.theme.text_dim),
                     )]));
                 } else {
@@ -430,23 +424,23 @@ impl Widget for SettingsView<'_> {
             Style::default().fg(self.theme.text_dim)
         };
         lines.push(Line::from(vec![Span::styled(
-            "  Update Check",
+            "Update Check",
             uc_header_style,
         )]));
         let uc_state = if self.state.update_check { "on" } else { "off" };
         let uc_style = if uc_selected {
             Style::default()
-                .fg(self.theme.shortcut)
+                .fg(self.theme.header)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(self.theme.text_dim)
         };
         lines.push(Line::from(vec![Span::styled(
-            format!("    [{}]  (Enter to toggle)", uc_state),
+            format!("  [{}]  (Enter to toggle)", uc_state),
             uc_style,
         )]));
         lines.push(Line::from(vec![Span::styled(
-            "    check GitHub for new releases at startup",
+            "  check GitHub for new releases at startup",
             Style::default().fg(self.theme.text_dim),
         )]));
 

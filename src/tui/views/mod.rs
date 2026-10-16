@@ -202,22 +202,34 @@ mod responsive_tests {
                 hostname: format!("router-{i}.example.net"),
                 hops_str: "12 hops".into(),
                 loss_str: "15.0%".into(),
+                rtt_str: "165 ms".into(),
             })
             .collect();
-        let area = Rect::new(0, 0, 80, 24);
-        let mut buf = Buffer::empty(area);
-        TargetListView::new(&Theme::default(), &infos, 19).render(area, &mut buf);
-        let rendered = text(&buf);
-        for expected in [
-            "> 20.",
-            "2001:db8:1234:5678:abcd:abcd:abcd:20",
-            "router-20.example.net",
-            "12 hops",
-            "15.0%",
-            "Esc close",
-            "Enter select",
-        ] {
-            assert!(rendered.contains(expected), "missing {expected}");
+        let theme = Theme::default();
+        for width in [80, 100] {
+            let area = Rect::new(0, 0, width, 24);
+            let mut buf = Buffer::empty(area);
+            TargetListView::new(&theme, &infos, 19).render(area, &mut buf);
+            let rendered = text(&buf);
+            for expected in [
+                "20  2001:db8:1234:5678:abcd:abcd:abcd:20 ",
+                "12 hops   15.0%   165 ms",
+                "Esc close",
+                "Enter select",
+            ] {
+                assert!(rendered.contains(expected), "{width}: missing {expected}");
+            }
+            // One line per target, the name shown when there is room.
+            assert_eq!(rendered.contains("router-20.example.net"), width == 100);
+            assert!(!rendered.contains("router-19.example.net\n"));
+            // The selection bar spans the whole row.
+            let row = (0..24)
+                .find(|&y| (0..width).any(|x| buf[(x, y)].bg == theme.highlight_bg))
+                .unwrap();
+            let lit = (0..width)
+                .filter(|&x| buf[(x, row)].bg == theme.highlight_bg)
+                .count();
+            assert_eq!(lit, usize::from(94.min(width - 4) - POPUP_COLS));
         }
     }
 

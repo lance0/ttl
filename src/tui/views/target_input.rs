@@ -123,36 +123,38 @@ impl Widget for TargetInputView<'_> {
             .saturating_sub(available / 2)
             .min(self.state.input.len().saturating_sub(available));
         let end = (start + available).min(self.state.input.len());
-        let before = &self.state.input[start..self.state.cursor];
-        let after = &self.state.input[self.state.cursor..end];
-        let input_line = Line::from(vec![
+        // The field is an underlined run to the popup edge; the cursor is a
+        // reversed cell over the character it sits on (or a space at the end).
+        let field = Style::default()
+            .fg(self.theme.text)
+            .add_modifier(Modifier::UNDERLINED);
+        let input = &self.state.input;
+        let cursor = self.state.cursor;
+        let under = input.get(cursor..cursor + 1).filter(|_| cursor < end);
+        let mut spans = vec![
             Span::styled("> ", Style::default().fg(self.theme.text_dim)),
-            Span::styled(before, Style::default().fg(self.theme.text)),
-            Span::styled(
-                "\u{2502}",
-                Style::default()
-                    .fg(self.theme.shortcut)
-                    .add_modifier(Modifier::SLOW_BLINK),
-            ),
-            Span::styled(after, Style::default().fg(self.theme.text)),
-        ]);
-
-        // Status line: error > resolving > hint
-        let status_line = if let Some(ref err) = self.state.error {
-            Line::from(Span::styled(
-                err.as_str(),
-                Style::default().fg(self.theme.error),
-            ))
-        } else if self.state.resolving {
-            Line::from(Span::styled(
-                "Resolving...",
-                Style::default().fg(self.theme.warning),
-            ))
-        } else {
-            Line::from(Span::styled(
+            Span::styled(&input[start..cursor], field),
+            Span::styled(under.unwrap_or(" "), field.add_modifier(Modifier::REVERSED)),
+            Span::styled(&input[(cursor + 1).min(end)..end], field),
+        ];
+        if input.is_empty() {
+            spans.push(Span::styled(
                 "Hostname or IP address",
-                Style::default().fg(self.theme.text_dim),
-            ))
+                field.fg(self.theme.text_dim),
+            ));
+        }
+        let used: usize = spans.iter().map(Span::width).sum();
+        let pad = usize::from(inner.width).saturating_sub(used);
+        spans.push(Span::styled(" ".repeat(pad), field));
+        let input_line = Line::from(spans);
+
+        // Status line: error, or resolution in flight
+        let status_line = if let Some(ref err) = self.state.error {
+            Line::styled(err.as_str(), Style::default().fg(self.theme.error))
+        } else if self.state.resolving {
+            Line::styled("Resolving…", Style::default().fg(self.theme.warning))
+        } else {
+            Line::default()
         };
 
         let text = vec![Line::default(), input_line, status_line];
@@ -188,7 +190,8 @@ mod tests {
         assert_eq!(s.cursor, s.input.len());
     }
 
-    fn input_row(state: &TargetInputState, width: u16) -> Vec<String> {
+    /// The field's cells after the prompt, and the reversed cursor cell.
+    fn input_row(state: &TargetInputState, width: u16) -> (Vec<String>, usize) {
         let area = Rect::new(0, 0, width, 10);
         let mut buffer = Buffer::empty(area);
         TargetInputView::new(&Theme::default(), state).render(area, &mut buffer);
@@ -200,10 +203,20 @@ mod tests {
         let start = (y / usize::from(width)) * usize::from(width);
         let prompt = y % usize::from(width);
         let inner_width = usize::from(50.min(width.saturating_sub(4)).saturating_sub(4));
-        buffer.content[start + prompt..start + prompt + inner_width]
+        let cells = &buffer.content[start + prompt + 2..start + prompt + inner_width];
+        let cursor = cells
             .iter()
-            .map(|cell| cell.symbol().to_string())
-            .collect()
+            .position(|cell| cell.modifier.contains(Modifier::REVERSED))
+            .expect("cursor cell");
+        assert!(
+            cells
+                .iter()
+                .all(|c| c.modifier.contains(Modifier::UNDERLINED))
+        );
+        (
+            cells.iter().map(|c| c.symbol().to_string()).collect(),
+            cursor,
+        )
     }
 
     #[test]
@@ -214,10 +227,10 @@ mod tests {
             state.handle_char(c);
         }
         for width in [32, 54, 100] {
-            let row = input_row(&state, width);
-            assert!(
-                row.iter().any(|cell| cell == "│"),
-                "cursor missing at width {width}"
+            let (row, cursor) = input_row(&state, width);
+            assert_eq!(
+                row[cursor], " ",
+                "cursor sits after the text at width {width}"
             );
             assert!(
                 row.concat().contains("example.internal"),
@@ -226,7 +239,12 @@ mod tests {
         }
         state.handle_backspace();
         state.handle_char('x');
-        assert!(input_row(&state, 54).concat().contains("example.internax"));
+        assert!(
+            input_row(&state, 54)
+                .0
+                .concat()
+                .contains("example.internax")
+        );
     }
 
     #[test]
@@ -237,13 +255,17 @@ mod tests {
         }
         for position in [0, 5, 25, state.input.len()] {
             state.cursor = position;
-            let row = input_row(&state, 36);
-            assert!(row.iter().any(|cell| cell == "│"));
-            if position < state.input.len() {
-                let cursor = row.iter().position(|cell| cell == "│").unwrap();
-                assert_eq!(row[cursor + 1], state.input[position..position + 1]);
-            }
+            let (row, cursor) = input_row(&state, 36);
+            let expected = state.input.get(position..position + 1).unwrap_or(" ");
+            assert_eq!(row[cursor], expected);
         }
+    }
+
+    #[test]
+    fn empty_field_shows_a_dim_placeholder() {
+        let (row, cursor) = input_row(&TargetInputState::default(), 60);
+        assert_eq!(cursor, 0);
+        assert!(row.concat().starts_with(" Hostname or IP address"));
     }
 
     #[test]
