@@ -972,7 +972,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                     responder,
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type,
-                    is_pmtud: false,
+                    is_pmtud: is_pmtud_payload(&original_payload[8..]),
                     mpls_labels: exts.mpls_labels,
                     interface_info: exts.interface_info,
                     src_port: None,
@@ -996,7 +996,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                     responder,
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type,
-                    is_pmtud: false,
+                    is_pmtud: is_pmtud_payload(&original_payload[8..]),
                     mpls_labels: exts.mpls_labels,
                     interface_info: exts.interface_info,
                     src_port: None,
@@ -1501,7 +1501,7 @@ fn parse_icmp_error_payload_v6_dgram(
                     responder,
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type,
-                    is_pmtud: false,
+                    is_pmtud: is_pmtud_payload(&original_payload[8..]),
                     mpls_labels: exts.mpls_labels,
                     interface_info: exts.interface_info,
                     src_port: None,
@@ -1520,7 +1520,7 @@ fn parse_icmp_error_payload_v6_dgram(
                     responder,
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type,
-                    is_pmtud: false,
+                    is_pmtud: is_pmtud_payload(&original_payload[8..]),
                     mpls_labels: exts.mpls_labels,
                     interface_info: exts.interface_info,
                     src_port: None,
@@ -1753,6 +1753,19 @@ mod tests {
                     assert_eq!(parsed.mtu, None);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn ipv6_processing_error_preserves_quoted_pmtud_marker() {
+        let mut packet = ipv6_processing_packet(4, 6, IPPROTO_ICMPV6);
+        packet.resize(65, 0);
+        for parsed in parse_processing_envelopes(&packet) {
+            assert!(!parsed.is_pmtud);
+        }
+        packet[64] = crate::probe::icmp::PMTUD_MARKER;
+        for parsed in parse_processing_envelopes(&packet) {
+            assert!(parsed.is_pmtud);
         }
     }
 
