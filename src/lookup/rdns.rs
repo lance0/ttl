@@ -4,7 +4,7 @@ use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::proto::rr::RData;
 use hickory_resolver::{Resolver, TokioResolver};
 use parking_lot::RwLock;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -47,6 +47,13 @@ impl DnsLookup {
             resolver,
             cache: RwLock::new(HashMap::new()),
             cache_ttl: Duration::from_secs(3600), // 1 hour
+        })
+    }
+
+    /// A fresh cached miss must not consume a worker batch slot.
+    fn needs_lookup(&self, ip: IpAddr) -> bool {
+        !self.cache.read().get(&ip).is_some_and(|entry| {
+            entry.hostname.is_none() && entry.cached_at.elapsed() < self.cache_ttl
         })
     }
 
@@ -108,6 +115,7 @@ const MAX_CONCURRENT_LOOKUPS: usize = 10;
 /// Background DNS lookup worker that updates session state (multi-target)
 pub async fn run_dns_worker(dns: Arc<DnsLookup>, sessions: SessionMap, cancel: CancellationToken) {
     let mut interval = tokio::time::interval(Duration::from_millis(500));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -115,26 +123,8 @@ pub async fn run_dns_worker(dns: Arc<DnsLookup>, sessions: SessionMap, cancel: C
                 break;
             }
             _ = interval.tick() => {
-                // Collect a bounded, first-seen batch of unique IPs that need lookup.
-                let batch: Vec<IpAddr> = {
-                    let sessions = sessions.read();
-                    let mut seen = HashSet::new();
-                    let mut batch = Vec::new();
-                    'sessions: for state in sessions.values() {
-                        let session = state.read();
-                        for hop in &session.hops {
-                            for stats in hop.responders.values() {
-                                if stats.hostname.is_none() && seen.insert(stats.ip) {
-                                    batch.push(stats.ip);
-                                    if batch.len() >= MAX_CONCURRENT_LOOKUPS {
-                                        break 'sessions;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    batch
-                };
+                let batch = super::collect_lookup_batch(&sessions, MAX_CONCURRENT_LOOKUPS,
+                    |stats| stats.hostname.is_none(), |ip| dns.needs_lookup(ip));
 
                 if batch.is_empty() {
                     continue;
@@ -150,7 +140,9 @@ pub async fn run_dns_worker(dns: Arc<DnsLookup>, sessions: SessionMap, cancel: C
                     .collect();
 
                 // Wait for all lookups to complete
-                let results = futures::future::join_all(futures).await;
+                let Some(results) = cancel.run_until_cancelled(futures::future::join_all(futures)).await else {
+                    break;
+                };
 
                 // Update all sessions with results
                 let sessions = sessions.read();
@@ -168,5 +160,39 @@ pub async fn run_dns_worker(dns: Arc<DnsLookup>, sessions: SessionMap, cancel: C
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn negative_results_do_not_starve_later_hops() {
+        let lookup = Arc::new(DnsLookup::new().await.unwrap());
+        for n in 1..=20 {
+            let ip = format!("10.0.0.{n}").parse().unwrap();
+            let value = if n <= 10 {
+                None
+            } else {
+                Some("router.example.test".to_string())
+            };
+            lookup.cache.write().insert(
+                ip,
+                CacheEntry {
+                    hostname: value,
+                    cached_at: Instant::now(),
+                },
+            );
+        }
+        let sessions = super::super::tests::unenriched_sessions();
+        let cancel = CancellationToken::new();
+        super::super::tests::assert_worker_progress(
+            sessions.clone(),
+            run_dns_worker(lookup, sessions.clone(), cancel.clone()),
+            cancel,
+            |stats| stats.hostname.is_some(),
+        )
+        .await;
     }
 }

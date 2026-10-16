@@ -1,6 +1,6 @@
 use maxminddb::{Reader, geoip2};
 use parking_lot::RwLock;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -63,6 +63,13 @@ impl GeoLookup {
         }
 
         None
+    }
+
+    /// A fresh cached miss must not consume a worker batch slot.
+    fn needs_lookup(&self, ip: IpAddr) -> bool {
+        !self.cache.read().get(&ip).is_some_and(|entry| {
+            entry.geo.is_none() && (entry.cached_at.elapsed() < self.cache_ttl)
+        })
     }
 
     /// Lookup GeoIP info for an IP address
@@ -145,6 +152,7 @@ pub async fn run_geo_worker(
     cancel: CancellationToken,
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(500));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -152,26 +160,8 @@ pub async fn run_geo_worker(
                 break;
             }
             _ = interval.tick() => {
-                // Collect a bounded, first-seen batch of unique IPs that need geo lookup.
-                let batch: Vec<IpAddr> = {
-                    let sessions = sessions.read();
-                    let mut seen = HashSet::new();
-                    let mut batch = Vec::new();
-                    'sessions: for state in sessions.values() {
-                        let session = state.read();
-                        for hop in &session.hops {
-                            for stats in hop.responders.values() {
-                                if stats.geo.is_none() && seen.insert(stats.ip) {
-                                    batch.push(stats.ip);
-                                    if batch.len() >= MAX_CONCURRENT_LOOKUPS {
-                                        break 'sessions;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    batch
-                };
+                let batch = super::collect_lookup_batch(&sessions, MAX_CONCURRENT_LOOKUPS,
+                    |stats| stats.geo.is_none(), |ip| geo_lookup.needs_lookup(ip));
 
                 if batch.is_empty() {
                     continue;

@@ -4,7 +4,7 @@ use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::proto::rr::RData;
 use hickory_resolver::{Resolver, TokioResolver};
 use parking_lot::RwLock;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -49,6 +49,15 @@ impl AsnLookup {
             cache: RwLock::new(HashMap::new()),
             cache_ttl: Duration::from_secs(3600), // 1 hour
         })
+    }
+
+    /// A fresh cached miss must not consume a worker batch slot.
+    fn needs_lookup(&self, ip: IpAddr) -> bool {
+        !self
+            .cache
+            .read()
+            .get(&ip)
+            .is_some_and(|entry| entry.asn.is_none() && entry.cached_at.elapsed() < self.cache_ttl)
     }
 
     /// Lookup ASN info for an IP via Team Cymru DNS
@@ -223,6 +232,7 @@ pub async fn run_asn_worker(
     cancel: CancellationToken,
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(500));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -230,26 +240,8 @@ pub async fn run_asn_worker(
                 break;
             }
             _ = interval.tick() => {
-                // Collect a bounded, first-seen batch of unique IPs that need ASN lookup.
-                let batch: Vec<IpAddr> = {
-                    let sessions = sessions.read();
-                    let mut seen = HashSet::new();
-                    let mut batch = Vec::new();
-                    'sessions: for state in sessions.values() {
-                        let session = state.read();
-                        for hop in &session.hops {
-                            for stats in hop.responders.values() {
-                                if stats.asn.is_none() && seen.insert(stats.ip) {
-                                    batch.push(stats.ip);
-                                    if batch.len() >= MAX_CONCURRENT_LOOKUPS {
-                                        break 'sessions;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    batch
-                };
+                let batch = super::collect_lookup_batch(&sessions, MAX_CONCURRENT_LOOKUPS,
+                    |stats| stats.asn.is_none(), |ip| asn_lookup.needs_lookup(ip));
 
                 if batch.is_empty() {
                     continue;
@@ -265,7 +257,9 @@ pub async fn run_asn_worker(
                     .collect();
 
                 // Wait for all lookups to complete
-                let results = futures::future::join_all(futures).await;
+                let Some(results) = cancel.run_until_cancelled(futures::future::join_all(futures)).await else {
+                    break;
+                };
 
                 // Update all sessions with results
                 let sessions = sessions.read();
@@ -290,6 +284,38 @@ pub async fn run_asn_worker(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn negative_results_do_not_starve_later_hops() {
+        let lookup = Arc::new(AsnLookup::new().await.unwrap());
+        for n in 1..=20 {
+            let ip = format!("10.0.0.{n}").parse().unwrap();
+            let value = if n <= 10 {
+                None
+            } else {
+                Some(AsnInfo {
+                    number: 64500,
+                    name: "Example".into(),
+                    prefix: None,
+                })
+            };
+            lookup.cache.write().insert(
+                ip,
+                CacheEntry {
+                    asn: value,
+                    cached_at: Instant::now(),
+                },
+            );
+        }
+        let sessions = super::super::tests::unenriched_sessions();
+        let cancel = CancellationToken::new();
+        super::super::tests::assert_worker_progress(
+            sessions.clone(),
+            run_asn_worker(lookup, sessions.clone(), cancel.clone()),
+            cancel,
+            |stats| stats.asn.is_some(),
+        )
+        .await;
+    }
     #[test]
     fn test_ipv4_reverse_format() {
         // Test the format directly without the struct
