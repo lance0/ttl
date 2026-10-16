@@ -119,8 +119,19 @@ impl Widget for TargetInputView<'_> {
         let inner = block.inner(modal);
         block.render(modal, buf);
 
-        // Input line with cursor
-        let (before, after) = self.state.input.split_at(self.state.cursor);
+        // Keep the cursor in view for long FQDNs and addresses. Input is
+        // ASCII, so byte offsets also count terminal cells. Reserve two cells
+        // for the prompt and one for the cursor, then center the editing point
+        // where possible without hiding the end of a short input.
+        let available = usize::from(inner.width.saturating_sub(3));
+        let start = self
+            .state
+            .cursor
+            .saturating_sub(available / 2)
+            .min(self.state.input.len().saturating_sub(available));
+        let end = (start + available).min(self.state.input.len());
+        let before = &self.state.input[start..self.state.cursor];
+        let after = &self.state.input[self.state.cursor..end];
         let input_line = Line::from(vec![
             Span::styled("> ", Style::default().fg(self.theme.text_dim)),
             Span::styled(before, Style::default().fg(self.theme.text)),
@@ -193,6 +204,64 @@ mod tests {
             s.move_cursor_right();
         }
         assert_eq!(s.cursor, s.input.len());
+    }
+
+    fn input_row(state: &TargetInputState, width: u16) -> Vec<String> {
+        let area = Rect::new(0, 0, width, 10);
+        let mut buffer = Buffer::empty(area);
+        TargetInputView::new(&Theme::default(), state).render(area, &mut buffer);
+        let y = buffer
+            .content
+            .iter()
+            .position(|cell| cell.symbol() == ">")
+            .expect("input prompt");
+        let start = (y / usize::from(width)) * usize::from(width);
+        let prompt = y % usize::from(width);
+        let inner_width = usize::from(50.min(width.saturating_sub(4)).saturating_sub(2));
+        buffer.content[start + prompt..start + prompt + inner_width]
+            .iter()
+            .map(|cell| cell.symbol().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn test_long_target_keeps_cursor_and_edited_tail_visible() {
+        let name = "a-very-long-router-name.branch-office.example.internal";
+        let mut state = TargetInputState::default();
+        for c in name.chars() {
+            state.handle_char(c);
+        }
+        for width in [32, 54, 100] {
+            let row = input_row(&state, width);
+            assert!(
+                row.iter().any(|cell| cell == "│"),
+                "cursor missing at width {width}"
+            );
+            assert!(
+                row.concat().contains("example.internal"),
+                "tail hidden at width {width}"
+            );
+        }
+        state.handle_backspace();
+        state.handle_char('x');
+        assert!(input_row(&state, 54).concat().contains("example.internax"));
+    }
+
+    #[test]
+    fn test_long_target_cursor_can_visit_start_middle_and_end() {
+        let mut state = TargetInputState::default();
+        for c in "a-router-with-a-long-name.at-an-office.example.internal".chars() {
+            state.handle_char(c);
+        }
+        for position in [0, 5, 25, state.input.len()] {
+            state.cursor = position;
+            let row = input_row(&state, 36);
+            assert!(row.iter().any(|cell| cell == "│"));
+            if position < state.input.len() {
+                let cursor = row.iter().position(|cell| cell == "│").unwrap();
+                assert_eq!(row[cursor + 1], state.input[position..position + 1]);
+            }
+        }
     }
 
     #[test]
