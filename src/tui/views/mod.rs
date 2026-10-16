@@ -78,7 +78,7 @@ mod responsive_tests {
                     rendered.contains("9.1%"),
                     "loss must retain all digits: {w} {mode:?}"
                 );
-                assert!(rendered.contains("[PAUSED]"));
+                assert!(rendered.contains(" PAUSED "));
                 assert!(
                     buf.content
                         .iter()

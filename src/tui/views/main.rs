@@ -2,7 +2,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Row, StatefulWidget, Table, TableState, Widget};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Row, StatefulWidget, Table, TableState, Widget,
+};
 
 use crate::prefs::DisplayMode;
 use crate::state::{PmtudPhase, Session};
@@ -262,6 +264,137 @@ impl<'a> MainView<'a> {
         self
     }
 
+    /// Title hierarchy: `ttl` and the target lead, status flags follow as
+    /// colored badges, and the session details sit dim on the right. Details
+    /// give way first when the border is short; flags are kept longest.
+    fn title_lines(&self, width: u16) -> (Line<'static>, Option<Line<'static>>) {
+        let theme = self.theme;
+        let session = self.session;
+        let dim = Style::default().fg(theme.text_dim);
+        let target = &session.target;
+        let (name, detail) = if target.original.parse::<std::net::IpAddr>().is_err() {
+            (target.display_name(), Some(target.resolved.to_string()))
+        } else {
+            // An IP target falls back to the destination hop's reverse DNS.
+            let dest_name = session
+                .dest_ttl
+                .and_then(|ttl| session.hops.get(usize::from(ttl).checked_sub(1)?))
+                .and_then(|hop| hop.primary_stats()?.hostname.clone());
+            (
+                target.resolved.to_string(),
+                target.hostname.clone().or(dest_name),
+            )
+        };
+
+        let badge = |text: String, color| Span::styled(text, Style::default().fg(color).bold());
+        let mut flags = Vec::new();
+        if self.paused {
+            flags.push(Span::styled(
+                " PAUSED ",
+                Style::default()
+                    .fg(theme.warning)
+                    .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            ));
+        }
+        let any = |f: fn(&crate::state::Hop) -> bool| session.hops.iter().any(f);
+        if any(|h| h.rate_limit.as_ref().is_some_and(|r| r.suspected)) {
+            flags.push(badge("RL?".into(), theme.warning));
+        }
+        if any(|h| h.has_asymmetry()) {
+            flags.push(badge("ASYM".into(), theme.warning));
+        }
+        if session.has_nat() {
+            flags.push(badge("NAT".into(), theme.warning));
+        }
+        if any(|h| h.has_ttl_manip()) {
+            flags.push(badge("TTL!".into(), theme.warning));
+        }
+        if let Some(pmtud) = &session.pmtud {
+            match (pmtud.phase, pmtud.discovered_mtu) {
+                (PmtudPhase::WaitingForDestination, _) => {}
+                (PmtudPhase::Searching, _) => flags.push(badge(
+                    format!("MTU {}-{}", pmtud.min_size, pmtud.max_size),
+                    theme.text_dim,
+                )),
+                (PmtudPhase::Complete, Some(mtu)) => {
+                    flags.push(badge(format!("MTU {mtu}"), theme.success))
+                }
+                (PmtudPhase::Complete, None) => {
+                    flags.push(badge("MTU unconfirmed".into(), theme.warning))
+                }
+            }
+        }
+        // The destination was not found within the default probe depth.
+        if session.dest_ttl.is_none() && session.config.max_ttl == 30 {
+            flags.push(badge(
+                format!("max_ttl={}", session.config.max_ttl),
+                theme.warning,
+            ));
+        }
+
+        let width = usize::from(width);
+        let build = |detail: Option<&str>, name: &str| {
+            let mut spans = vec![
+                Span::raw(" "),
+                Span::styled("ttl", Style::default().fg(theme.header).bold()),
+                Span::raw(" "),
+            ];
+            if let Some(index) = self.target_index {
+                spans.push(Span::styled(format!("{index}/{} ", self.num_targets), dim));
+            }
+            spans.push(Span::styled(
+                name.to_owned(),
+                Style::default().fg(theme.text),
+            ));
+            if let Some(detail) = detail {
+                spans.push(Span::styled(format!(" {detail}"), dim));
+            }
+            for flag in &flags {
+                spans.push(Span::raw(" "));
+                spans.push(flag.clone());
+            }
+            spans.push(Span::raw(" "));
+            Line::from(spans)
+        };
+        let mut left = build(detail.as_deref(), &name);
+        if left.width() > width {
+            left = build(None, &name);
+        }
+        if left.width() > width {
+            // Keep the flags whole; the target name absorbs the shortage.
+            let room = (name.chars().count() + width).saturating_sub(left.width());
+            left = build(None, &super::fit_text(&name, room as u16));
+        }
+
+        let interval = session.config.interval.as_millis();
+        let routing = match (
+            session.config.interface.as_deref(),
+            session.source_ip,
+            session.gateway,
+        ) {
+            (Some(i), Some(src), Some(gw)) => Some(format!("{i} {src} → {gw}")),
+            (Some(i), Some(src), None) => Some(format!("{i} {src}")),
+            (Some(i), None, _) => Some(format!("via {i}")),
+            (None, Some(src), Some(gw)) => Some(format!("{src} → {gw}")),
+            (None, Some(src), None) => Some(src.to_string()),
+            (None, None, _) => None,
+        };
+        // Listed in the order they give way.
+        let mut details: Vec<String> = routing.into_iter().collect();
+        details.push(format!("{interval}ms interval"));
+        details.push(format!("{} probes", session.total_sent));
+        details.push("RTT ms".into());
+        while !details.is_empty() {
+            let text = format!(" {} ", details.join(" · "));
+            // Leave at least a short run of border between the two titles.
+            if left.width() + text.chars().count() + 3 <= width {
+                return (left, Some(Line::styled(text, dim)));
+            }
+            details.remove(0);
+        }
+        (left, None)
+    }
+
     /// Compute column widths based on display mode and content
     fn compute_column_widths(&self, max_display_ttl: u8) -> ColumnWidths {
         match self.display_mode {
@@ -314,119 +447,15 @@ impl<'a> MainView<'a> {
 
 impl Widget for MainView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Build title
-        // If original was a hostname (not an IP), show "hostname -> IP"
-        // If original was an IP, show "IP (hostname)" with reverse DNS
-        let target_str = if self
-            .session
-            .target
-            .original
-            .parse::<std::net::IpAddr>()
-            .is_err()
-        {
-            // Was a hostname, show hostname -> IP
-            format!(
-                "{} -> {}",
-                self.session.target.display_name(),
-                self.session.target.resolved
-            )
-        } else {
-            // Was an IP, show IP (hostname) as before
-            if let Some(ref hostname) = self.session.target.hostname {
-                format!("{} ({})", self.session.target.resolved, hostname)
-            } else {
-                self.session.target.resolved.to_string()
-            }
-        };
-
-        // Target indicator for multi-target mode
-        let target_indicator = if let Some(idx) = self.target_index {
-            format!("[{}/{}] ", idx, self.num_targets)
-        } else {
-            String::new()
-        };
-
-        let status = if self.paused { " [PAUSED]" } else { "" };
-        let nat_warn = if self.session.has_nat() { " [NAT]" } else { "" };
-        let has_rate_limit = self
-            .session
-            .hops
-            .iter()
-            .any(|h| h.rate_limit.as_ref().map(|r| r.suspected).unwrap_or(false));
-        let rl_warn = if has_rate_limit { " [RL?]" } else { "" };
-        let has_asymmetry = self.session.hops.iter().any(|h| h.has_asymmetry());
-        let asym_warn = if has_asymmetry { " [ASYM]" } else { "" };
-        let has_ttl_manip = self.session.hops.iter().any(|h| h.has_ttl_manip());
-        let ttl_warn = if has_ttl_manip { " [TTL!]" } else { "" };
-
-        // Warning if destination not found and using default max_ttl=30
-        let max_ttl_warn = if self.session.dest_ttl.is_none() && self.session.config.max_ttl == 30 {
-            " [max_ttl=30]"
-        } else {
-            ""
-        };
-
-        // PMTUD status indicator
-        let pmtud_status = self
-            .session
-            .pmtud
-            .as_ref()
-            .map(|p| match p.phase {
-                PmtudPhase::WaitingForDestination => String::new(),
-                PmtudPhase::Searching => format!(" [MTU: {}-{}]", p.min_size, p.max_size),
-                PmtudPhase::Complete => p
-                    .discovered_mtu
-                    .map(|mtu| format!(" [MTU: {}]", mtu))
-                    .unwrap_or_else(|| " [MTU: unconfirmed]".to_string()),
-            })
-            .unwrap_or_default();
-
-        let probe_count = self.session.total_sent;
-        let interval_ms = self.session.config.interval.as_millis();
-
-        // Show routing info: interface name, source IP, and gateway
-        let routing_str = {
-            let iface = self.session.config.interface.as_ref();
-            let src_ip = self.session.source_ip;
-            let gateway = self.session.gateway;
-
-            match (iface, src_ip, gateway) {
-                // Full info: interface (source → gateway)
-                (Some(i), Some(src), Some(gw)) => {
-                    format!(" {} ({} → {})", i, src, gw)
-                }
-                // Interface with source only
-                (Some(i), Some(src), None) => {
-                    format!(" {} ({})", i, src)
-                }
-                // Interface only (fallback)
-                (Some(i), None, _) => {
-                    format!(" via {}", i)
-                }
-                // No interface but have routing info
-                (None, Some(src), Some(gw)) => {
-                    format!(" {} → {}", src, gw)
-                }
-                // Source only
-                (None, Some(src), None) => {
-                    format!(" {}", src)
-                }
-                // No routing info
-                (None, None, _) => String::new(),
-            }
-        };
-
-        let flags =
-            format!("{status}{nat_warn}{rl_warn}{asym_warn}{ttl_warn}{pmtud_status}{max_ttl_warn}");
-        let title = format!(
-            "ttl{flags} ── {target_indicator}{target_str}{routing_str} ── {probe_count} probes ── {interval_ms}ms interval ── RTT ms"
-        );
-        let title = super::fit_text(&title, area.width.saturating_sub(2));
-
         let block = Block::default()
-            .title(title)
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(self.theme.border));
+        let (left, right) = self.title_lines(area.width.saturating_sub(2));
+        let block = match right {
+            Some(right) => block.title(left).title(right.right_aligned()),
+            None => block.title(left),
+        };
 
         let inner = block.inner(area);
         block.render(area, buf);
@@ -819,6 +848,56 @@ mod tests {
         assert_eq!(buf[(x, 4)].fg, theme.text_dim);
         let x = find(&r3, "×").unwrap() as u16;
         assert_eq!(buf[(x, 4)].fg, theme.text_dim);
+    }
+
+    #[test]
+    fn title_has_hierarchy_and_keeps_flags_when_narrow() {
+        use crate::state::ResponderStats;
+        let mut session = sample_session();
+        session.target =
+            crate::state::Target::new("192.0.2.9".into(), "192.0.2.9".parse().unwrap());
+        // Destination at hop 2 with reverse DNS; the title borrows its name.
+        session.dest_ttl = Some(2);
+        let ip = "192.0.2.2".parse().unwrap();
+        let mut stats = ResponderStats::new(ip);
+        stats.hostname = Some("dest.example.net".into());
+        session.hops[1].responders.insert(ip, stats);
+        session.hops[1].primary = Some(ip);
+        session.hops[0].rate_limit = Some(crate::state::RateLimitInfo {
+            suspected: true,
+            ..Default::default()
+        });
+        let theme = Theme::dracula();
+        let view = MainView::new(&session, None, true, &theme);
+        let (left, right) = view.title_lines(118);
+        let text = left.to_string();
+        assert!(
+            text.starts_with(" ttl 192.0.2.9 dest.example.net"),
+            "{text}"
+        );
+        assert!(text.contains(" PAUSED ") && text.contains("RL?"));
+        let style_of = |needle: &str| {
+            left.spans
+                .iter()
+                .find(|s| s.content.contains(needle))
+                .unwrap()
+                .style
+        };
+        assert_eq!(style_of("ttl").fg, Some(theme.header));
+        assert_eq!(style_of("192.0.2.9").fg, Some(theme.text));
+        assert_eq!(style_of("RL?").fg, Some(theme.warning));
+        assert!(style_of("PAUSED").add_modifier.contains(Modifier::REVERSED));
+        let right = right.expect("details fit at 120 columns").to_string();
+        assert!(
+            right.contains("probes") && right.contains("RTT ms"),
+            "{right}"
+        );
+        // Narrow: details and the hostname give way, flags stay whole.
+        let (left, right) = view.title_lines(30);
+        assert!(right.is_none());
+        let text = left.to_string();
+        assert!(text.contains(" PAUSED ") && text.contains("RL?"), "{text}");
+        assert!(left.width() <= 30);
     }
 
     #[test]

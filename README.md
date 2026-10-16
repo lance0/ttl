@@ -245,7 +245,7 @@ VPN tunnels often have lower MTU than expected. Large packets get silently dropp
 sudo ttl --pmtud vpn-gateway.example.com
 ```
 
-TTL binary-searches to find the maximum packet size that works. The `[MTU: 1400]` indicator shows exactly where fragmentation occurs.
+TTL binary-searches to find the maximum packet size that works. The `MTU 1400` title flag shows exactly where fragmentation occurs.
 
 ### Detect Carrier-Grade NAT Breaking Your Flows
 
@@ -255,7 +255,7 @@ Running multi-flow traceroute but getting inconsistent results? NAT devices may 
 sudo ttl --flows 4 target.com
 ```
 
-TTL detects when returned source ports don't match what was sent. The `[NAT]` indicator warns you, and hop details show which device is doing the rewriting.
+TTL detects when returned source ports don't match what was sent. The `NAT` title flag warns you, and hop details show which device is doing the rewriting.
 
 ### Identify Internet Exchange Points
 
@@ -285,7 +285,7 @@ Some networks intercept traffic with transparent proxies that manipulate TTL val
 sudo ttl -p tcp --port 80 website.com
 ```
 
-The `[TTL!]` indicator appears when TTL manipulation is detected.
+The `TTL!` title flag appears when TTL manipulation is detected.
 
 ### Distinguish Real Loss from ICMP Rate Limiting
 
@@ -295,7 +295,7 @@ That 30% packet loss at hop 5 might be fake - routers often rate-limit ICMP resp
 sudo ttl target.com
 ```
 
-The `[RL?]` indicator and `50%RL` in the loss column tell you it's rate limiting, not actual packet drops.
+The `RL?` title flag and the `RL` tag after the loss (`50.0% RL`) tell you it's rate limiting, not actual packet drops.
 
 ### Compare Multiple Paths
 
@@ -403,7 +403,7 @@ sudo ttl 8.8.8.8
 
 ### Multi-flow Mode
 - NAT devices may rewrite source ports, breaking flow correlation
-- The `[NAT]` indicator warns when this is detected
+- The `NAT` title flag warns when this is detected
 
 ## Documentation
 
@@ -440,7 +440,7 @@ Raw ICMP sockets require `CAP_NET_RAW` or root. See [Permissions](#permissions-l
 
 Try increasing probe interval: `ttl target -i 2.0`
 
-Some routers rate-limit ICMP - look for the `[RL?]` indicator in the TUI.
+Some routers rate-limit ICMP - look for the `RL?` title flag in the TUI.
 
 ### All hops showing `* * *`
 
