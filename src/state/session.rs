@@ -122,6 +122,87 @@ pub struct IcmpInterfaceInfo {
     pub mtu: Option<u32>,
 }
 
+/// Reply RTT statistics for an RFC 5837 sub-IP component (often a LAG member).
+/// Samples describe the complete round trip, not latency of the member link.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubIpStats {
+    pub interface: IcmpInterfaceInfo,
+    pub received: u64,
+    #[serde(with = "duration_serde")]
+    pub min_rtt: Duration,
+    #[serde(with = "duration_serde")]
+    pub max_rtt: Duration,
+    /// Welford mean in microseconds.
+    pub mean_rtt: f64,
+    /// Welford sum of squared deviations in microseconds squared.
+    pub m2: f64,
+}
+
+impl SubIpStats {
+    fn new(interface: IcmpInterfaceInfo) -> Self {
+        Self {
+            interface,
+            received: 0,
+            min_rtt: Duration::MAX,
+            max_rtt: Duration::ZERO,
+            mean_rtt: 0.0,
+            m2: 0.0,
+        }
+    }
+
+    fn match_strength(&self, interface: &IcmpInterfaceInfo) -> u8 {
+        let previous = &self.interface;
+        if let (Some(a), Some(b)) = (
+            previous.if_index.filter(|i| *i != 0),
+            interface.if_index.filter(|i| *i != 0),
+        ) {
+            return if a == b { 3 } else { 0 };
+        }
+        if let (Some(a), Some(b)) = (
+            previous.name.as_ref().filter(|n| !n.is_empty()),
+            interface.name.as_ref().filter(|n| !n.is_empty()),
+        ) {
+            return if a == b { 2 } else { 0 };
+        }
+        u8::from(matches!((previous.ip_addr, interface.ip_addr), (Some(a), Some(b)) if a == b))
+    }
+
+    fn record(&mut self, interface: &IcmpInterfaceInfo, rtt: Duration) {
+        // Retain identifiers omitted by a later partial extension. Name/MTU
+        // updates must not split an ifIndex's samples into separate members.
+        if let Some(index) = interface.if_index.filter(|i| *i != 0) {
+            self.interface.if_index = Some(index);
+        }
+        if interface.ip_addr.is_some() {
+            self.interface.ip_addr = interface.ip_addr;
+        }
+        if let Some(name) = interface.name.as_ref().filter(|n| !n.is_empty()) {
+            self.interface.name = Some(name.clone());
+        }
+        if interface.mtu.is_some() {
+            self.interface.mtu = interface.mtu;
+        }
+        self.received += 1;
+        self.min_rtt = self.min_rtt.min(rtt);
+        self.max_rtt = self.max_rtt.max(rtt);
+        let micros = rtt.as_micros() as f64;
+        let delta = micros - self.mean_rtt;
+        self.mean_rtt += delta / self.received as f64;
+        self.m2 += delta * (micros - self.mean_rtt);
+    }
+
+    pub fn avg_rtt(&self) -> Duration {
+        Duration::from_micros(self.mean_rtt as u64)
+    }
+
+    pub fn stddev(&self) -> Duration {
+        if self.received < 2 {
+            return Duration::ZERO;
+        }
+        Duration::from_micros((self.m2 / self.received as f64).sqrt() as u64)
+    }
+}
+
 /// Result of a single probe
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -181,6 +262,10 @@ pub struct ResponderStats {
     /// Interface and next-hop identification from ICMP extensions (RFC 5837)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interface_info: Option<Vec<IcmpInterfaceInfo>>,
+    /// RTT grouped by identified sub-IP component, scoped to this responder.
+    /// Only replies carrying a member identity contribute; timeouts cannot be attributed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sub_ip_stats: Vec<SubIpStats>,
 
     // Counters
     // Note: sent is kept for JSON schema compatibility but not used in TUI
@@ -224,6 +309,7 @@ impl ResponderStats {
             ix: None,
             mpls_labels: None,
             interface_info: None,
+            sub_ip_stats: Vec::new(),
             sent: 0,
             received: 0,
             min_rtt: Duration::MAX,
@@ -236,6 +322,46 @@ impl ResponderStats {
             last_rtt: None,
             recent: VecDeque::with_capacity(RECENT_WINDOW_SIZE),
             samples: VecDeque::with_capacity(256),
+        }
+    }
+
+    // Bound additional state for long-running sessions. Existing members keep
+    // collecting samples after the first 64 distinct identities are recorded.
+    const MAX_SUB_IP_MEMBERS: usize = 64;
+
+    fn record_sub_ip_response(&mut self, interfaces: &[IcmpInterfaceInfo], rtt: Duration) {
+        let Some(interface) = interfaces.iter().find(|interface| {
+            interface.role == InterfaceRole::SubIpComponent
+                && (interface.if_index.is_some_and(|index| index != 0)
+                    || interface.name.as_ref().is_some_and(|name| !name.is_empty())
+                    || interface.ip_addr.is_some())
+        }) else {
+            return;
+        };
+        let mut best = None;
+        let mut strength = 0;
+        let mut ambiguous = false;
+        for (index, member) in self.sub_ip_stats.iter().enumerate() {
+            let candidate = member.match_strength(interface);
+            if candidate > strength {
+                best = Some(index);
+                strength = candidate;
+                ambiguous = false;
+            } else if candidate > 0 && candidate == strength {
+                ambiguous = true;
+            }
+        }
+        // Prefer ifIndex over a weaker match, but do not guess between two
+        // members sharing the strongest identity in a partial extension.
+        if ambiguous {
+            return;
+        }
+        if let Some(index) = best {
+            self.sub_ip_stats[index].record(interface, rtt);
+        } else if self.sub_ip_stats.len() < Self::MAX_SUB_IP_MEMBERS {
+            let mut member = SubIpStats::new(interface.clone());
+            member.record(interface, rtt);
+            self.sub_ip_stats.push(member);
         }
     }
 
@@ -1033,6 +1159,9 @@ impl Hop {
         if mpls_labels.is_some() {
             stats.mpls_labels = mpls_labels;
         }
+        if let Some(interfaces) = &interface_info {
+            stats.record_sub_ip_response(interfaces, rtt);
+        }
         // Store RFC 5837 interface info if present
         if interface_info.is_some() {
             stats.interface_info = interface_info;
@@ -1680,6 +1809,181 @@ mod duration_serde {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sub_ip(index: u32) -> IcmpInterfaceInfo {
+        IcmpInterfaceInfo {
+            role: InterfaceRole::SubIpComponent,
+            if_index: Some(index),
+            ip_addr: None,
+            name: Some(format!("Ethernet{index}")),
+            mtu: Some(1500),
+        }
+    }
+
+    #[test]
+    fn test_sub_ip_rtt_separates_members_of_one_responder() {
+        let mut hop = Hop::new(3);
+        let ip = "192.0.2.1".parse().unwrap();
+        for (member, ms) in [(1, 10), (2, 100), (1, 14), (2, 300)] {
+            hop.record_sent();
+            hop.record_response_with_extensions(
+                ip,
+                Duration::from_millis(ms),
+                None,
+                Some(vec![sub_ip(member)]),
+            );
+        }
+        let stats = hop.primary_stats().unwrap();
+        assert_eq!(stats.received, 4);
+        assert_eq!(stats.avg_rtt(), Duration::from_millis(106));
+        let members = &stats.sub_ip_stats;
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].received, 2);
+        assert_eq!(members[0].avg_rtt(), Duration::from_millis(12));
+        assert_eq!(members[0].stddev(), Duration::from_millis(2));
+        assert_eq!(members[1].avg_rtt(), Duration::from_millis(200));
+        assert_eq!(members[1].stddev(), Duration::from_millis(100));
+        assert_eq!(members[1].min_rtt, Duration::from_millis(100));
+        assert_eq!(members[1].max_rtt, Duration::from_millis(300));
+        assert_eq!(hop.loss_pct(), 0.0);
+    }
+
+    #[test]
+    fn test_sub_ip_does_not_attribute_timeouts_or_unidentified_replies() {
+        let mut hop = Hop::new(3);
+        let ip = "192.0.2.1".parse().unwrap();
+        hop.record_response_with_extensions(
+            ip,
+            Duration::from_millis(10),
+            None,
+            Some(vec![sub_ip(1)]),
+        );
+        hop.record_response(ip, Duration::from_millis(100));
+        hop.record_timeout();
+        let mut incoming = sub_ip(2);
+        incoming.role = InterfaceRole::IncomingIp;
+        hop.record_response_with_extensions(
+            ip,
+            Duration::from_millis(100),
+            None,
+            Some(vec![incoming]),
+        );
+        let anonymous = IcmpInterfaceInfo {
+            role: InterfaceRole::SubIpComponent,
+            if_index: Some(0),
+            ip_addr: None,
+            name: Some(String::new()),
+            mtu: Some(1500),
+        };
+        hop.record_response_with_extensions(
+            ip,
+            Duration::from_millis(100),
+            None,
+            Some(vec![anonymous]),
+        );
+        let stats = hop.primary_stats().unwrap();
+        assert_eq!(stats.sub_ip_stats.len(), 1);
+        assert_eq!(stats.sub_ip_stats[0].received, 1);
+        assert_eq!(stats.sub_ip_stats[0].stddev(), Duration::ZERO);
+    }
+
+    #[test]
+    fn test_sub_ip_identity_survives_metadata_changes_and_is_scoped_to_responder() {
+        let mut hop = Hop::new(3);
+        let ip = "192.0.2.1".parse().unwrap();
+        hop.record_response_with_extensions(
+            ip,
+            Duration::from_millis(10),
+            None,
+            Some(vec![sub_ip(1)]),
+        );
+        let mut changed = sub_ip(1);
+        changed.name = Some("Ethernet1@renamed".into());
+        changed.mtu = Some(9000);
+        hop.record_response_with_extensions(
+            ip,
+            Duration::from_millis(20),
+            None,
+            Some(vec![changed]),
+        );
+        let stats = hop.responders.get(&ip).unwrap();
+        assert_eq!(stats.sub_ip_stats.len(), 1);
+        assert_eq!(stats.sub_ip_stats[0].received, 2);
+        assert_eq!(stats.sub_ip_stats[0].interface.mtu, Some(9000));
+        hop.record_response_with_extensions(
+            "192.0.2.2".parse().unwrap(),
+            Duration::from_millis(50),
+            None,
+            Some(vec![sub_ip(1)]),
+        );
+        assert_eq!(hop.responders[&ip].sub_ip_stats[0].received, 2);
+    }
+
+    #[test]
+    fn test_sub_ip_fallback_identity_and_ambiguous_partial_reply() {
+        let mut stats = ResponderStats::new("192.0.2.1".parse().unwrap());
+        let mut named = sub_ip(1);
+        named.if_index = None;
+        stats.record_sub_ip_response(std::slice::from_ref(&named), Duration::from_millis(10));
+        stats.record_sub_ip_response(&[named], Duration::from_millis(20));
+        assert_eq!(stats.sub_ip_stats[0].received, 2);
+        let addressed = IcmpInterfaceInfo {
+            role: InterfaceRole::SubIpComponent,
+            if_index: None,
+            name: None,
+            ip_addr: Some("2001:db8::1".parse().unwrap()),
+            mtu: None,
+        };
+        stats.record_sub_ip_response(std::slice::from_ref(&addressed), Duration::from_millis(30));
+        stats.record_sub_ip_response(&[addressed], Duration::from_millis(40));
+        assert_eq!(stats.sub_ip_stats[1].received, 2);
+        let mut ambiguous = sub_ip(2);
+        ambiguous.name = Some("Ethernet1".into());
+        // Two members with distinct ifIndexes but identical names.
+        stats.record_sub_ip_response(&[sub_ip(1)], Duration::from_millis(10));
+        stats.record_sub_ip_response(std::slice::from_ref(&ambiguous), Duration::from_millis(20));
+        let total: u64 = stats.sub_ip_stats.iter().map(|s| s.received).sum();
+        ambiguous.if_index = None;
+        stats.record_sub_ip_response(&[ambiguous], Duration::from_millis(1000));
+        assert_eq!(
+            stats.sub_ip_stats.iter().map(|s| s.received).sum::<u64>(),
+            total
+        );
+    }
+
+    #[test]
+    fn test_sub_ip_stats_are_bounded_but_known_members_keep_updating() {
+        let mut stats = ResponderStats::new("192.0.2.1".parse().unwrap());
+        for index in 1..=65 {
+            stats.record_sub_ip_response(&[sub_ip(index)], Duration::from_millis(10));
+        }
+        assert_eq!(stats.sub_ip_stats.len(), 64);
+        stats.record_sub_ip_response(&[sub_ip(1)], Duration::from_millis(20));
+        assert_eq!(stats.sub_ip_stats[0].received, 2);
+    }
+
+    #[test]
+    fn test_sub_ip_json_roundtrip_legacy_files_and_reset() {
+        let ip = "192.0.2.1".parse().unwrap();
+        let mut session = Session::new(Target::new("test".into(), ip), Config::default());
+        session.hop_mut(1).unwrap().record_response_with_extensions(
+            ip,
+            Duration::from_millis(10),
+            None,
+            Some(vec![sub_ip(1)]),
+        );
+        let value = serde_json::to_value(&session).unwrap();
+        let saved: Session = serde_json::from_value(value).unwrap();
+        let stats = saved.hop(1).unwrap().primary_stats().unwrap();
+        assert_eq!(stats.sub_ip_stats[0].received, 1);
+        assert_eq!(stats.sub_ip_stats[0].avg_rtt(), Duration::from_millis(10));
+        let mut legacy = serde_json::to_value(stats).unwrap();
+        legacy.as_object_mut().unwrap().remove("sub_ip_stats");
+        let restored: ResponderStats = serde_json::from_value(legacy).unwrap();
+        assert!(restored.sub_ip_stats.is_empty());
+        session.reset_stats();
+        assert!(session.hop(1).unwrap().responders.is_empty());
+    }
 
     #[test]
     fn test_responder_stats_initial_state() {

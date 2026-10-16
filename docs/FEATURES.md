@@ -86,6 +86,27 @@ inspect the details, including additional responders at that hop. Long values
 wrap to the popup width. PgUp/PgDn scroll the details; Home/End jump to the
 start/end, while Up/Down continue to select adjacent hops.
 
+### Sub-IP / LAG Member RTT
+
+When a reply identifies a sub-IP component (RFC 5837 role 1), the hop detail
+view groups its RTT sample by that member within the responding router. Each
+member shows reply count, mean/min/max RTT and standard deviation, so operators
+can compare members sharing the same responder IP. An ifIndex identifies the
+member when available; a name or address can identify an unnumbered component.
+Ordinary incoming/outgoing interface objects are not assumed to identify a LAG
+member. Replies without a member identity do not inherit the last seen member.
+
+The first 64 identified members per responder are tracked; known members keep
+updating after that limit. These are full round-trip measurements, not link
+latency or proof that a member is faulty. Timeouts cannot be assigned to members
+from these extensions, so loss remains a hop statistic. This passive view does
+not choose or pin probes to a member or automatically diagnose correlations.
+
+JSON snapshots preserve these aggregates in each responder's `sub_ip_stats`
+array, and static replay displays them. Older JSON files load with no member
+statistics. Animated replay events do not include interface metadata, so they
+cannot reconstruct member statistics.
+
 ## NAT Detection
 
 ttl automatically detects NAT devices that rewrite source ports:

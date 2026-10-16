@@ -579,6 +579,41 @@ fn wrap_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
 }
 
 fn append_extensions(lines: &mut Vec<Line<'static>>, stats: &ResponderStats, theme: &Theme) {
+    if !stats.sub_ip_stats.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "  Sub-IP members (reply RTT):",
+            Style::default().fg(theme.text_dim),
+        ));
+        for member in &stats.sub_ip_stats {
+            let interface = &member.interface;
+            let mut identity = Vec::new();
+            if let Some(name) = &interface.name {
+                identity.push(crate::lookup::sanitize_display(name));
+            }
+            if let Some(index) = interface.if_index {
+                identity.push(format!("idx {}", index));
+            }
+            if let Some(ip) = interface.ip_addr {
+                identity.push(ip.to_string());
+            }
+            lines.push(Line::styled(
+                format!(
+                    "    {}: {} replies, avg {:.2}ms, min {:.2}ms, max {:.2}ms, StdDev {:.2}ms",
+                    identity.join(", "),
+                    member.received,
+                    member.avg_rtt().as_secs_f64() * 1000.0,
+                    member.min_rtt.as_secs_f64() * 1000.0,
+                    member.max_rtt.as_secs_f64() * 1000.0,
+                    member.stddev().as_secs_f64() * 1000.0,
+                ),
+                Style::default().fg(theme.shortcut),
+            ));
+        }
+        lines.push(Line::from(
+            "  RTT covers the full path; member loss is unknown.",
+        ));
+    }
     // MPLS labels (if present)
     if let Some(ref labels) = stats.mpls_labels {
         lines.push(Line::from(""));
@@ -765,6 +800,32 @@ mod tests {
             .join("\n");
         assert!(text.contains("192.0.2.2"));
         assert!(text.contains("416760 (TTL 1)"));
+    }
+
+    #[test]
+    fn member_rtt_statistics_show_separate_samples_without_loss_claims() {
+        let mut hop = extension_hop();
+        for (index, millis) in [(1, 10), (1, 14), (2, 100), (2, 300)] {
+            hop.record_response_with_extensions(
+                "192.0.2.1".parse().unwrap(),
+                Duration::from_millis(millis),
+                None,
+                Some(vec![IcmpInterfaceInfo {
+                    role: InterfaceRole::SubIpComponent,
+                    if_index: Some(index),
+                    name: Some(format!("Ethernet{index}")),
+                    ip_addr: None,
+                    mtu: None,
+                }]),
+            );
+        }
+        let theme = Theme::default();
+        let lines = HopDetailView::new(&hop, &theme).build_lines(78);
+        let text = lines.iter().map(ToString::to_string).collect::<String>();
+        assert!(text.contains("Ethernet1, idx 1: 2 replies, avg 12.00ms"));
+        assert!(text.contains("Ethernet2, idx 2: 2 replies, avg 200.00ms"));
+        assert!(text.contains("StdDev 100.00ms"));
+        assert!(text.contains("member loss is unknown"));
     }
 
     #[test]
