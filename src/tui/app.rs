@@ -222,7 +222,7 @@ fn render_fingerprint(
         target_list_tick: _,
         show_target_input,
         target_input,
-        update_check_locked: _, // only gates the toggle; settings.update_check is hashed
+        update_check_locked: _, // fixed for the whole run; settings.update_check is hashed
     } = ui_state;
     let SettingsState {
         selected_section,
@@ -1613,7 +1613,8 @@ fn draw_empty_state(
                 theme_names,
                 cache_status,
                 ix_enabled,
-            ),
+            )
+            .with_update_locked(ui_state.update_check_locked),
             area,
         );
     }
@@ -1804,7 +1805,8 @@ fn draw_ui(
                 theme_names,
                 cache_status,
                 ix_enabled,
-            ),
+            )
+            .with_update_locked(ui_state.update_check_locked),
             area,
         );
     }

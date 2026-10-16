@@ -156,9 +156,26 @@ pub struct SettingsView<'a> {
     theme_names: &'a [&'static str],
     cache_status: Option<CacheStatus>,
     ix_enabled: bool,
+    /// Why the update check is locked off for this run, if it is.
+    update_lock: Option<&'static str>,
 }
 
 impl<'a> SettingsView<'a> {
+    /// Mark the update check as locked off (by the build, environment or
+    /// --no-update-check), so the row says why instead of looking broken.
+    pub fn with_update_locked(mut self, locked: bool) -> Self {
+        self.update_lock = locked.then(|| {
+            if !crate::update::ENABLED {
+                "not in this build"
+            } else if crate::update::env_opt_out() {
+                "set by environment"
+            } else {
+                "set by --no-update-check"
+            }
+        });
+        self
+    }
+
     pub fn new(
         theme: &'a Theme,
         state: &'a SettingsState,
@@ -172,6 +189,7 @@ impl<'a> SettingsView<'a> {
             theme_names,
             cache_status,
             ix_enabled,
+            update_lock: None,
         }
     }
 
@@ -435,10 +453,14 @@ impl Widget for SettingsView<'_> {
         } else {
             Style::default().fg(self.theme.text_dim)
         };
-        lines.push(Line::from(vec![Span::styled(
-            format!("  [{}]  (Enter to toggle)", uc_state),
-            uc_style,
-        )]));
+        // A locked toggle names what locked it instead of offering Enter.
+        lines.push(Line::from(vec![
+            Span::styled(format!("  [{uc_state}]  "), uc_style),
+            match self.update_lock {
+                Some(reason) => Span::styled(reason, Style::default().fg(self.theme.text_dim)),
+                None => Span::styled("(Enter to toggle)", uc_style),
+            },
+        ]));
         lines.push(Line::from(vec![Span::styled(
             "  check GitHub for new releases at startup",
             Style::default().fg(self.theme.text_dim),
@@ -482,6 +504,37 @@ impl Widget for SettingsView<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locked_update_check_says_why_on_one_line() {
+        use ratatui::{buffer::Buffer, layout::Rect};
+        let theme = Theme::default();
+        let mut state = SettingsState::new(0, DisplayMode::Auto, None);
+        state.update_check = false;
+        state.selected_section = SettingsState::update_check_section(false);
+        let rows = |locked: bool| {
+            let area = Rect::new(0, 0, 80, 30);
+            let mut buf = Buffer::empty(area);
+            SettingsView::new(&theme, &state, Theme::list(), None, false)
+                .with_update_locked(locked)
+                .render(area, &mut buf);
+            (0..30)
+                .map(|y| (0..80).map(|x| buf[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            rows(false)
+                .iter()
+                .any(|r| r.contains("[off]  (Enter to toggle)"))
+        );
+        let locked = rows(true);
+        let row = locked.iter().find(|r| r.contains("[off]")).unwrap();
+        assert!(
+            row.contains("[off]  set by") || row.contains("[off]  not in this build"),
+            "{row}"
+        );
+        assert!(!locked.iter().any(|r| r.contains("Enter to toggle")));
+    }
 
     #[test]
     fn test_settings_state_new() {
