@@ -34,7 +34,7 @@ struct TableLayout {
 }
 
 fn table_layout(available: u16, preferred: &ColumnWidths, wide: bool, multi: bool) -> TableLayout {
-    let mut sizes = vec![3, 8, 8, 7, 7, 7, 7, 7, 7, 7, 7];
+    let mut sizes = vec![3, 8, 12, 7, 7, 7, 7, 7, 7, 7, 7];
     if wide {
         sizes.extend([7, 7]);
     }
@@ -411,13 +411,16 @@ impl Widget for MainView<'_> {
                         stats.ip.to_string()
                     };
                     let asn = if let Some(ref asn_info) = stats.asn {
-                        // Use computed ASN width (minus 1 for padding)
-                        // Show "AS##### name" so ASN number is always visible even when truncated
-                        let asn_max_len = (col_widths.asn as usize).saturating_sub(1);
-                        truncate_with_ellipsis(
-                            &format!("AS{} {}", asn_info.number, asn_info.name),
-                            asn_max_len,
-                        )
+                        // Preserve the full ASN; truncate only its optional name.
+                        let number = format!("AS{}", asn_info.number);
+                        if number.len() + 2 > usize::from(col_widths.asn) {
+                            number
+                        } else {
+                            truncate_with_ellipsis(
+                                &format!("{} {}", number, asn_info.name),
+                                usize::from(col_widths.asn),
+                            )
+                        }
                     } else {
                         String::new()
                     };

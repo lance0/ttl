@@ -89,6 +89,27 @@ mod responsive_tests {
     }
 
     #[test]
+    fn narrow_columns_preserve_full_asn_identifiers() {
+        use crate::state::{AsnInfo, ResponderStats};
+        let ip = "192.0.2.1".parse().unwrap();
+        let mut session = Session::new(Target::new("example.net".into(), ip), Config::default());
+        let hop = &mut session.hops[0];
+        hop.sent = 1;
+        hop.primary = Some(ip);
+        let mut stats = ResponderStats::new(ip);
+        stats.asn = Some(AsnInfo {
+            number: u32::MAX,
+            name: "Long provider name".into(),
+            prefix: None,
+        });
+        hop.responders.insert(ip, stats);
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        MainView::new(&session, None, false, &Theme::default()).render(area, &mut buf);
+        assert!(text(&buf).contains("AS4294967295"));
+    }
+
+    #[test]
     fn target_view_scrolls_to_last_ipv6_target_with_statistics_and_controls() {
         let infos: Vec<_> = (1..=20)
             .map(|i| targets::TargetInfo {
@@ -150,6 +171,15 @@ mod responsive_tests {
             );
             if section == 2 {
                 assert!(rendered.contains("END│"));
+            }
+            if section == 2 {
+                state.api_key_cursor = 50;
+                let mut middle = Buffer::empty(area);
+                SettingsView::new(&theme, &state, Theme::list(), None, true)
+                    .render(area, &mut middle);
+                assert!(text(&middle).contains('│'));
+                // Check the actual cursor line, rather than a popup border.
+                assert!(text(&middle).contains("aaaa│"));
             }
         }
     }

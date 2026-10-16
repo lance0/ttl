@@ -1618,6 +1618,20 @@ fn draw_ui(
             Cow::Borrowed(msg.as_str()),
             Style::default().fg(theme.text_dim),
         )
+    } else if status_chunk.width < 60 {
+        (
+            Cow::Borrowed("q quit · p pause · Enter details"),
+            Style::default().fg(theme.text_dim),
+        )
+    } else if status_chunk.width < 110 {
+        let hints = if ui_state.replay_state.is_some() {
+            "q quit · p pause · ←/→ seek · +/- speed · Home/End"
+        } else if num_targets > 1 {
+            "q quit · p pause · o add · l targets · s settings · Enter details"
+        } else {
+            "q quit · p pause · o add · s settings · Enter details"
+        };
+        (Cow::Borrowed(hints), Style::default().fg(theme.text_dim))
     } else if ui_state.replay_state.is_some() {
         (
             Cow::Borrowed(

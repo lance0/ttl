@@ -364,10 +364,8 @@ impl Widget for SettingsView<'_> {
                         start = index;
                         used += cells;
                     }
-                    super::fit_text(
-                        &format!("{}│{}", &before[start..], after),
-                        inner.width.saturating_sub(label.len() as u16),
-                    )
+                    let after = super::fit_text(after, budget.saturating_sub(used) as u16);
+                    format!("{}│{}", &before[start..], after)
                 } else {
                     self.state.api_key.clone()
                 }
