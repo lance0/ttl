@@ -652,10 +652,15 @@ ttl --replay results.json                    # Open in TUI (final state)
 ttl --replay results.json --animate          # Animated replay (10x speed)
 ttl --replay results.json --animate --speed 1.0  # Real-time replay
 ttl --replay results.json --report           # Text report
+ttl --replay long.json --replay-size-limit 64  # Allow a trusted file over 10 MiB
 ```
 
 Load a previously saved JSON session for review. Use `--animate` to replay
 the session showing hop-by-hop discovery as it happened.
+
+Replay and diff refuse input over 10 MiB by default, since saved sessions may
+come from untrusted sources. `--replay-size-limit <MiB>` (1-1024) raises the
+cap for a larger recording you trust.
 
 #### Replay Controls
 
@@ -717,6 +722,7 @@ Options:
       --prometheus <ADDR> Serve Prometheus metrics + /healthz (e.g. :9090; implies --no-tui)
       --diff <BEFORE> <AFTER>  Compare two saved sessions (with --json for JSON output)
       --replay <FILE>    Replay a saved JSON session
+      --replay-size-limit <MiB>  Max --replay/--diff input size (default: 10)
       --animate          Animate replay (show probe-by-probe discovery)
       --speed <N>        Replay speed multiplier (default: 10.0, requires --animate)
       --theme <NAME>     Color theme

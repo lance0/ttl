@@ -3,7 +3,7 @@ use clap::Parser;
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -14,6 +14,7 @@ mod config;
 mod export;
 mod lookup;
 mod metrics;
+mod persistence;
 mod prefs;
 mod probe;
 mod state;
@@ -67,7 +68,12 @@ async fn main() -> Result<()> {
 
     // Handle diff mode (compare two saved sessions, no probing)
     if let Some(ref diff_files) = args.diff {
-        return run_diff_mode(&diff_files[0], &diff_files[1], args.json);
+        return run_diff_mode(
+            &diff_files[0],
+            &diff_files[1],
+            args.json,
+            args.replay_limit_bytes(),
+        );
     }
 
     // Spawn background update check after early exits, unless opted out by any
@@ -430,31 +436,35 @@ fn config_for_target_effective_flows(
     config
 }
 
-/// Load a session from a JSON file
-fn load_session(path: &str) -> Result<Session> {
-    const MAX_REPLAY_SIZE: u64 = 10 * 1024 * 1024; // 10MB
-
-    let file =
-        File::open(path).with_context(|| format!("Failed to open session file: {}", path))?;
-
-    // Check file size to prevent DoS via huge JSON
-    let metadata = file
-        .metadata()
-        .with_context(|| format!("Failed to read session file metadata: {}", path))?;
-    if metadata.len() > MAX_REPLAY_SIZE {
-        anyhow::bail!("Session file too large (max 10MB): {}", path);
+/// Load a bounded session file, including a read-time limit for files that grow
+/// or do not report their full length in metadata.
+fn load_session(path: &str, max_bytes: u64) -> Result<Session> {
+    let file = File::open(path).with_context(|| format!("Failed to open session file: {path}"))?;
+    if file.metadata()?.len() > max_bytes {
+        anyhow::bail!(
+            "Session exceeds the {} MiB replay limit: {path}. Use --replay-size-limit <MiB> for a larger trusted recording",
+            max_bytes / (1024 * 1024)
+        );
     }
+    read_session_limited(BufReader::new(file), max_bytes)
+        .with_context(|| format!("Failed to load session file: {path}"))
+}
 
-    let reader = BufReader::new(file);
-    let session: Session = serde_json::from_reader(reader)
-        .with_context(|| format!("Failed to parse session file: {}", path))?;
-    Ok(session)
+fn read_session_limited(reader: impl Read, max_bytes: u64) -> Result<Session> {
+    let mut limited = reader.take(max_bytes.saturating_add(1));
+    let parsed = serde_json::from_reader(&mut limited);
+    if limited.limit() == 0 {
+        anyhow::bail!(
+            "Session exceeds the replay size limit ({max_bytes} bytes); use --replay-size-limit <MiB> for a larger trusted recording"
+        );
+    }
+    parsed.context("Failed to parse session JSON")
 }
 
 /// Run diff mode - compare two saved sessions and print the differences
-fn run_diff_mode(before_path: &str, after_path: &str, json: bool) -> Result<()> {
-    let before = load_session(before_path)?;
-    let after = load_session(after_path)?;
+fn run_diff_mode(before_path: &str, after_path: &str, json: bool, max_bytes: u64) -> Result<()> {
+    let before = load_session(before_path, max_bytes)?;
+    let after = load_session(after_path, max_bytes)?;
 
     if before.target.resolved != after.target.resolved {
         eprintln!(
@@ -477,7 +487,7 @@ fn run_diff_mode(before_path: &str, after_path: &str, json: bool) -> Result<()> 
 
 /// Run replay mode - load a saved session and display/export it
 async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
-    let session = load_session(replay_path)?;
+    let session = load_session(replay_path, args.replay_limit_bytes())?;
     let target_ip = session.target.resolved;
 
     // Output based on flags
@@ -1893,5 +1903,22 @@ mod tests {
             session_effective_flows_for_family(&sessions, &targets, true, 7),
             7
         );
+    }
+    #[test]
+    fn replay_reader_enforces_actual_bytes_and_accepts_exact_boundary() {
+        let session = Session::new(
+            Target::new("example.test".into(), "192.0.2.1".parse().unwrap()),
+            Config::default(),
+        );
+        let json = serde_json::to_vec(&session).unwrap();
+        let limit = json.len() as u64;
+        assert!(read_session_limited(json.as_slice(), limit).is_ok());
+        let mut oversized = json.clone();
+        oversized.extend_from_slice(b"    ");
+        let mut reader = std::io::Cursor::new(oversized);
+        let error = read_session_limited(&mut reader, limit).unwrap_err();
+        assert!(error.to_string().contains("size limit"));
+        assert_eq!(reader.position(), limit + 1);
+        assert!(read_session_limited(b"{broken json}".as_slice(), 1000).is_err());
     }
 }

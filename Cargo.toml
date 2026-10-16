@@ -66,6 +66,8 @@ scopeguard = "1"
 
 # Config directories
 dirs = "7.0"
+# Same-directory atomic replacement for preferences and saved sessions
+tempfile = "3.27"
 
 # Update notifications
 update-informer = { version = "1", default-features = false, features = ["github", "ureq", "rustls-tls"], optional = true }

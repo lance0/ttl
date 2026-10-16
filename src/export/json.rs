@@ -22,10 +22,13 @@ pub fn export_json_file(session: &Session) -> Result<String> {
     let target = sanitize_filename(&session.target.original);
     let filename = format!("ttl-{}-{}.json", target, timestamp);
 
-    let file = std::fs::File::create(&filename)?;
-    export_json(session, file)?;
+    export_json_to_path(session, std::path::Path::new(&filename))?;
 
     Ok(filename)
+}
+
+fn export_json_to_path(session: &Session, path: &std::path::Path) -> Result<()> {
+    crate::persistence::atomic_write(path, false, |writer| export_json(session, writer))
 }
 
 /// Sanitize a string for safe use as a filename component.
@@ -99,6 +102,25 @@ fn sanitize_filename(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_exports_replace_with_complete_replayable_json() {
+        use crate::{config::Config, state::Target};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let mut session = Session::new(
+            Target::new("example.test".into(), "192.0.2.1".parse().unwrap()),
+            Config::default(),
+        );
+        session.target.hostname = Some("a long previous hostname".into());
+        export_json_to_path(&session, &path).unwrap();
+        session.target.hostname = None;
+        export_json_to_path(&session, &path).unwrap();
+        let loaded: Session = serde_json::from_reader(std::fs::File::open(&path).unwrap()).unwrap();
+        assert_eq!(loaded.target.original, session.target.original);
+        assert!(loaded.target.hostname.is_none());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn test_sanitize_filename_replaces_path_and_control_chars() {
