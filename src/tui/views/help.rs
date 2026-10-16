@@ -11,6 +11,7 @@ use crate::update::InstallMethod;
 pub struct HelpView<'a> {
     theme: &'a Theme,
     is_replay: bool,
+    has_update: bool,
     scroll: u16,
 }
 
@@ -19,6 +20,7 @@ impl<'a> HelpView<'a> {
         Self {
             theme,
             is_replay: false,
+            has_update: false,
             scroll: 0,
         }
     }
@@ -27,128 +29,104 @@ impl<'a> HelpView<'a> {
         self.is_replay = is_replay;
         self
     }
+    /// List the dismiss key only while an update banner is showing.
+    pub fn with_update(mut self, has_update: bool) -> Self {
+        self.has_update = has_update;
+        self
+    }
+
     pub fn with_scroll(mut self, scroll: u16) -> Self {
         self.scroll = scroll;
         self
     }
 
     fn lines(&self) -> Vec<Line<'static>> {
+        let theme = self.theme;
+        let key = Style::default().fg(theme.shortcut).bold();
+        let text = Style::default().fg(theme.text);
+        let dim = Style::default().fg(theme.text_dim);
+        let heading =
+            |title: &str| Line::styled(title.to_owned(), Style::default().fg(theme.header).bold());
+        // A 10-cell key column keeps every description in one column.
+        let row = |keys: &str, style: Style, desc: &str| {
+            Line::from(vec![
+                Span::styled(format!("  {keys:<10}"), style),
+                Span::styled(desc.to_owned(), text),
+            ])
+        };
+        let bind = |keys: &str, desc: &str| row(keys, key, desc);
+
         let mut lines = vec![
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("  q       ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Quit"),
-            ]),
-            Line::from(vec![
-                Span::styled("  p/Space ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Pause/Resume"),
-            ]),
-            Line::from(vec![
-                Span::styled("  r       ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Reset statistics"),
-            ]),
-            Line::from(vec![
-                Span::styled("  t       ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Cycle theme"),
-            ]),
-            Line::from(vec![
-                Span::styled("  w       ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Cycle display mode"),
-            ]),
-            Line::from(vec![
-                Span::styled("  s       ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Settings"),
-            ]),
-            Line::from(vec![
-                Span::styled("  e       ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Export to JSON"),
-            ]),
-            Line::from(vec![
-                Span::styled("  ?/h     ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Show this help"),
-            ]),
-            Line::from(vec![
-                Span::styled("  u       ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Dismiss update banner"),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("  o       ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Add target"),
-            ]),
-            Line::from(vec![
-                Span::styled("  Tab/n   ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Next target (multi-target)"),
-            ]),
-            Line::from(vec![
-                Span::styled("  S-Tab/N ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Previous target"),
-            ]),
-            Line::from(vec![
-                Span::styled("  l       ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Target list"),
-            ]),
-            Line::from(vec![
-                Span::styled("  Up/k    ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Move selection up"),
-            ]),
-            Line::from(vec![
-                Span::styled("  Down/j  ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Move selection down"),
-            ]),
-            Line::from(vec![
-                Span::styled("  Enter   ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Expand selected hop"),
-            ]),
-            Line::from(vec![
-                Span::styled("  Esc     ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Close popup / Deselect"),
-            ]),
-            Line::from(vec![
-                Span::styled("  PgUp/Dn ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Scroll hop details"),
-            ]),
-            Line::from(vec![
-                Span::styled("  +       ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Hop has interface/MPLS details"),
-            ]),
-            Line::from(vec![
-                Span::styled("  Recent  ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("· reply  × timeout (old → new)"),
-            ]),
-            Line::from(""),
-            Line::from("  Narrow windows omit secondary columns;"),
-            Line::from("  press Enter for all hop statistics."),
+            heading("General"),
+            bind("q", "Quit"),
+            bind("p Space", "Pause / resume"),
+            bind("r", "Reset statistics"),
+            bind("e", "Export to JSON"),
+            bind("? h", "Show this help"),
         ];
-
-        if self.is_replay {
-            lines.push(Line::from(vec![Span::styled(
-                "  Replay Controls:",
-                Style::default().fg(self.theme.header),
-            )]));
-            lines.push(Line::from(vec![
-                Span::styled("  Left/Right ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Seek 0.5s"),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("  [ / ]      ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Seek 5s"),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("  + / -      ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Speed up / slow down"),
-            ]));
-            lines.push(Line::from(vec![
-                Span::styled("  Home / End ", Style::default().fg(self.theme.shortcut)),
-                Span::raw("Seek to start / end"),
-            ]));
-            lines.push(Line::from(""));
+        if self.has_update {
+            lines.push(bind("u", "Dismiss update banner"));
         }
-
-        lines.push(Line::from(vec![Span::styled(
-            format!("  Update: {}", InstallMethod::cached().update_command()),
-            Style::default().fg(self.theme.text_dim),
-        )]));
+        lines.extend([
+            Line::default(),
+            heading("Targets"),
+            bind("o", "Add target"),
+            bind("Tab n", "Next target"),
+            bind("S-Tab N", "Previous target"),
+            bind("l", "Target list"),
+            Line::default(),
+            heading("Navigation"),
+            bind("↑ k  ↓ j", "Move selection"),
+            bind("Enter", "Hop details"),
+            bind("Esc", "Close popup / deselect"),
+            bind("PgUp PgDn", "Scroll hop details and help"),
+            Line::default(),
+            heading("Display"),
+            bind("t", "Cycle theme"),
+            bind("w", "Column widths: auto, compact, wide"),
+            bind("s", "Settings"),
+        ]);
+        if self.is_replay {
+            lines.extend([
+                Line::default(),
+                heading("Replay"),
+                bind("← →", "Seek 0.5 s"),
+                bind("[ ]", "Seek 5 s"),
+                bind("+ -", "Speed up / slow down"),
+                bind("Home End", "Jump to start / end"),
+            ]);
+        }
+        let marker = Style::default().fg(theme.text).bold();
+        let flag = Style::default().fg(theme.warning).bold();
+        lines.extend([
+            Line::default(),
+            heading("Legend"),
+            Line::styled("  Host markers", dim),
+            row("E", marker, "ECMP: several paths at this hop"),
+            row("!", marker, "Route flap: the responder changed"),
+            row("~", marker, "Asymmetric return path"),
+            row("^", marker, "TTL manipulation"),
+            row("+", marker, "Interface/MPLS details (Enter)"),
+            Line::styled("  Columns", dim),
+            row("RL", marker, "Loss likely ICMP rate limiting"),
+            row("· ×", marker, "Recent: reply, timeout (old → new)"),
+            Line::styled("  Title flags", dim),
+            row("RL?", flag, "Rate limiting suspected on the path"),
+            row("ASYM", flag, "Asymmetric routing"),
+            row("NAT", flag, "NAT rewriting probe ports"),
+            row("TTL!", flag, "TTL manipulation on the path"),
+            row("MTU", flag, "Path MTU, or unconfirmed"),
+            row("max_ttl", flag, "Destination not reached yet"),
+            Line::default(),
+            Line::styled(
+                "Narrow windows omit secondary columns; Enter shows every hop statistic.",
+                dim,
+            ),
+            Line::styled(
+                format!("Update: {}", InstallMethod::cached().update_command()),
+                dim,
+            ),
+        ]);
         lines
     }
 
@@ -197,5 +175,48 @@ impl Widget for HelpView<'_> {
         Paragraph::new(lines)
             .scroll((self.scroll.min(max_scroll), 0))
             .render(body, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(view: &HelpView) -> Vec<String> {
+        view.lines().iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn keys_sit_in_one_column_with_groups_and_a_legend() {
+        let theme = Theme::default();
+        let lines = text(&HelpView::new(&theme));
+        for heading in ["General", "Targets", "Navigation", "Display", "Legend"] {
+            assert!(lines.iter().any(|l| l == heading), "{heading} missing");
+        }
+        for desc in [
+            "Pause / resume",
+            "Previous target",
+            "Scroll hop details and help",
+        ] {
+            let line = lines.iter().find(|l| l.ends_with(desc)).unwrap();
+            assert_eq!(line.find(desc), Some(12), "{line:?}");
+        }
+        for marker in [
+            "E", "!", "~", "^", "+", "RL?", "ASYM", "NAT", "TTL!", "MTU", "max_ttl",
+        ] {
+            assert!(
+                lines
+                    .iter()
+                    .any(|l| l.starts_with(&format!("  {marker:<10}"))),
+                "{marker} not explained"
+            );
+        }
+        assert!(!lines.iter().any(|l| l.contains("Dismiss update banner")));
+        let with_update = text(&HelpView::new(&theme).with_update(true));
+        assert!(
+            with_update
+                .iter()
+                .any(|l| l.contains("Dismiss update banner"))
+        );
     }
 }

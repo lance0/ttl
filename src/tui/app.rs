@@ -324,6 +324,7 @@ fn handle_help_key(ui_state: &mut UiState, code: KeyCode, area: Rect, theme: &Th
     let page = HelpView::visible_rows(area).max(1);
     let max_scroll = HelpView::new(theme)
         .with_replay(ui_state.replay_state.is_some())
+        .with_update(ui_state.update_available.is_some())
         .max_scroll(area);
     let scroll = ui_state.help_scroll.min(max_scroll);
     ui_state.help_scroll = match code {
@@ -1532,6 +1533,7 @@ fn draw_empty_state(
         f.render_widget(
             HelpView::new(theme)
                 .with_replay(false)
+                .with_update(ui_state.update_available.is_some())
                 .with_scroll(ui_state.help_scroll),
             area,
         );
@@ -1712,6 +1714,7 @@ fn draw_ui(
         f.render_widget(
             HelpView::new(theme)
                 .with_replay(ui_state.replay_state.is_some())
+                .with_update(ui_state.update_available.is_some())
                 .with_scroll(ui_state.help_scroll),
             area,
         );
