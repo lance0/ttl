@@ -304,6 +304,12 @@ impl Args {
                 self.protocol
             ));
         }
+        // PMTUD only sends its sized probes in ICMP mode
+        if self.pmtud && (protocol == "udp" || protocol == "tcp") {
+            return Err(format!(
+                "--pmtud requires ICMP probes; drop -p {protocol} or use -p icmp"
+            ));
+        }
 
         Self::validate_duration_arg("Interval", self.interval)?;
         Self::validate_duration_arg("Timeout", self.timeout)?;
@@ -900,6 +906,19 @@ mod tests {
             err.contains("--pmtud"),
             "error should mention --pmtud: {err}"
         );
+    }
+
+    #[test]
+    fn test_pmtud_requires_icmp_probes() {
+        for proto in ["udp", "TCP"] {
+            let mut args = Args::try_parse_from(["ttl", "--pmtud", "-p", proto, "host"]).unwrap();
+            let err = args.validate().unwrap_err();
+            assert!(err.contains("--pmtud"), "{proto}: {err}");
+        }
+        for proto in ["auto", "icmp"] {
+            let mut args = Args::try_parse_from(["ttl", "--pmtud", "-p", proto, "host"]).unwrap();
+            assert!(args.validate().is_ok(), "{proto} should allow --pmtud");
+        }
     }
 
     #[test]
