@@ -8,9 +8,9 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
+use ratatui::text::Span;
 use ratatui::widgets::{LineGauge, Paragraph};
 use scopeguard::defer;
-use std::borrow::Cow;
 use std::io::stdout;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use crate::trace::receiver::SessionMap;
 use crate::tui::theme::Theme;
 use crate::tui::views::{
     AddTargetRequest, HelpView, HopDetailView, MainView, SettingsState, SettingsView, TargetInfo,
-    TargetInputState, TargetInputView, TargetListView, extract_target_infos,
+    TargetInputState, TargetInputView, TargetListView, extract_target_infos, fit_text, hint_line,
 };
 
 /// State for animated replay playback
@@ -1447,6 +1447,44 @@ fn handle_target_input_key(
     }
 }
 
+/// Bottom row: key hints on the left. A transient status message sits
+/// right-aligned on the same row, so it never hides the hints entirely.
+fn draw_status_bar(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    hints: &[(&str, &str)],
+    ui_state: &UiState,
+    theme: &Theme,
+) {
+    // Inset to line up with the table content inside its border.
+    let area = Rect {
+        x: area.x.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        ..area
+    };
+    let mut hint_width = area.width;
+    if let Some((ref message, _)) = ui_state.status_message {
+        let message = fit_text(message, area.width);
+        let width = Span::raw(&message).width() as u16;
+        hint_width = area.width.saturating_sub(width + 2);
+        f.render_widget(
+            Paragraph::new(message).style(Style::default().fg(theme.text)),
+            Rect {
+                x: area.right() - width,
+                width,
+                ..area
+            },
+        );
+    }
+    f.render_widget(
+        Paragraph::new(hint_line(hints, hint_width, theme)),
+        Rect {
+            width: hint_width,
+            ..area
+        },
+    );
+}
+
 /// Draw the empty state shown when no targets are being traced yet
 fn draw_empty_state(
     f: &mut ratatui::Frame,
@@ -1475,21 +1513,18 @@ fn draw_empty_state(
     let empty = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
     f.render_widget(empty, chunks[0]);
 
-    let (status_text, status_style): (Cow<'_, str>, Style) =
-        if let Some((ref msg, _)) = ui_state.status_message {
-            (
-                Cow::Borrowed(msg.as_str()),
-                Style::default().fg(theme.text_dim),
-            )
-        } else {
-            (
-                Cow::Borrowed("q quit | o add target | t theme | s settings"),
-                Style::default().fg(theme.text_dim),
-            )
-        };
-    f.render_widget(
-        Paragraph::new(format!("? help · {}", status_text)).style(status_style),
+    draw_status_bar(
+        f,
         chunks[1],
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("o", "add target"),
+            ("t", "theme"),
+            ("s", "settings"),
+        ],
+        ui_state,
+        theme,
     );
 
     // Overlays available in empty mode
@@ -1629,65 +1664,48 @@ fn draw_ui(
         f.render_widget(gauge, chunk);
     }
 
-    // Status bar (use Cow to avoid allocation for static strings)
-    // Update notification takes priority over normal status
-    let (status_text, status_style): (Cow<'_, str>, Style) = if let Some(ref version) =
-        ui_state.update_available
-    {
-        (
-            Cow::Owned(format!(
-                "UPDATE: v{} -> {} available | Press 'u' to dismiss | ? for update command",
-                env!("CARGO_PKG_VERSION"),
-                version
-            )),
-            Style::default().fg(Color::Yellow),
-        )
-    } else if let Some((ref msg, _)) = ui_state.status_message {
-        (
-            Cow::Borrowed(msg.as_str()),
-            Style::default().fg(theme.text_dim),
-        )
-    } else if status_chunk.width < 110 {
-        let hints = if ui_state.replay_state.is_some() {
-            "q quit · p pause · ←/→ seek · +/- speed · Home/End"
-        } else if num_targets > 1 {
-            "q quit · p pause · o add · l targets · s settings · Enter details"
-        } else {
-            "q quit · p pause · o add · s settings · Enter details"
-        };
-        // Fall back to the shortest hints rather than clip after "? help · ".
-        let hints = if usize::from(status_chunk.width) < hints.chars().count() + 9 {
-            "q quit · p pause · Enter details"
-        } else {
-            hints
-        };
-        (Cow::Borrowed(hints), Style::default().fg(theme.text_dim))
-    } else if ui_state.replay_state.is_some() {
-        (
-            Cow::Borrowed(
-                "q quit | p pause | Left/Right seek | [/] seek 5s | +/- speed | Home/End",
-            ),
-            Style::default().fg(theme.text_dim),
-        )
+    // Hints in priority order; the lowest-priority pairs drop first.
+    let hints: &[(&str, &str)] = if ui_state.replay_state.is_some() {
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("p", "pause"),
+            ("←/→", "seek"),
+            ("[/]", "seek 5s"),
+            ("+/-", "speed"),
+            ("Home/End", "jump"),
+            ("Enter", "details"),
+        ]
     } else if num_targets > 1 {
-        (
-            Cow::Borrowed(
-                "q quit | Tab next | l list | o add | p pause | r reset | t theme | w display | s settings | e export",
-            ),
-            Style::default().fg(theme.text_dim),
-        )
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("Enter", "details"),
+            ("p", "pause"),
+            ("Tab", "next"),
+            ("l", "list"),
+            ("o", "add"),
+            ("s", "settings"),
+            ("t", "theme"),
+            ("w", "display"),
+            ("r", "reset"),
+            ("e", "export"),
+        ]
     } else {
-        (
-            Cow::Borrowed(
-                "q quit | o add | p pause | r reset | t theme | w display | s settings | e export",
-            ),
-            Style::default().fg(theme.text_dim),
-        )
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("Enter", "details"),
+            ("p", "pause"),
+            ("o", "add"),
+            ("s", "settings"),
+            ("t", "theme"),
+            ("w", "display"),
+            ("r", "reset"),
+            ("e", "export"),
+        ]
     };
-
-    let status_text = format!("? help · {}", status_text);
-    let status_bar = Paragraph::new(status_text).style(status_style);
-    f.render_widget(status_bar, status_chunk);
+    draw_status_bar(f, status_chunk, hints, ui_state, theme);
 
     // Overlays
     if ui_state.show_help {
@@ -2127,28 +2145,43 @@ mod tests {
         use ratatui::backend::TestBackend;
         let ip: IpAddr = "192.0.2.1".parse().unwrap();
         let session = Session::new(Target::new("example.net".into(), ip), Config::default());
-        for width in 41..110 {
+        let labels = [
+            "help", "quit", "details", "pause", "next", "list", "add", "settings", "theme",
+            "display", "reset", "export",
+        ];
+        for width in 20..140 {
             for targets in [1, 2] {
-                let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
-                terminal
-                    .draw(|f| {
-                        draw_ui(
-                            f,
-                            &session,
-                            &UiState::default(),
-                            &Theme::default(),
-                            targets,
-                            None,
-                            false,
-                        )
-                    })
-                    .unwrap();
-                let buf = terminal.backend().buffer();
-                let status: String = (0..width).map(|x| buf[(x, 11)].symbol()).collect();
-                assert!(
-                    status.trim_end().ends_with("Enter details"),
-                    "{width}: {status}"
-                );
+                for message in [None, Some("Exported to ttl-192.0.2.1-20261016.json")] {
+                    let mut state = UiState::default();
+                    if let Some(message) = message {
+                        state.set_status(message);
+                    }
+                    let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+                    terminal
+                        .draw(|f| {
+                            draw_ui(f, &session, &state, &Theme::default(), targets, None, false)
+                        })
+                        .unwrap();
+                    let buf = terminal.backend().buffer();
+                    let status: String = (0..width).map(|x| buf[(x, 11)].symbol()).collect();
+                    let hints = match message {
+                        // The message keeps its row slot at the right edge.
+                        Some(message) if usize::from(width) > message.len() + 2 => {
+                            assert!(status.trim_end().ends_with(message), "{width}: {status}");
+                            &status[..status.len() - message.len() - 1]
+                        }
+                        Some(_) => continue,
+                        None => &status,
+                    };
+                    let hints = hints.trim_end();
+                    assert!(
+                        hints.is_empty() || labels.iter().any(|l| hints.ends_with(l)),
+                        "{width}: clipped {status}"
+                    );
+                    if width >= 40 && message.is_none() {
+                        assert!(hints.contains("? help  q quit  Enter details"), "{status}");
+                    }
+                }
             }
         }
     }

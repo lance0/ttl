@@ -35,6 +35,40 @@ pub(crate) fn fit_text(text: &str, width: u16) -> String {
     result
 }
 
+/// Key hints in one style everywhere: key in the shortcut color and bold,
+/// label dim, two spaces between pairs. `pairs` are in priority order and
+/// drop from the end until the rest fits `width`; no pair is ever cut.
+pub(crate) fn hint_line(
+    pairs: &[(&str, &str)],
+    width: u16,
+    theme: &crate::tui::theme::Theme,
+) -> ratatui::text::Line<'static> {
+    use ratatui::{style::Style, text::Span};
+    let cells =
+        |(key, label): &(&str, &str)| Span::raw(*key).width() + 1 + Span::raw(*label).width();
+    let mut used = 0;
+    let mut spans = Vec::new();
+    for pair in pairs {
+        let gap = if spans.is_empty() { 0 } else { 2 };
+        if used + gap + cells(pair) > usize::from(width) {
+            break;
+        }
+        used += gap + cells(pair);
+        if gap > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(
+            pair.0.to_owned(),
+            Style::default().fg(theme.shortcut).bold(),
+        ));
+        spans.push(Span::styled(
+            format!(" {}", pair.1),
+            Style::default().fg(theme.text_dim),
+        ));
+    }
+    spans.into()
+}
+
 #[cfg(test)]
 mod responsive_tests {
     use super::*;
@@ -182,6 +216,29 @@ mod responsive_tests {
                 assert!(text(&middle).contains("aaaa│"));
             }
         }
+    }
+
+    #[test]
+    fn hint_line_drops_whole_pairs_from_the_end() {
+        let theme = Theme::dracula();
+        let pairs = [("?", "help"), ("q", "quit"), ("Enter", "details")];
+        assert_eq!(
+            hint_line(&pairs, 80, &theme).to_string(),
+            "? help  q quit  Enter details"
+        );
+        // One cell short of the full line: the lowest-priority pair goes.
+        assert_eq!(hint_line(&pairs, 28, &theme).to_string(), "? help  q quit");
+        assert_eq!(hint_line(&pairs, 6, &theme).to_string(), "? help");
+        assert_eq!(hint_line(&pairs, 5, &theme).to_string(), "");
+        let line = hint_line(&pairs, 80, &theme);
+        assert_eq!(line.spans[0].style.fg, Some(theme.shortcut));
+        assert!(
+            line.spans[0]
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
+        assert_eq!(line.spans[1].style.fg, Some(theme.text_dim));
     }
 
     #[test]
