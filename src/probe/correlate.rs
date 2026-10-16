@@ -78,16 +78,8 @@ fn parse_icmp_extensions(
     // Some routers advertise the unpadded quote length instead, so honor the
     // minimum even for a non-zero length. Larger advertised quotes still win.
     // A zero length uses the same minimum for legacy extensions.
-    let ext_start = if icmp_length > 0 {
-        if is_ipv6 {
-            (icmp_length as usize) * 8
-        } else {
-            (icmp_length as usize) * 4
-        }
-    } else {
-        MIN_ORIGINAL_DATAGRAM
-    }
-    .max(MIN_ORIGINAL_DATAGRAM);
+    let word = if is_ipv6 { 8 } else { 4 };
+    let ext_start = (icmp_length as usize * word).max(MIN_ORIGINAL_DATAGRAM);
 
     if icmp_payload.len() < ext_start + 4 {
         return ParsedIcmpExtensions::default();
