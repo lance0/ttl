@@ -773,7 +773,7 @@ impl TtlManipInfo {
 /// hop shows high loss but subsequent hops show low loss, the "loss" is likely just
 /// ICMP rate limiting, not actual packet drops.
 ///
-/// The `[RL?]` indicator in the TUI warns users when rate limiting is suspected.
+/// The `RL?` title flag in the TUI warns users when rate limiting is suspected.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RateLimitInfo {
     /// Whether rate limiting is suspected

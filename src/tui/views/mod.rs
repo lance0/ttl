@@ -35,6 +35,89 @@ pub(crate) fn fit_text(text: &str, width: u16) -> String {
     result
 }
 
+/// Rows and columns a popup's frame takes from its size: rounded borders,
+/// plus one column of padding on each side.
+pub(crate) const POPUP_ROWS: u16 = 2;
+pub(crate) const POPUP_COLS: u16 = 4;
+
+/// The one popup frame: centered in `area`, cleared, rounded border in the
+/// theme's border color, ` Title ` bold in the header color, and key hints
+/// on the bottom border. Returns the padded content area.
+pub(crate) fn popup(
+    area: ratatui::layout::Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    (width, height): (u16, u16),
+    title: &str,
+    hints: &[(&str, &str)],
+    theme: &crate::tui::theme::Theme,
+) -> ratatui::layout::Rect {
+    use ratatui::{
+        layout::Rect,
+        style::Style,
+        text::{Line, Span},
+        widgets::{Block, BorderType, Clear, Padding, Widget},
+    };
+    let (width, height) = (width.min(area.width), height.min(area.height));
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    Clear.render(rect, buf);
+    let mut footer = hint_line(hints, width.saturating_sub(6), theme);
+    if !footer.spans.is_empty() {
+        footer.spans.insert(0, Span::raw(" "));
+        footer.spans.push(Span::raw(" "));
+    }
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border))
+        .title(Line::styled(
+            format!(" {} ", fit_text(title, width.saturating_sub(4))),
+            Style::default().fg(theme.header).bold(),
+        ))
+        .title_bottom(footer.right_aligned())
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(rect);
+    block.render(rect, buf);
+    inner
+}
+
+/// Key hints in one style everywhere: key in the shortcut color and bold,
+/// label dim, two spaces between pairs. `pairs` are in priority order and
+/// drop from the end until the rest fits `width`; no pair is ever cut.
+pub(crate) fn hint_line(
+    pairs: &[(&str, &str)],
+    width: u16,
+    theme: &crate::tui::theme::Theme,
+) -> ratatui::text::Line<'static> {
+    use ratatui::{style::Style, text::Span};
+    let cells =
+        |(key, label): &(&str, &str)| Span::raw(*key).width() + 1 + Span::raw(*label).width();
+    let mut used = 0;
+    let mut spans = Vec::new();
+    for pair in pairs {
+        let gap = if spans.is_empty() { 0 } else { 2 };
+        if used + gap + cells(pair) > usize::from(width) {
+            break;
+        }
+        used += gap + cells(pair);
+        if gap > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(
+            pair.0.to_owned(),
+            Style::default().fg(theme.shortcut).bold(),
+        ));
+        spans.push(Span::styled(
+            format!(" {}", pair.1),
+            Style::default().fg(theme.text_dim),
+        ));
+    }
+    spans.into()
+}
+
 #[cfg(test)]
 mod responsive_tests {
     use super::*;
@@ -78,7 +161,7 @@ mod responsive_tests {
                     rendered.contains("9.1%"),
                     "loss must retain all digits: {w} {mode:?}"
                 );
-                assert!(rendered.contains("[PAUSED]"));
+                assert!(rendered.contains(" PAUSED "));
                 assert!(
                     buf.content
                         .iter()
@@ -119,22 +202,34 @@ mod responsive_tests {
                 hostname: format!("router-{i}.example.net"),
                 hops_str: "12 hops".into(),
                 loss_str: "15.0%".into(),
+                rtt_str: "165 ms".into(),
             })
             .collect();
-        let area = Rect::new(0, 0, 80, 24);
-        let mut buf = Buffer::empty(area);
-        TargetListView::new(&Theme::default(), &infos, 19).render(area, &mut buf);
-        let rendered = text(&buf);
-        for expected in [
-            "> 20.",
-            "2001:db8:1234:5678:abcd:abcd:abcd:20",
-            "router-20.example.net",
-            "12 hops",
-            "15.0%",
-            "Esc close",
-            "Enter select",
-        ] {
-            assert!(rendered.contains(expected), "missing {expected}");
+        let theme = Theme::default();
+        for width in [80, 100] {
+            let area = Rect::new(0, 0, width, 24);
+            let mut buf = Buffer::empty(area);
+            TargetListView::new(&theme, &infos, 19).render(area, &mut buf);
+            let rendered = text(&buf);
+            for expected in [
+                "20  2001:db8:1234:5678:abcd:abcd:abcd:20 ",
+                "12 hops   15.0%   165 ms",
+                "Esc close",
+                "Enter select",
+            ] {
+                assert!(rendered.contains(expected), "{width}: missing {expected}");
+            }
+            // One line per target, the name shown when there is room.
+            assert_eq!(rendered.contains("router-20.example.net"), width == 100);
+            assert!(!rendered.contains("router-19.example.net\n"));
+            // The selection bar spans the whole row.
+            let row = (0..24)
+                .find(|&y| (0..width).any(|x| buf[(x, y)].bg == theme.highlight_bg))
+                .unwrap();
+            let lit = (0..width)
+                .filter(|&x| buf[(x, row)].bg == theme.highlight_bg)
+                .count();
+            assert_eq!(lit, usize::from(94.min(width - 4) - POPUP_COLS));
         }
     }
 
@@ -182,6 +277,29 @@ mod responsive_tests {
                 assert!(text(&middle).contains("aaaa│"));
             }
         }
+    }
+
+    #[test]
+    fn hint_line_drops_whole_pairs_from_the_end() {
+        let theme = Theme::dracula();
+        let pairs = [("?", "help"), ("q", "quit"), ("Enter", "details")];
+        assert_eq!(
+            hint_line(&pairs, 80, &theme).to_string(),
+            "? help  q quit  Enter details"
+        );
+        // One cell short of the full line: the lowest-priority pair goes.
+        assert_eq!(hint_line(&pairs, 28, &theme).to_string(), "? help  q quit");
+        assert_eq!(hint_line(&pairs, 6, &theme).to_string(), "? help");
+        assert_eq!(hint_line(&pairs, 5, &theme).to_string(), "");
+        let line = hint_line(&pairs, 80, &theme);
+        assert_eq!(line.spans[0].style.fg, Some(theme.shortcut));
+        assert!(
+            line.spans[0]
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
+        assert_eq!(line.spans[1].style.fg, Some(theme.text_dim));
     }
 
     #[test]
