@@ -16,6 +16,7 @@ const ICMPV6_ECHO_REPLY: u8 = 129;
 const ICMPV6_PACKET_TOO_BIG: u8 = 2;
 const ICMPV6_TIME_EXCEEDED: u8 = 3;
 const ICMPV6_DEST_UNREACHABLE: u8 = 1;
+const ICMPV6_PARAMETER_PROBLEM: u8 = 4;
 
 // ICMPv6 Echo Request type (for error payload validation)
 const ICMPV6_ECHO_REQUEST: u8 = 128;
@@ -665,6 +666,13 @@ fn parse_icmp_response_v6(
             IcmpResponseType::TimeExceeded(icmp_code),
             None,
         ),
+        ICMPV6_PARAMETER_PROBLEM => parse_icmp_error_payload_v6_with_mtu(
+            icmp_data,
+            responder,
+            our_identifier,
+            IcmpResponseType::ParameterProblem(icmp_code),
+            None,
+        ),
         ICMPV6_DEST_UNREACHABLE => parse_icmp_error_payload_v6_with_mtu(
             icmp_data,
             responder,
@@ -909,8 +917,13 @@ fn parse_icmp_error_payload_v6_with_mtu(
     let original_payload = &original_ipv6_data[transport_offset..];
     let next_header = final_next_header;
 
-    // Try to parse ICMP extensions using RFC 4884 length field
-    let exts = parse_icmp_extensions(&icmp_data[8..], icmp_length, true);
+    // Try to parse ICMP extensions using RFC 4884 length field. Parameter
+    // Problem has a pointer there instead and carries no extensions (§4.6).
+    let exts = if matches!(response_type, IcmpResponseType::ParameterProblem(_)) {
+        ParsedIcmpExtensions::default()
+    } else {
+        parse_icmp_extensions(&icmp_data[8..], icmp_length, true)
+    };
 
     // Handle based on original protocol
     match next_header {
@@ -1358,6 +1371,13 @@ fn parse_icmp_response_v6_dgram(
             IcmpResponseType::TimeExceeded(icmp_code),
             None,
         ),
+        ICMPV6_PARAMETER_PROBLEM => parse_icmp_error_payload_v6_dgram(
+            icmp_data,
+            responder,
+            our_identifier,
+            IcmpResponseType::ParameterProblem(icmp_code),
+            None,
+        ),
         ICMPV6_DEST_UNREACHABLE => parse_icmp_error_payload_v6_dgram(
             icmp_data,
             responder,
@@ -1424,7 +1444,12 @@ fn parse_icmp_error_payload_v6_dgram(
     let original_payload = &original_ipv6_data[transport_offset..];
     let next_header = final_next_header;
 
-    let exts = parse_icmp_extensions(&icmp_data[8..], icmp_length, true);
+    // Parameter Problem: pointer, not length, and no extensions (RFC 4884 §4.6)
+    let exts = if matches!(response_type, IcmpResponseType::ParameterProblem(_)) {
+        ParsedIcmpExtensions::default()
+    } else {
+        parse_icmp_extensions(&icmp_data[8..], icmp_length, true)
+    };
 
     match next_header {
         IPPROTO_ICMPV6 => {
@@ -1545,6 +1570,39 @@ mod tests {
         let checksum = !sum as u16;
         icmp_data[2] = (checksum >> 8) as u8;
         icmp_data[3] = (checksum & 0xFF) as u8;
+    }
+
+    #[test]
+    fn ipv6_parameter_problem_correlates_without_extensions() {
+        let responder: IpAddr = "2001:db8::1".parse().unwrap();
+        let sequence = ProbeId::new(5, 2).to_sequence();
+        // Parameter Problem, code 1; pointer 0x10000000 would read as an
+        // RFC 4884 length of 16 words (128 bytes) if misparsed.
+        let mut packet = vec![4, 1, 0, 0, 0x10, 0, 0, 0];
+        let mut quote = vec![0; 128];
+        quote[0] = 0x60;
+        quote[6] = IPPROTO_ICMPV6;
+        quote[40] = ICMPV6_ECHO_REQUEST;
+        quote[44..46].copy_from_slice(&0x1234u16.to_be_bytes());
+        quote[46..48].copy_from_slice(&sequence.to_be_bytes());
+        packet.extend_from_slice(&quote);
+        packet.extend_from_slice(&[0x20, 0, 0, 0, 0, 8, 1, 1, 0x05, 0xdc, 0x07, 0x3e]);
+        set_icmp_checksum(&mut packet[136..]);
+
+        let mut raw = vec![0; 40];
+        raw[0] = 0x60;
+        raw[6] = IPPROTO_ICMPV6;
+        raw.extend_from_slice(&packet);
+        for parsed in [
+            parse_icmp_response(&packet, responder, 0x1234, true).unwrap(),
+            parse_icmp_response(&packet, responder, 0x1234, false).unwrap(),
+            parse_icmp_response_v6(&raw, responder, 0x1234).unwrap(),
+        ] {
+            assert_eq!(parsed.probe_id, ProbeId::new(5, 2));
+            assert_eq!(parsed.response_type, IcmpResponseType::ParameterProblem(1));
+            assert!(parsed.mpls_labels.is_none());
+        }
+        assert!(parse_icmp_response(&packet, responder, 0x5678, true).is_none());
     }
 
     #[test]

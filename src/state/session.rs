@@ -47,6 +47,8 @@ pub enum IcmpResponseType {
     DestUnreachable(u8),
     /// ICMPv6 Type 2 - Packet Too Big (for PMTUD)
     PacketTooBig,
+    /// ICMPv6 Type 4 - Parameter Problem (code only; the pointer is not kept)
+    ParameterProblem(u8),
 }
 
 /// MPLS label from ICMP extension (RFC 4950)

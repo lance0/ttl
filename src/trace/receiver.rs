@@ -614,6 +614,8 @@ mod tests {
                 (IcmpResponseType::TimeExceeded(0), router),
                 (IcmpResponseType::DestUnreachable(1), router),
                 (IcmpResponseType::EchoReply, router),
+                (IcmpResponseType::ParameterProblem(0), router),
+                (IcmpResponseType::ParameterProblem(0), target),
             ] {
                 let mut pmtud = PmtudState::new(target.is_ipv6(), false);
                 pmtud.start_search();
