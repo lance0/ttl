@@ -1,6 +1,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Row, StatefulWidget, Table, TableState, Widget};
 
 use crate::prefs::DisplayMode;
@@ -33,43 +34,81 @@ struct TableLayout {
     asn: u16,
 }
 
-fn table_layout(available: u16, preferred: &ColumnWidths, wide: bool, multi: bool) -> TableLayout {
-    let mut sizes = vec![3, 8, 12, 7, 7, 7, 7, 7, 7, 7, 7];
+/// Host names below this width stop being recognisable; ASN yields first.
+const READABLE_HOST: u16 = 18;
+/// Numeric cells: "9999.9" ms or a six-digit probe count.
+const NUM: u16 = 6;
+/// Loss cell: "100.0%".
+const LOSS: u16 = 6;
+/// Loss cell plus a separate " RL" rate-limit tag.
+const LOSS_RL: u16 = 9;
+const HOST_COL: usize = 1;
+const ASN_COL: usize = 2;
+const LOSS_COL: usize = 3;
+const LAST_COL: usize = 5;
+
+/// `omit` lists columns that carry no information in this session (ASN with
+/// lookups off; Last and Recent in a static replay).
+fn table_layout(
+    available: u16,
+    preferred: &ColumnWidths,
+    wide: bool,
+    multi: bool,
+    loss: u16,
+    omit: &[usize],
+) -> TableLayout {
+    let mut sizes = vec![3, 8, 12, loss, NUM, NUM, NUM, NUM, NUM, NUM, NUM];
     if wide {
-        sizes.extend([7, 7]);
+        sizes.extend([NUM, NUM]);
     }
     if multi {
         sizes.extend([3, 5]);
     }
     sizes.push(10);
-    let mut indices: Vec<usize> = (0..sizes.len()).collect();
+    let recent = sizes.len() - 1;
+    let mut indices: Vec<usize> = (0..sizes.len()).filter(|i| !omit.contains(i)).collect();
     // Drop secondary statistics before identity, loss, counts, and latency.
     let mut remove = Vec::new();
     if wide {
         remove.extend([12, 11]);
     }
-    remove.extend([10, 9, 7, 8, 2, sizes.len() - 1]);
+    remove.extend([10, 9, 7, 8, ASN_COL, recent]);
     if multi {
-        remove.extend([sizes.len() - 2, sizes.len() - 3]);
+        remove.extend([recent - 1, recent - 2]);
     }
-    remove.extend([5, 4, 6, 3]);
-    let total = |columns: &[usize], sizes: &[u16]| -> u16 {
-        columns.iter().map(|&i| sizes[i]).sum::<u16>() + columns.len().saturating_sub(1) as u16
+    remove.extend([4, LAST_COL, 6, LOSS_COL]);
+    // While ASN is shown, Host must keep a readable width, so secondary
+    // statistics and then ASN itself go before Host is squeezed.
+    let readable_host = READABLE_HOST.min(preferred.host).max(sizes[HOST_COL]);
+    let total = |columns: &[usize]| -> u16 {
+        let host_floor = if columns.contains(&ASN_COL) {
+            readable_host - sizes[HOST_COL]
+        } else {
+            0
+        };
+        columns.iter().map(|&i| sizes[i]).sum::<u16>()
+            + columns.len().saturating_sub(1) as u16
+            + host_floor
     };
     for i in remove {
-        if total(&indices, &sizes) <= available {
+        if total(&indices) <= available {
             break;
         }
         indices.retain(|&column| column != i);
     }
     // Identity can consume spare space, but never steal numeric column widths.
-    let spare = available.saturating_sub(total(&indices, &sizes));
-    let host_extra = spare.min(preferred.host.saturating_sub(sizes[1]));
-    sizes[1] += host_extra;
-    if indices.contains(&2) {
-        sizes[2] += (spare - host_extra).min(preferred.asn.saturating_sub(sizes[2]));
+    // Host takes ~60% and ASN ~40%, each only up to what its content needs.
+    let spare = available.saturating_sub(total(&indices));
+    if indices.contains(&ASN_COL) {
+        sizes[HOST_COL] = readable_host;
+        let host_room = preferred.host.saturating_sub(readable_host);
+        let mut host = (spare * 3 / 5).min(host_room);
+        let asn = (spare - host).min(preferred.asn.saturating_sub(sizes[ASN_COL]));
+        host += (spare - host - asn).min(host_room - host);
+        sizes[HOST_COL] += host;
+        sizes[ASN_COL] += asn;
     } else {
-        sizes[1] += spare - host_extra;
+        sizes[HOST_COL] += spare;
     }
     // Very small windows still get a host cell without arithmetic overflow.
     if available < 12 {
@@ -87,34 +126,50 @@ fn table_layout(available: u16, preferred: &ColumnWidths, wide: bool, multi: boo
     }
 }
 
-fn build_header_cells(wide: bool, multi: bool) -> Vec<Cell<'static>> {
+/// Counts and RTTs (Sent through Jitter, plus the wide jitter columns) are
+/// right-aligned under right-aligned headers. Loss is padded instead, so a
+/// trailing " RL" tag never shifts its digits.
+fn build_header_cells(wide: bool, multi: bool, theme: &Theme) -> Vec<Cell<'static>> {
     let mut names = vec![
-        "#", "Host", "ASN", "Loss%", "Sent", "Last ms", "Avg ms", "Min ms", "Max ms", "StdDev",
-        "Jit ms",
+        "#", "Host", "ASN", "Loss", "Sent", "Last", "Avg", "Min", "Max", "StDev", "Jitter",
     ];
     if wide {
-        names.extend(["JAvg ms", "JMax ms"]);
+        names.extend(["JAvg", "JMax"]);
     }
+    let numeric = 4..names.len();
     if multi {
         names.extend(["NAT", "Paths"]);
     }
     names.push("Recent");
+    let style = Style::default().fg(theme.header).bold();
     names
         .into_iter()
-        .map(|name| Cell::from(name).style(Style::default().bold()))
+        .enumerate()
+        .map(|(i, name)| {
+            let line = if i == LOSS_COL {
+                Line::from(format!("{name:>0$}", usize::from(LOSS)))
+            } else if numeric.contains(&i) {
+                Line::from(name).right_aligned()
+            } else {
+                Line::from(name)
+            };
+            Cell::from(line).style(style)
+        })
         .collect()
 }
 
 /// Scientific notation keeps unusually large counters/RTTs readable rather
 /// than silently clipping digits. RTTs are still expressed in milliseconds.
-fn numeric_cell(value: String) -> String {
-    if value.len() <= 7 {
-        return value;
-    }
-    value
-        .parse::<f64>()
-        .map(|n| format!("{n:.1e}"))
-        .unwrap_or(value)
+fn numeric_cell(value: String) -> Line<'static> {
+    let value = if value.len() <= usize::from(NUM) {
+        value
+    } else {
+        value
+            .parse::<f64>()
+            .map(|n| format!("{n:.1e}"))
+            .unwrap_or(value)
+    };
+    Line::from(value).right_aligned()
 }
 
 fn build_hop_indicators(
@@ -381,13 +436,46 @@ impl Widget for MainView<'_> {
         let is_wide = matches!(self.display_mode, DisplayMode::Wide);
 
         let max_display_ttl = self.session.dest_ttl.unwrap_or(self.session.config.max_ttl);
+        let visible = || {
+            self.session
+                .hops
+                .iter()
+                .filter(move |h| h.sent > 0 && h.ttl <= max_display_ttl)
+        };
+        let rate_limited =
+            |hop: &crate::state::Hop| hop.rate_limit.as_ref().is_some_and(|r| r.suspected);
+        let loss_width = if visible().any(rate_limited) {
+            LOSS_RL
+        } else {
+            LOSS
+        };
+        let mut omit = Vec::new();
+        if !self.session.config.asn_enabled {
+            omit.push(ASN_COL);
+        }
+        // A loaded session has no live clock: the last sample and the recent
+        // outcome window describe nothing the viewer can watch.
+        let static_replay = self.session.started_instant.is_none();
+        if static_replay {
+            omit.push(LAST_COL);
+        }
         let preferred = self.compute_column_widths(max_display_ttl);
-        let layout = table_layout(inner.width, &preferred, is_wide, multi_flow);
+        let all_headers = build_header_cells(is_wide, multi_flow, self.theme);
+        if static_replay {
+            omit.push(all_headers.len() - 1);
+        }
+        let layout = table_layout(
+            inner.width,
+            &preferred,
+            is_wide,
+            multi_flow,
+            loss_width,
+            &omit,
+        );
         let col_widths = ColumnWidths {
             host: layout.host,
             asn: layout.asn,
         };
-        let all_headers = build_header_cells(is_wide, multi_flow);
         let header = Row::new(
             layout
                 .indices
@@ -396,11 +484,7 @@ impl Widget for MainView<'_> {
                 .collect::<Vec<_>>(),
         );
         let selected_theme = self.theme.for_selection();
-        let rows: Vec<Row> = self
-            .session
-            .hops
-            .iter()
-            .filter(|h| h.sent > 0 && h.ttl <= max_display_ttl)
+        let rows: Vec<Row> = visible()
             .enumerate()
             .map(|(idx, hop)| {
                 let is_selected = self.selected == Some(idx);
@@ -409,6 +493,8 @@ impl Widget for MainView<'_> {
                 } else {
                     self.theme
                 };
+                let dim = Style::default().fg(theme.text_dim);
+                let silent = hop.received == 0;
 
                 let (host, asn_display) = if let Some(stats) = hop.primary_stats() {
                     let display = if let Some(ref hostname) = stats.hostname {
@@ -450,81 +536,46 @@ impl Widget for MainView<'_> {
                     // Use computed host width for truncation
                     let max_len = (col_widths.host as usize).saturating_sub(indicators.len());
                     let truncated = truncate_with_ellipsis(&display, max_len);
-                    (format!("{}{}", truncated, indicators), asn)
-                } else if hop.received == 0 {
-                    ("* * *".to_string(), String::new())
+                    (Cell::from(format!("{}{}", truncated, indicators)), asn)
+                } else if silent {
+                    (Cell::from("* * *").style(dim), String::new())
                 } else {
-                    ("???".to_string(), String::new())
+                    (Cell::from("???").style(dim), String::new())
                 };
 
-                let history = loss_history_line(&hop.recent_results, 10, theme, hop.received == 0);
+                let history = loss_history_line(&hop.recent_results, 10, theme, silent);
 
-                let (last, avg, min, max, stddev, jitter) = if let Some(stats) = hop.primary_stats()
-                {
-                    if stats.received > 0 {
-                        (
-                            stats
-                                .last_rtt()
-                                .map(|d| format!("{:.1}", d.as_secs_f64() * 1000.0))
-                                .unwrap_or_else(|| "-".into()),
-                            format!("{:.1}", stats.avg_rtt().as_secs_f64() * 1000.0),
-                            format!("{:.1}", stats.min_rtt.as_secs_f64() * 1000.0),
-                            format!("{:.1}", stats.max_rtt.as_secs_f64() * 1000.0),
-                            format!("{:.1}", stats.stddev().as_secs_f64() * 1000.0),
-                            format!("{:.1}", stats.jitter().as_secs_f64() * 1000.0),
-                        )
-                    } else {
-                        (
-                            "-".into(),
-                            "-".into(),
-                            "-".into(),
-                            "-".into(),
-                            "-".into(),
-                            "-".into(),
-                        )
+                // RTT columns in ms with one decimal; "–" until a reply exists.
+                let ms = |d: std::time::Duration| format!("{:.1}", d.as_secs_f64() * 1000.0);
+                let stats = hop.primary_stats().filter(|s| s.received > 0);
+                let rtt = |value: Option<String>| match value {
+                    Some(value) => Cell::from(numeric_cell(value)),
+                    None => Cell::from(Line::from("–").right_aligned()).style(dim),
+                };
+
+                // Loss waits for a completed outcome; a fresh hop has none yet.
+                let rate_limited = rate_limited(hop);
+                let loss_cell = if hop.received + hop.timeouts == 0 {
+                    Cell::from(format!("{:>1$}", "–", usize::from(LOSS))).style(dim)
+                } else {
+                    let loss = hop.loss_pct();
+                    let mut color = theme.loss_color(loss);
+                    if silent {
+                        // Nothing ever answered (filtered hop, or past the
+                        // destination): a quiet row, not a wall of alarms.
+                        color = theme.text_dim;
+                    } else if rate_limited && color == theme.error {
+                        // ICMP rate limiting, not necessarily forwarding loss.
+                        color = theme.warning;
                     }
-                } else {
-                    (
-                        "-".into(),
-                        "-".into(),
-                        "-".into(),
-                        "-".into(),
-                        "-".into(),
-                        "-".into(),
-                    )
-                };
-
-                let (j_avg, j_max) = if is_wide {
-                    if let Some(stats) = hop.primary_stats() {
-                        if stats.received > 0 {
-                            (
-                                format!("{:.1}", stats.jitter_avg().as_secs_f64() * 1000.0),
-                                format!("{:.1}", stats.jitter_max().as_secs_f64() * 1000.0),
-                            )
-                        } else {
-                            ("-".into(), "-".into())
-                        }
-                    } else {
-                        ("-".into(), "-".into())
+                    let mut spans = vec![Span::styled(
+                        format!("{:>1$}", format!("{loss:.1}%"), usize::from(LOSS)),
+                        Style::default().fg(color),
+                    )];
+                    if rate_limited {
+                        spans.push(Span::styled(" RL", dim));
                     }
-                } else {
-                    (String::new(), String::new())
-                };
-
-                // Determine if rate limiting is suspected
-                let rate_limited = hop
-                    .rate_limit
-                    .as_ref()
-                    .map(|r| r.suspected)
-                    .unwrap_or(false);
-
-                let loss_style = Style::default().fg(theme.loss_color(hop.loss_pct()));
-
-                // Format loss with "RL" indicator if rate limited
-                let loss_display = if rate_limited {
-                    format!("{:.0}%RL", hop.loss_pct())
-                } else {
-                    format!("{:.1}%", hop.loss_pct())
+                    Cell::from(Line::from(spans))
                 };
 
                 let row_style = if is_selected {
@@ -533,47 +584,40 @@ impl Widget for MainView<'_> {
                         .bg(theme.highlight_bg)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default()
+                    Style::default().fg(theme.text)
                 };
 
                 let mut cells = vec![
                     Cell::from(hop.ttl.to_string()),
-                    Cell::from(host),
-                    Cell::from(asn_display).style(Style::default().fg(theme.text_dim)),
-                    Cell::from(loss_display).style(loss_style),
+                    host,
+                    Cell::from(asn_display).style(dim),
+                    loss_cell,
                     Cell::from(numeric_cell(hop.sent.to_string())),
-                    Cell::from(numeric_cell(last)),
-                    Cell::from(numeric_cell(avg)),
-                    Cell::from(numeric_cell(min)),
-                    Cell::from(numeric_cell(max)),
-                    Cell::from(numeric_cell(stddev)),
-                    Cell::from(numeric_cell(jitter)),
+                    rtt(stats.and_then(|s| s.last_rtt()).map(ms)),
+                    rtt(stats.map(|s| ms(s.avg_rtt()))),
+                    rtt(stats.map(|s| ms(s.min_rtt))),
+                    rtt(stats.map(|s| ms(s.max_rtt))),
+                    rtt(stats.map(|s| ms(s.stddev()))),
+                    rtt(stats.map(|s| ms(s.jitter()))),
                 ];
                 if is_wide {
-                    cells.push(Cell::from(numeric_cell(j_avg)));
-                    cells.push(Cell::from(numeric_cell(j_max)));
+                    cells.push(rtt(stats.map(|s| ms(s.jitter_avg()))));
+                    cells.push(rtt(stats.map(|s| ms(s.jitter_max()))));
                 }
 
                 // Add "NAT" and "Paths" columns if multi-flow mode
                 if multi_flow {
                     // NAT indicator
                     let nat_display = if hop.has_nat() { "!" } else { "" };
-                    let nat_style = if hop.has_nat() {
-                        Style::default().fg(theme.warning)
-                    } else {
-                        Style::default()
-                    };
-                    cells.push(Cell::from(nat_display).style(nat_style));
+                    cells.push(Cell::from(nat_display).style(Style::default().fg(theme.warning)));
 
-                    // Paths (ECMP detection)
-                    let path_count = hop.path_count();
+                    // Paths (ECMP detection), highlighted only when they differ
                     let paths_style = if hop.has_ecmp() {
-                        // ECMP detected - highlight with warning color
                         Style::default().fg(theme.warning)
                     } else {
                         Style::default()
                     };
-                    cells.push(Cell::from(path_count.to_string()).style(paths_style));
+                    cells.push(Cell::from(hop.path_count().to_string()).style(paths_style));
                 }
 
                 cells.push(Cell::from(history));
@@ -605,8 +649,8 @@ mod tests {
     fn responsive_columns_fit_without_squeezing_numbers() {
         for available in [0, 5, 20, 40, 58, 78, 98, 158, 240] {
             for (wide, multi) in [(false, false), (true, false), (false, true), (true, true)] {
-                let layout =
-                    table_layout(available, &ColumnWidths { host: 45, asn: 36 }, wide, multi);
+                let preferred = ColumnWidths { host: 45, asn: 36 };
+                let layout = table_layout(available, &preferred, wide, multi, LOSS_RL, &[]);
                 let width: u16 = layout
                     .widths
                     .iter()
@@ -617,27 +661,189 @@ mod tests {
                     .sum();
                 assert!(width + layout.widths.len().saturating_sub(1) as u16 <= available);
                 assert!(
-                    layout
-                        .indices
-                        .iter()
-                        .all(|&i| i < build_header_cells(wide, multi).len())
+                    layout.indices.iter().all(|&i| i < build_header_cells(
+                        wide,
+                        multi,
+                        &Theme::default()
+                    )
+                    .len())
                 );
                 if available >= 58 {
                     assert!(layout.indices.contains(&3));
                     assert!(layout.indices.contains(&6));
+                }
+                if layout.indices.contains(&ASN_COL) {
+                    assert!(layout.host >= READABLE_HOST, "{available}: host squeezed");
                 }
             }
         }
     }
 
     #[test]
+    fn narrow_budget_drops_sent_before_last_and_asn_before_host() {
+        let preferred = ColumnWidths { host: 45, asn: 36 };
+        // 80x24 terminal: secondary statistics go, Host and ASN stay readable.
+        let layout = table_layout(78, &preferred, false, false, LOSS, &[]);
+        assert!(layout.indices.contains(&ASN_COL) && !layout.indices.contains(&8));
+        assert!(layout.host >= READABLE_HOST);
+        // ASN yields rather than squeezing Host below a readable width.
+        for available in 30..200 {
+            let layout = table_layout(available, &preferred, false, false, LOSS, &[]);
+            if layout.indices.contains(&ASN_COL) {
+                assert!(layout.host >= READABLE_HOST, "{available}");
+            }
+        }
+        assert!(
+            !table_layout(58, &preferred, false, false, LOSS, &[])
+                .indices
+                .contains(&ASN_COL)
+        );
+        // Squeeze until one of Sent/Last must go: Sent goes first.
+        let layout = table_layout(36, &preferred, false, false, LOSS, &[]);
+        assert!(!layout.indices.contains(&4) && layout.indices.contains(&LAST_COL));
+        // Wide terminals split spare width ~60/40 between Host and ASN.
+        let layout = table_layout(130, &preferred, false, false, LOSS, &[]);
+        assert!(
+            layout.host > layout.asn && layout.asn > 12,
+            "{} {}",
+            layout.host,
+            layout.asn
+        );
+        // Omitted columns never appear.
+        let layout = table_layout(240, &preferred, false, false, LOSS, &[ASN_COL, LAST_COL]);
+        assert!(!layout.indices.contains(&ASN_COL) && !layout.indices.contains(&LAST_COL));
+    }
+
+    #[test]
     fn huge_numbers_remain_complete() {
-        assert_eq!(numeric_cell("12345.6".into()), "12345.6");
+        assert_eq!(numeric_cell("9999.9".into()).to_string(), "9999.9");
         for value in [u64::MAX.to_string(), "123456789.1".into()] {
-            let compact = numeric_cell(value);
-            assert!(compact.len() <= 7);
+            let compact = numeric_cell(value).to_string();
+            assert!(compact.len() <= usize::from(NUM));
             assert!(compact.parse::<f64>().is_ok());
         }
+    }
+
+    /// One buffer row; every cell here is a single char, so char index == x.
+    fn row(buf: &Buffer, y: u16) -> Vec<char> {
+        (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect()
+    }
+
+    fn find(row: &[char], pat: &str) -> Option<usize> {
+        let pat: Vec<char> = pat.chars().collect();
+        row.windows(pat.len()).position(|w| w == pat.as_slice())
+    }
+
+    /// The `len` cells ending at `end`.
+    fn ending(row: &[char], end: usize, len: usize) -> String {
+        row[end - len..end].iter().collect()
+    }
+
+    fn sample_session() -> Session {
+        use crate::{config::Config, state::Target};
+        use std::time::Duration;
+        let mut session = Session::new(
+            Target::new("example.net".into(), "192.0.2.9".parse().unwrap()),
+            Config::default(),
+        );
+        let replies = [(0, 3, 0), (1, 9, 1), (2, 0, 4)];
+        for (i, received, timeouts) in replies {
+            let hop = &mut session.hops[i];
+            for _ in 0..received + timeouts {
+                hop.record_sent();
+            }
+            let ip = format!("192.0.2.{}", i + 1).parse().unwrap();
+            for r in 0..received {
+                hop.record_response(ip, Duration::from_micros(1500 + 100_000 * r));
+            }
+            for _ in 0..timeouts {
+                hop.record_timeout();
+            }
+        }
+        session.hops[3].record_sent(); // probe in flight, no outcome yet
+        session
+    }
+
+    #[test]
+    fn numeric_cells_right_align_and_loss_keeps_one_format() {
+        let session = sample_session();
+        let area = Rect::new(0, 0, 120, 10);
+        let mut buf = Buffer::empty(area);
+        MainView::new(&session, None, false, &Theme::default()).render(area, &mut buf);
+        let header = row(&buf, 1);
+        let text: String = header.iter().collect();
+        for name in [
+            "Loss", "Sent", "Last", "Avg", "Min", "Max", "StDev", "Jitter",
+        ] {
+            assert!(text.contains(name), "{name} missing: {text}");
+        }
+        assert!(!text.contains("ms ") && !text.contains("Loss%"));
+        let end = |name: &str| find(&header, name).unwrap() + name.len();
+        // Hop 1: 0% loss; hop 2: 10%; hop 3: no reply ever; hop 4: pending.
+        let (r1, r2, r3, r4) = (row(&buf, 2), row(&buf, 3), row(&buf, 4), row(&buf, 5));
+        assert_eq!(ending(&r1, end("Loss"), 4), "0.0%");
+        assert_eq!(ending(&r2, end("Loss"), 5), "10.0%");
+        assert_eq!(ending(&r3, end("Loss"), 6), "100.0%");
+        assert_eq!(ending(&r4, end("Loss"), 2), " –");
+        // Right-aligned digits end where the header ends.
+        assert_eq!(ending(&r1, end("Sent"), 2), " 3");
+        assert_eq!(ending(&r2, end("Sent"), 2), "10");
+        assert_eq!(ending(&r1, end("Min"), 4), " 1.5");
+        assert_eq!(ending(&r3, end("Avg"), 2), " –");
+        // Recent stays left-aligned with its history.
+        assert_eq!(find(&header, "Recent"), find(&r1, "·"));
+        assert!(find(&r3, "* * *").is_some());
+    }
+
+    #[test]
+    fn rate_limit_tag_is_separate_and_quiet() {
+        let mut session = sample_session();
+        session.hops[1].rate_limit = Some(crate::state::RateLimitInfo {
+            suspected: true,
+            ..Default::default()
+        });
+        let theme = Theme::dracula();
+        let area = Rect::new(0, 0, 120, 10);
+        let mut buf = Buffer::empty(area);
+        MainView::new(&session, None, false, &theme).render(area, &mut buf);
+        let r2 = row(&buf, 3);
+        let x = find(&r2, "10.0% RL").expect("separate RL tag") as u16;
+        assert_eq!(buf[(x + 6, 3)].fg, theme.text_dim);
+        // Loss color follows the shared thresholds (10% = warning).
+        assert_eq!(buf[(x, 3)].fg, theme.warning);
+        // A hop that never answered stays quiet: dim loss and dim crosses.
+        let r3 = row(&buf, 4);
+        let x = find(&r3, "100.0%").unwrap() as u16;
+        assert_eq!(buf[(x, 4)].fg, theme.text_dim);
+        let x = find(&r3, "×").unwrap() as u16;
+        assert_eq!(buf[(x, 4)].fg, theme.text_dim);
+    }
+
+    #[test]
+    fn asn_column_is_omitted_when_lookups_are_off() {
+        let mut session = sample_session();
+        let area = Rect::new(0, 0, 120, 10);
+        let mut buf = Buffer::empty(area);
+        MainView::new(&session, None, false, &Theme::default()).render(area, &mut buf);
+        assert!(find(&row(&buf, 1), "ASN").is_some());
+        session.config.asn_enabled = false;
+        let mut buf = Buffer::empty(area);
+        MainView::new(&session, None, false, &Theme::default()).render(area, &mut buf);
+        assert!(find(&row(&buf, 1), "ASN").is_none());
+    }
+
+    #[test]
+    fn static_replay_hides_last_and_recent() {
+        let mut session = sample_session();
+        session.started_instant = None; // as loaded from a file
+        let area = Rect::new(0, 0, 120, 10);
+        let mut buf = Buffer::empty(area);
+        MainView::new(&session, None, false, &Theme::default()).render(area, &mut buf);
+        let header = row(&buf, 1);
+        assert!(find(&header, "Last").is_none() && find(&header, "Recent").is_none());
+        assert!(find(&header, "Avg").is_some());
     }
 
     #[test]
@@ -657,6 +863,12 @@ mod tests {
         // default ANSI theme must not force White text onto light terminals.
         assert_eq!(buf[(1, 3)].symbol(), "2");
         assert_eq!(buf[(1, 3)].fg, Color::Reset);
+        // RGB themes do color rows and headers with their own text colors.
+        let theme = Theme::matrix();
+        let mut buf = Buffer::empty(area);
+        MainView::new(&session, Some(0), false, &theme).render(area, &mut buf);
+        assert_eq!(buf[(1, 3)].fg, theme.text);
+        assert_eq!(buf[(1, 1)].fg, theme.header);
     }
 
     #[test]
