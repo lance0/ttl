@@ -80,6 +80,8 @@ pub struct UiState {
     pub paused: bool,
     /// Show help overlay
     pub show_help: bool,
+    /// Scroll offset within help.
+    pub help_scroll: u16,
     /// Show expanded hop view
     pub show_hop_detail: bool,
     /// Scroll offset within the expanded hop view.
@@ -139,6 +141,7 @@ struct RenderFingerprint {
     selected: Option<usize>,
     paused: bool,
     show_help: bool,
+    help_scroll: u16,
     show_hop_detail: bool,
     hop_detail_scroll: u16,
     show_settings: bool,
@@ -180,6 +183,7 @@ fn render_fingerprint(
         selected,
         paused,
         show_help,
+        help_scroll,
         show_hop_detail,
         hop_detail_scroll,
         show_settings,
@@ -237,6 +241,7 @@ fn render_fingerprint(
         selected: *selected,
         paused: *paused,
         show_help: *show_help,
+        help_scroll: *help_scroll,
         show_hop_detail: *show_hop_detail,
         hop_detail_scroll: *hop_detail_scroll,
         show_settings: *show_settings,
@@ -847,7 +852,23 @@ where
 
             // Handle overlays first
             if ui_state.show_help {
-                ui_state.show_help = false;
+                let size = terminal.size()?;
+                let max_scroll = HelpView::new(&theme)
+                    .with_replay(ui_state.replay_state.is_some())
+                    .max_scroll(Rect::new(0, 0, size.width, size.height));
+                ui_state.help_scroll = ui_state.help_scroll.min(max_scroll);
+                match key.code {
+                    KeyCode::PageUp => {
+                        ui_state.help_scroll = ui_state.help_scroll.saturating_sub(10)
+                    }
+                    KeyCode::PageDown => {
+                        ui_state.help_scroll =
+                            ui_state.help_scroll.saturating_add(10).min(max_scroll)
+                    }
+                    KeyCode::Home => ui_state.help_scroll = 0,
+                    KeyCode::End => ui_state.help_scroll = max_scroll,
+                    _ => ui_state.show_help = false,
+                }
                 continue;
             }
 
@@ -1089,6 +1110,7 @@ where
                 }
                 KeyCode::Char('?') | KeyCode::Char('h') => {
                     ui_state.show_help = true;
+                    ui_state.help_scroll = 0;
                 }
                 // Target switching
                 KeyCode::Tab | KeyCode::Char('n') if num_targets > 1 => {
@@ -1437,18 +1459,23 @@ fn draw_empty_state(
             )
         } else {
             (
-                Cow::Borrowed("q quit | o add target | t theme | s settings | ? help"),
+                Cow::Borrowed("q quit | o add target | t theme | s settings"),
                 Style::default().fg(theme.text_dim),
             )
         };
     f.render_widget(
-        Paragraph::new(status_text.as_ref()).style(status_style),
+        Paragraph::new(format!("? help · {}", status_text)).style(status_style),
         chunks[1],
     );
 
     // Overlays available in empty mode
     if ui_state.show_help {
-        f.render_widget(HelpView::new(theme).with_replay(false), area);
+        f.render_widget(
+            HelpView::new(theme)
+                .with_replay(false)
+                .with_scroll(ui_state.help_scroll),
+            area,
+        );
     }
     if ui_state.show_settings {
         let theme_names = Theme::list();
@@ -1594,33 +1621,36 @@ fn draw_ui(
     } else if ui_state.replay_state.is_some() {
         (
             Cow::Borrowed(
-                "q quit | p pause | Left/Right seek | [/] seek 5s | +/- speed | Home/End | ? help",
+                "q quit | p pause | Left/Right seek | [/] seek 5s | +/- speed | Home/End",
             ),
             Style::default().fg(theme.text_dim),
         )
     } else if num_targets > 1 {
         (
             Cow::Borrowed(
-                "q quit | Tab next | l list | o add | p pause | r reset | t theme | w display | s settings | e export | ? help",
+                "q quit | Tab next | l list | o add | p pause | r reset | t theme | w display | s settings | e export",
             ),
             Style::default().fg(theme.text_dim),
         )
     } else {
         (
             Cow::Borrowed(
-                "q quit | o add | p pause | r reset | t theme | w display | s settings | e export | ? help",
+                "q quit | o add | p pause | r reset | t theme | w display | s settings | e export",
             ),
             Style::default().fg(theme.text_dim),
         )
     };
 
-    let status_bar = Paragraph::new(status_text.as_ref()).style(status_style);
+    let status_text = format!("? help · {}", status_text);
+    let status_bar = Paragraph::new(status_text).style(status_style);
     f.render_widget(status_bar, status_chunk);
 
     // Overlays
     if ui_state.show_help {
         f.render_widget(
-            HelpView::new(theme).with_replay(ui_state.replay_state.is_some()),
+            HelpView::new(theme)
+                .with_replay(ui_state.replay_state.is_some())
+                .with_scroll(ui_state.help_scroll),
             area,
         );
     }

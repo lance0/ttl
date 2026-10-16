@@ -558,7 +558,7 @@ impl HopDetailView<'_> {
 
 /// Wrap on grapheme boundaries before measuring height, retaining span styles.
 /// Long interface/hostname values must not hide the MTU at the end of a line.
-fn wrap_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+pub(crate) fn wrap_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
     if width == 0 {
         return Vec::new();
     }
