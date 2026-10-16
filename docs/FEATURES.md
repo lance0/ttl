@@ -523,7 +523,11 @@ Tabular format for spreadsheet analysis.
 ttl 8.8.8.8 -c 100 --report
 ```
 
-Human-readable summary similar to mtr report mode.
+Human-readable summary similar to mtr report mode. When available, indented
+lines include RFC 5837 interface roles, names, addresses, ifIndex, MTU, and
+MPLS label stacks (label, traffic class, bottom-of-stack flag, and TTL).
+Each extension line identifies its responder IP so ECMP details remain clear.
+These details are also available with `--replay results.json --report`.
 
 ### Streaming JSON
 
