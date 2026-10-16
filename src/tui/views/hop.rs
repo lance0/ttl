@@ -34,7 +34,12 @@ impl HopDetailView<'_> {
     pub fn max_scroll(&self, area: Rect) -> u16 {
         let width = area.width.saturating_sub(10).min(80).saturating_sub(2);
         let height = u16::try_from(self.build_lines(width).len()).unwrap_or(u16::MAX);
-        height.saturating_sub(area.height.saturating_sub(7))
+        height.saturating_sub(Self::visible_rows(area))
+    }
+
+    /// Detail rows visible at once: popup margin (4), borders (2) and footer (1).
+    pub fn visible_rows(area: Rect) -> u16 {
+        area.height.saturating_sub(7)
     }
 
     /// Build all content lines for the modal
@@ -724,6 +729,36 @@ mod tests {
             HopDetailView::new(&hop, &theme).render(area, &mut buf);
             let text = buffer_text(&buf);
             assert!(text.contains("MTU 9000"), "MTU missing at width {width}");
+        }
+    }
+
+    #[test]
+    fn paging_by_visible_rows_reaches_every_line() {
+        let hop = extension_hop();
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 70, 12);
+        let view = HopDetailView::new(&hop, &theme);
+        let (page, max) = (HopDetailView::visible_rows(area), view.max_scroll(area));
+        assert!(max > page, "content must span several pages");
+        let mut seen = Vec::new();
+        for scroll in (0..=max).step_by(page.into()).chain([max]) {
+            let mut buf = Buffer::empty(area);
+            HopDetailView::new(&hop, &theme)
+                .with_scroll(scroll)
+                .render(area, &mut buf);
+            seen.extend(
+                buf.content
+                    .chunks(70)
+                    .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>()),
+            );
+        }
+        for line in view.build_lines(58) {
+            let line = line.to_string();
+            let line = line.trim();
+            assert!(
+                line.is_empty() || seen.iter().any(|row| row.contains(line)),
+                "{line:?} never shown"
+            );
         }
     }
 

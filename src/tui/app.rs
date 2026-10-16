@@ -954,6 +954,9 @@ where
 
             if ui_state.show_hop_detail {
                 let size = terminal.size()?;
+                let area = Rect::new(0, 0, size.width, size.height);
+                // Page by the visible rows so PgUp/PgDn never skip detail lines.
+                let page = HopDetailView::visible_rows(area).max(1);
                 let (hop_count, max_scroll) = {
                     let sessions_read = sessions.read();
                     let current_target = targets[ui_state.selected_target];
@@ -966,8 +969,7 @@ where
                                 .selected
                                 .and_then(|selected| hops.get(selected))
                                 .map(|hop| {
-                                    HopDetailView::new(hop, &Theme::default())
-                                        .max_scroll(Rect::new(0, 0, size.width, size.height))
+                                    HopDetailView::new(hop, &Theme::default()).max_scroll(area)
                                 })
                                 .unwrap_or(0);
                             (hops.len(), max_scroll)
@@ -995,12 +997,13 @@ where
                         ui_state.selected = Some(idx);
                     }
                     KeyCode::PageUp => {
-                        ui_state.hop_detail_scroll = ui_state.hop_detail_scroll.saturating_sub(10);
+                        ui_state.hop_detail_scroll =
+                            ui_state.hop_detail_scroll.saturating_sub(page);
                     }
                     KeyCode::PageDown => {
                         ui_state.hop_detail_scroll = ui_state
                             .hop_detail_scroll
-                            .saturating_add(10)
+                            .saturating_add(page)
                             .min(max_scroll);
                     }
                     KeyCode::Home => ui_state.hop_detail_scroll = 0,

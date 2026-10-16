@@ -119,9 +119,15 @@ impl Widget for HelpView<'_> {
                 Span::styled("  Esc     ", Style::default().fg(self.theme.shortcut)),
                 Span::raw("Close popup / Deselect"),
             ]),
+            Line::from(vec![
+                Span::styled("  PgUp/Dn ", Style::default().fg(self.theme.shortcut)),
+                Span::raw("Scroll hop details"),
+            ]),
+            Line::from(vec![
+                Span::styled("  +       ", Style::default().fg(self.theme.shortcut)),
+                Span::raw("Hop has interface/MPLS details"),
+            ]),
             Line::from(""),
-            Line::from("  +       Interface/MPLS details (Enter)"),
-            Line::from("  PgUp/Dn Scroll within hop details"),
         ];
 
         if self.is_replay {
