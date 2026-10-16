@@ -1,47 +1,68 @@
-# ttl — README demo cassette (live TUI traceroute)
+# ttl — README demo cassette (live TUI traceroute, TUI-only frames)
 #
-# Rendered with VHS (https://github.com/charmbracelet/vhs):
-#   PATH="$HOME/go/bin:$HOME/.local/bin:$PATH" vhs docs/demo.tape
+# The launch (docker run, container start, first probe rounds) runs inside
+# Hide, so the GIF opens on an already populated table and quits off-camera.
 #
-# Captures the REAL TUI on a live trace. Raw-socket privilege comes from a
-# throwaway Docker container (--cap-add=NET_RAW), so no host setcap/sudo is
-# needed; the freshly built ./target/release/ttl is mounted in. Reproducible:
-# `cargo build --release` then re-run the vhs command from the repo root.
+# Render from the repo root (needs vhs, ttyd, ffmpeg, docker):
+#   cargo build --release
+#   VHS_NO_SANDBOX=1 PATH="$HOME/.cache/rod/browser/chromium-1321438:$HOME/go/bin:$HOME/.local/bin:$PATH" vhs docs/demo.tape
+#
+# VHS 0.11 (go-rod 0.116) hangs opening its page on current Chrome, so it is
+# pointed at rod's pinned Chromium 128 (picked up as `chrome` on PATH); fetch once:
+#   curl -LO https://storage.googleapis.com/chromium-browser-snapshots/Linux_x64/1321438/chrome-linux.zip
+#   unzip chrome-linux.zip && mv chrome-linux ~/.cache/rod/browser/chromium-1321438
+# VHS_NO_SANDBOX is needed where unprivileged user namespaces are restricted
+# (Ubuntu AppArmor).
+#
+# Raw-socket privilege comes from a throwaway Docker container
+# (--cap-add=NET_RAW), so no host setcap/sudo; the fresh ./target/release/ttl
+# is mounted in.
 
 Output docs/demo.gif
 
 Set Width 1280
-Set Height 760
+Set Height 560
 Set FontSize 15
 Set Padding 16
 Set Theme "Catppuccin Mocha"
 Set CursorBlink false
 
-# --- clean prompt -------------------------------------------------------------
+# --- launch off-camera; Show only once hops, ASNs, rDNS and stats are in ------
 Hide
 Type "clear"
 Enter
-Sleep 500ms
+Sleep 300ms
+Type "docker run --rm -it --cap-add=NET_RAW -v $PWD:/w -w /w ubuntu:24.04 ./target/release/ttl --no-update-check 1.1.1.1"
+Enter
+Sleep 15s
 Show
 
-# --- launch the real TUI on a live trace (raw sockets via Docker NET_RAW) ------
-Type@35ms "docker run --rm -it --cap-add=NET_RAW -v $PWD:/w -w /w ubuntu:24.04 ./target/release/ttl 1.1.1.1"
-Enter
-Sleep 12s        # container start + live trace: hops appear, ASNs + rDNS resolve, sparklines build
+# --- populated table ----------------------------------------------------------
+Sleep 3s
 
-# --- open a hop's detail view (percentiles, jitter, routing symmetry, TTL) ----
+# --- walk the selection down the path ------------------------------------------
 Down
-Sleep 350ms
+Sleep 400ms
 Down
-Sleep 350ms
+Sleep 400ms
 Down
-Sleep 500ms
+Sleep 400ms
+Down
+Sleep 400ms
+Down
+Sleep 400ms
+Down
+Sleep 400ms
+Down
+Sleep 700ms
+
+# --- hop detail (percentiles, jitter, routing symmetry, TTL) -------------------
 Enter
-Sleep 4500ms
+Sleep 6s
 Escape
-Sleep 3s          # hold on the fully populated table (final good frame)
+Sleep 4s          # hold on the full table (final good frame)
 
-# --- quit off-camera so the last frame is the TUI, not the shell prompt -------
+# --- quit off-camera so the last frame is the TUI, not the shell prompt --------
 Hide
 Type "q"
-Sleep 800ms
+Sleep 1500ms
