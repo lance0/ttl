@@ -1791,24 +1791,6 @@ mod tests {
     use std::net::Ipv6Addr;
 
     #[test]
-    fn replay_reader_enforces_actual_bytes_and_accepts_exact_boundary() {
-        let session = Session::new(
-            Target::new("example.test".into(), "192.0.2.1".parse().unwrap()),
-            Config::default(),
-        );
-        let json = serde_json::to_vec(&session).unwrap();
-        let limit = json.len() as u64;
-        assert!(read_session_limited(json.as_slice(), limit).is_ok());
-        let mut oversized = json.clone();
-        oversized.extend_from_slice(b"    ");
-        let mut reader = std::io::Cursor::new(oversized);
-        let error = read_session_limited(&mut reader, limit).unwrap_err();
-        assert!(error.to_string().contains("size limit"));
-        assert_eq!(reader.position(), limit + 1);
-        assert!(read_session_limited(b"{broken json}".as_slice(), 1000).is_err());
-    }
-
-    #[test]
     fn test_effective_flows_icmp_forces_single_flow() {
         let config = Config {
             protocol: ProbeProtocol::Icmp,
@@ -1893,5 +1875,22 @@ mod tests {
             session_effective_flows_for_family(&sessions, &targets, true, 7),
             7
         );
+    }
+    #[test]
+    fn replay_reader_enforces_actual_bytes_and_accepts_exact_boundary() {
+        let session = Session::new(
+            Target::new("example.test".into(), "192.0.2.1".parse().unwrap()),
+            Config::default(),
+        );
+        let json = serde_json::to_vec(&session).unwrap();
+        let limit = json.len() as u64;
+        assert!(read_session_limited(json.as_slice(), limit).is_ok());
+        let mut oversized = json.clone();
+        oversized.extend_from_slice(b"    ");
+        let mut reader = std::io::Cursor::new(oversized);
+        let error = read_session_limited(&mut reader, limit).unwrap_err();
+        assert!(error.to_string().contains("size limit"));
+        assert_eq!(reader.position(), limit + 1);
+        assert!(read_session_limited(b"{broken json}".as_slice(), 1000).is_err());
     }
 }
