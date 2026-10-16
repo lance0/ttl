@@ -57,12 +57,148 @@ pub(crate) fn prune_cache<Entry, A, E>(
     }
 }
 
+/// Network misses retry sooner than successful DNS/ASN results: a resolver
+/// outage should not suppress enrichment for an hour.
+pub(crate) const NEGATIVE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Build a deduplicated batch without spending slots on fresh negative cache
+/// entries. This lets later hops progress even if early addresses have no data.
+pub(crate) fn collect_lookup_batch(
+    sessions: &crate::trace::receiver::SessionMap,
+    limit: usize,
+    missing: impl Fn(&crate::state::ResponderStats) -> bool,
+    eligible: impl Fn(std::net::IpAddr) -> bool,
+) -> Vec<std::net::IpAddr> {
+    let mut seen = std::collections::HashSet::new();
+    let mut batch = Vec::new();
+    if limit == 0 {
+        return batch;
+    }
+    for state in sessions.read().values() {
+        let session = state.read();
+        for stats in session.hops.iter().flat_map(|hop| hop.responders.values()) {
+            if missing(stats) && seen.insert(stats.ip) && eligible(stats.ip) {
+                batch.push(stats.ip);
+                if batch.len() == limit {
+                    return batch;
+                }
+            }
+        }
+    }
+    batch
+}
+
+/// Dropping in-flight enrichment futures lets shutdown finish even when a
+/// resolver/API does not respond. No session locks are held across this await.
+pub(crate) async fn lookup_batch<T, F: std::future::Future<Output = T>>(
+    cancel: &tokio_util::sync::CancellationToken,
+    lookups: impl IntoIterator<Item = F>,
+) -> Option<Vec<T>> {
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => None,
+        results = futures::future::join_all(lookups) => Some(results),
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::collections::HashMap;
     use std::net::{IpAddr, Ipv4Addr};
     use std::time::{Duration, Instant};
+
+    pub(crate) fn unenriched_sessions() -> crate::trace::receiver::SessionMap {
+        use crate::{
+            config::Config,
+            state::{ResponderStats, Session, SessionLock, Target},
+        };
+        let target = "203.0.113.1".parse().unwrap();
+        let mut session = Session::new(
+            Target::new("example.test".into(), target),
+            Config::default(),
+        );
+        for ttl in 1..=20 {
+            let ip = make_ip(ttl);
+            let hop = session.hop_mut(ttl).unwrap();
+            hop.responders.insert(ip, ResponderStats::new(ip));
+            hop.primary = Some(ip);
+            hop.sent = 1;
+        }
+        std::sync::Arc::new(parking_lot::RwLock::new(HashMap::from([(
+            target,
+            std::sync::Arc::new(SessionLock::new(session)),
+        )])))
+    }
+
+    pub(crate) async fn assert_worker_progress(
+        sessions: crate::trace::receiver::SessionMap,
+        worker: impl std::future::Future<Output = ()>,
+        cancel: tokio_util::sync::CancellationToken,
+        complete: impl Fn(&crate::state::ResponderStats) -> bool,
+    ) {
+        let check = async {
+            loop {
+                let done = {
+                    let states = sessions.read();
+                    let session = states.values().next().unwrap().read();
+                    complete(session.hop(20).unwrap().primary_stats().unwrap())
+                };
+                if done {
+                    cancel.cancel();
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(worker, check);
+        })
+        .await
+        .expect("later hops must not starve behind negative results");
+    }
+
+    #[tokio::test]
+    async fn cancellation_drops_stalled_lookups_promptly() {
+        use tokio_util::sync::CancellationToken;
+        let cancel = CancellationToken::new();
+        let stop = cancel.clone();
+        let waiting = lookup_batch(&cancel, [std::future::pending::<()>()]);
+        let trigger = async {
+            tokio::task::yield_now().await;
+            stop.cancel();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_millis(500), async {
+            tokio::join!(waiting, trigger)
+        })
+        .await
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn batching_deduplicates_addresses_without_spending_negative_slots() {
+        let sessions = unenriched_sessions();
+        // Add a second session containing the same responders.
+        let cloned = sessions.read().values().next().unwrap().read().clone();
+        sessions.write().insert(
+            "203.0.113.2".parse().unwrap(),
+            std::sync::Arc::new(crate::state::SessionLock::new(cloned)),
+        );
+        let batch = collect_lookup_batch(
+            &sessions,
+            10,
+            |_| true,
+            |ip| !matches!(ip, IpAddr::V4(v4) if v4.octets()[3] <= 10),
+        );
+        assert_eq!(batch.len(), 10);
+        assert_eq!(
+            batch.iter().collect::<std::collections::HashSet<_>>().len(),
+            10
+        );
+        assert!(batch.contains(&make_ip(20)));
+        assert!(collect_lookup_batch(&sessions, 0, |_| true, |_| true).is_empty());
+    }
 
     struct TestEntry {
         cached_at: Instant,

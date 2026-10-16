@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow};
 use ipnetwork::IpNetwork;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
@@ -341,6 +341,13 @@ impl IxLookup {
             api_key: RwLock::new(None),
             cache_fetched_at: AtomicU64::new(0),
             refreshing: AtomicBool::new(false),
+        })
+    }
+
+    /// A fresh cached miss must not consume a worker batch slot.
+    fn needs_lookup(&self, ip: IpAddr) -> bool {
+        !self.ip_cache.read().get(&ip).is_some_and(|entry| {
+            entry.result.is_none() && (entry.cached_at.elapsed() < self.ip_cache_ttl)
         })
     }
 
@@ -727,6 +734,7 @@ pub async fn run_ix_worker(
     cancel: CancellationToken,
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(500));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -734,26 +742,8 @@ pub async fn run_ix_worker(
                 break;
             }
             _ = interval.tick() => {
-                // Collect a bounded, first-seen batch of unique IPs that need IX lookup.
-                let batch: Vec<IpAddr> = {
-                    let sessions = sessions.read();
-                    let mut seen = HashSet::new();
-                    let mut batch = Vec::new();
-                    'sessions: for state in sessions.values() {
-                        let session = state.read();
-                        for hop in &session.hops {
-                            for stats in hop.responders.values() {
-                                if stats.ix.is_none() && seen.insert(stats.ip) {
-                                    batch.push(stats.ip);
-                                    if batch.len() >= MAX_CONCURRENT_LOOKUPS {
-                                        break 'sessions;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    batch
-                };
+                let batch = super::collect_lookup_batch(&sessions, MAX_CONCURRENT_LOOKUPS,
+                    |stats| stats.ix.is_none(), |ip| ix_lookup.needs_lookup(ip));
 
                 if batch.is_empty() {
                     continue;
@@ -769,7 +759,7 @@ pub async fn run_ix_worker(
                     .collect();
 
                 // Wait for all lookups to complete
-                let results = futures::future::join_all(futures).await;
+                let Some(results) = super::lookup_batch(&cancel, futures).await else { break; };
 
                 // Update all sessions with results
                 let sessions = sessions.read();
@@ -831,6 +821,39 @@ mod tests {
             cache_fetched_at: AtomicU64::new(0),
             refreshing: AtomicBool::new(false),
         }
+    }
+
+    #[tokio::test]
+    async fn cached_non_ix_addresses_do_not_starve_later_targets() {
+        let lookup = Arc::new(test_lookup());
+        for n in 1..=20 {
+            let ip = format!("10.0.0.{n}").parse().unwrap();
+            let result = if n <= 10 {
+                None
+            } else {
+                Some(IxInfo {
+                    name: "Example IX".into(),
+                    city: None,
+                    country: None,
+                })
+            };
+            lookup.ip_cache.write().insert(
+                ip,
+                IpCacheEntry {
+                    result,
+                    cached_at: Instant::now(),
+                },
+            );
+        }
+        let sessions = super::super::tests::unenriched_sessions();
+        let cancel = CancellationToken::new();
+        super::super::tests::assert_worker_progress(
+            sessions.clone(),
+            run_ix_worker(lookup, sessions.clone(), cancel.clone()),
+            cancel,
+            |stats| stats.ix.is_some(),
+        )
+        .await;
     }
 
     #[test]

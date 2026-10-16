@@ -149,3 +149,11 @@ Multi-flow probing for ECMP path enumeration:
 - Different source ports cause different path selections
 - Flow ID derived from returned source port in ICMP error payload
 - TUI shows "Paths" column when multiple responders per hop/flow
+
+### Enrichment progress and shutdown
+
+DNS, ASN, GeoIP and IX workers exclude fresh negative cache entries before
+applying their batch limit. Missing data on early hops therefore does not block
+later addresses. DNS/ASN misses are cached for at most 60 seconds, while successful
+results retain their normal cache TTL. In-flight DNS/ASN/IX batches are cancelled
+on shutdown without waiting for the remote resolver or API timeout.

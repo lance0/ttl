@@ -4,7 +4,7 @@ use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::proto::rr::RData;
 use hickory_resolver::{Resolver, TokioResolver};
 use parking_lot::RwLock;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -51,13 +51,26 @@ impl AsnLookup {
         })
     }
 
+    /// A fresh cached miss must not consume a worker batch slot.
+    fn needs_lookup(&self, ip: IpAddr) -> bool {
+        !self.cache.read().get(&ip).is_some_and(|entry| {
+            entry.asn.is_none()
+                && entry.cached_at.elapsed() < self.cache_ttl.min(super::NEGATIVE_CACHE_TTL)
+        })
+    }
+
     /// Lookup ASN info for an IP via Team Cymru DNS
     pub async fn lookup(&self, ip: IpAddr) -> Option<AsnInfo> {
         // Check cache first
         {
             let cache = self.cache.read();
             if let Some(entry) = cache.get(&ip)
-                && entry.cached_at.elapsed() < self.cache_ttl
+                && entry.cached_at.elapsed()
+                    < if entry.asn.is_some() {
+                        self.cache_ttl
+                    } else {
+                        self.cache_ttl.min(super::NEGATIVE_CACHE_TTL)
+                    }
             {
                 return entry.asn.clone();
             }
@@ -81,7 +94,14 @@ impl AsnLookup {
                 &mut cache,
                 self.cache_ttl,
                 |e| e.cached_at,
-                |e, ttl| e.cached_at.elapsed() >= ttl,
+                |e, ttl| {
+                    e.cached_at.elapsed()
+                        >= if e.asn.is_some() {
+                            ttl
+                        } else {
+                            ttl.min(super::NEGATIVE_CACHE_TTL)
+                        }
+                },
             );
         }
 
@@ -223,6 +243,7 @@ pub async fn run_asn_worker(
     cancel: CancellationToken,
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(500));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
         tokio::select! {
@@ -230,26 +251,8 @@ pub async fn run_asn_worker(
                 break;
             }
             _ = interval.tick() => {
-                // Collect a bounded, first-seen batch of unique IPs that need ASN lookup.
-                let batch: Vec<IpAddr> = {
-                    let sessions = sessions.read();
-                    let mut seen = HashSet::new();
-                    let mut batch = Vec::new();
-                    'sessions: for state in sessions.values() {
-                        let session = state.read();
-                        for hop in &session.hops {
-                            for stats in hop.responders.values() {
-                                if stats.asn.is_none() && seen.insert(stats.ip) {
-                                    batch.push(stats.ip);
-                                    if batch.len() >= MAX_CONCURRENT_LOOKUPS {
-                                        break 'sessions;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    batch
-                };
+                let batch = super::collect_lookup_batch(&sessions, MAX_CONCURRENT_LOOKUPS,
+                    |stats| stats.asn.is_none(), |ip| asn_lookup.needs_lookup(ip));
 
                 if batch.is_empty() {
                     continue;
@@ -265,7 +268,7 @@ pub async fn run_asn_worker(
                     .collect();
 
                 // Wait for all lookups to complete
-                let results = futures::future::join_all(futures).await;
+                let Some(results) = super::lookup_batch(&cancel, futures).await else { break; };
 
                 // Update all sessions with results
                 let sessions = sessions.read();
@@ -289,6 +292,68 @@ pub async fn run_asn_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn negative_results_do_not_starve_later_hops() {
+        let lookup = Arc::new(AsnLookup::new().await.unwrap());
+        for n in 1..=20 {
+            let ip = format!("10.0.0.{n}").parse().unwrap();
+            let value = if n <= 10 {
+                None
+            } else {
+                Some(AsnInfo {
+                    number: 64500,
+                    name: "Example".into(),
+                    prefix: None,
+                })
+            };
+            lookup.cache.write().insert(
+                ip,
+                CacheEntry {
+                    asn: value,
+                    cached_at: Instant::now(),
+                },
+            );
+        }
+        let sessions = super::super::tests::unenriched_sessions();
+        let cancel = CancellationToken::new();
+        super::super::tests::assert_worker_progress(
+            sessions.clone(),
+            run_asn_worker(lookup, sessions.clone(), cancel.clone()),
+            cancel,
+            |stats| stats.asn.is_some(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn negative_cache_retries_after_a_minute_without_expiring_positive_results() {
+        let lookup = AsnLookup::new().await.unwrap();
+        let ip = "192.0.2.1".parse().unwrap();
+        lookup.cache.write().insert(
+            ip,
+            CacheEntry {
+                asn: None,
+                cached_at: Instant::now(),
+            },
+        );
+        assert!(!lookup.needs_lookup(ip));
+        lookup.cache.write().get_mut(&ip).unwrap().cached_at =
+            Instant::now() - Duration::from_secs(61);
+        assert!(lookup.needs_lookup(ip));
+        lookup.cache.write().insert(
+            ip,
+            CacheEntry {
+                asn: Some(AsnInfo {
+                    number: 64500,
+                    name: "Example".into(),
+                    prefix: None,
+                }),
+                cached_at: Instant::now() - Duration::from_secs(61),
+            },
+        );
+        assert!(lookup.lookup(ip).await.is_some());
+    }
 
     #[test]
     fn test_ipv4_reverse_format() {
