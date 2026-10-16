@@ -272,6 +272,23 @@ impl Args {
         // export/diff them. Skip live-probe validations for those modes.
         let replay_or_diff = self.replay.is_some() || self.diff.is_some();
 
+        let output_modes = [self.json, self.csv, self.report]
+            .into_iter()
+            .filter(|enabled| *enabled)
+            .count();
+        if output_modes > 1 {
+            return Err("Choose only one output format: --json, --csv, or --report".into());
+        }
+        if self.diff.is_some() && (self.csv || self.report) {
+            return Err(
+                "--diff supports text output or --json; --csv and --report are not supported"
+                    .into(),
+            );
+        }
+        if self.animate && (self.is_batch_mode() || self.no_tui) {
+            return Err("--animate requires the interactive TUI; remove --json, --csv, --report, and --no-tui".into());
+        }
+
         // Interactive TUI mode supports starting empty (add targets with 'o');
         // every other mode needs at least one target up front
         if !replay_or_diff
@@ -363,8 +380,8 @@ impl Args {
         }
 
         // Validate replay speed
-        if self.speed < 0.1 || self.speed > 1000.0 {
-            return Err("Replay speed must be between 0.1 and 1000.0".into());
+        if !self.speed.is_finite() || self.speed < 0.1 || self.speed > 1000.0 {
+            return Err("Replay speed must be finite and between 0.1 and 1000.0".into());
         }
 
         // Validate prometheus listen address early (":9090" means all interfaces)
@@ -506,6 +523,76 @@ mod tests {
         };
         overrides(&mut args);
         args
+    }
+
+    #[test]
+    fn test_conflicting_output_modes_are_rejected() {
+        for flags in [
+            ["--json", "--csv"],
+            ["--json", "--report"],
+            ["--csv", "--report"],
+        ] {
+            let mut args =
+                Args::try_parse_from(["ttl", "-c", "1", flags[0], flags[1], "192.0.2.1"]).unwrap();
+            assert!(
+                args.validate().is_err(),
+                "accepted conflicting modes: {flags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_diff_rejects_unsupported_csv_and_report_outputs() {
+        for flag in ["--csv", "--report"] {
+            let mut args =
+                Args::try_parse_from(["ttl", "--diff", "before.json", "after.json", flag]).unwrap();
+            assert!(args.validate().is_err(), "diff silently ignores {flag}");
+        }
+    }
+
+    #[test]
+    fn test_animation_requires_interactive_output() {
+        for flag in ["--json", "--csv", "--report", "--no-tui"] {
+            let mut args =
+                Args::try_parse_from(["ttl", "--replay", "trace.json", "--animate", flag]).unwrap();
+            assert!(
+                args.validate().is_err(),
+                "animation silently ignored with {flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_valid_output_and_replay_combinations_remain_available() {
+        for flag in ["--json", "--csv", "--report"] {
+            let mut live = Args::try_parse_from(["ttl", "-c", "1", flag, "192.0.2.1"]).unwrap();
+            assert!(live.validate().is_ok());
+            let mut replay = Args::try_parse_from(["ttl", "--replay", "trace.json", flag]).unwrap();
+            assert!(replay.validate().is_ok());
+        }
+        let mut diff =
+            Args::try_parse_from(["ttl", "--diff", "before.json", "after.json", "--json"]).unwrap();
+        assert!(diff.validate().is_ok());
+        for speed in ["0.1", "10", "1000"] {
+            let mut args = Args::try_parse_from([
+                "ttl",
+                "--replay",
+                "trace.json",
+                "--animate",
+                "--speed",
+                speed,
+            ])
+            .unwrap();
+            assert!(args.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn test_replay_speed_must_be_finite() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut args = make_args(|a| a.speed = value);
+            assert!(args.validate().is_err(), "accepted invalid speed {value}");
+        }
     }
 
     #[test]
