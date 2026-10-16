@@ -457,7 +457,7 @@ impl Widget for MainView<'_> {
                     ("???".to_string(), String::new())
                 };
 
-                let history = loss_history_line(&hop.recent_results, 10, theme);
+                let history = loss_history_line(&hop.recent_results, 10, theme, hop.received == 0);
 
                 let (last, avg, min, max, stddev, jitter) = if let Some(stats) = hop.primary_stats()
                 {
@@ -518,20 +518,7 @@ impl Widget for MainView<'_> {
                     .map(|r| r.suspected)
                     .unwrap_or(false);
 
-                let loss_style = if rate_limited {
-                    // Rate limited: show in different color to indicate it's not real loss
-                    Style::default().fg(theme.shortcut)
-                } else if hop.loss_pct() > 50.0 {
-                    Style::default().fg(theme.error)
-                } else if hop.loss_pct() > 10.0 {
-                    Style::default().fg(theme.warning)
-                } else {
-                    Style::default().fg(if hop.loss_pct() == 0.0 {
-                        theme.text_dim
-                    } else {
-                        theme.success
-                    })
-                };
+                let loss_style = Style::default().fg(theme.loss_color(hop.loss_pct()));
 
                 // Format loss with "RL" indicator if rate limited
                 let loss_display = if rate_limited {

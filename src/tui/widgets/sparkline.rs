@@ -93,15 +93,23 @@ impl Widget for RttSparkline<'_> {
 
 /// Recent probe outcomes, oldest to newest. Quiet dots distinguish replies
 /// from loss crosses without making a healthy route a wall of bright blocks.
-pub fn loss_history_line(data: &VecDeque<bool>, width: usize, theme: &Theme) -> Line<'static> {
+/// `silent` hops (never replied) draw their crosses dim too, so a dead tail
+/// past the destination or a filtered hop is not a wall of red.
+pub fn loss_history_line(
+    data: &VecDeque<bool>,
+    width: usize,
+    theme: &Theme,
+    silent: bool,
+) -> Line<'static> {
     let start = data.len().saturating_sub(width);
+    let loss = if silent { theme.text_dim } else { theme.error };
     Line::from(
         data.iter()
             .skip(start)
             .map(|&success| {
                 Span::styled(
                     if success { "·" } else { "×" },
-                    Style::default().fg(if success { theme.text_dim } else { theme.error }),
+                    Style::default().fg(if success { theme.text_dim } else { loss }),
                 )
             })
             .collect::<Vec<_>>(),
@@ -156,15 +164,22 @@ mod tests {
     fn history_preserves_order_and_marks_each_loss_independently() {
         let data = VecDeque::from([false, true, false, true, true, false]);
         let theme = Theme::dracula();
-        let line = loss_history_line(&data, 4, &theme);
+        let line = loss_history_line(&data, 4, &theme, false);
         assert_eq!(line.to_string(), "×··×");
         assert_eq!(line.spans[0].style.fg, Some(theme.error));
         assert_eq!(line.spans[1].style.fg, Some(theme.text_dim));
-        assert!(loss_history_line(&data, 0, &theme).spans.is_empty());
+        assert!(loss_history_line(&data, 0, &theme, false).spans.is_empty());
         assert!(
-            loss_history_line(&VecDeque::new(), 10, &theme)
+            loss_history_line(&VecDeque::new(), 10, &theme, false)
                 .spans
                 .is_empty()
+        );
+        let silent = loss_history_line(&VecDeque::from([false, false]), 4, &theme, true);
+        assert!(
+            silent
+                .spans
+                .iter()
+                .all(|s| s.style.fg == Some(theme.text_dim))
         );
     }
 }
