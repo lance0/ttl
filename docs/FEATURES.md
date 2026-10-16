@@ -457,7 +457,7 @@ Press `w` in the main view (or `Enter` in the Display Mode settings section) to 
 
 Hop and target selections scroll into view automatically. Help supports PgUp/PgDn and Home/End; settings keeps the active section visible. Close and navigation hints stay at the bottom of each overlay. Ctrl+C exits from every overlay, including text inputs.
 
-The **Recent** column shows the latest ten probe outcomes, oldest to newest: a quiet `·` means a reply and a colored `×` means a timeout. A zero-loss percentage uses a quiet color, leaving warnings and losses more prominent. RGB themes adjust selected-row foreground colors to a minimum 4.5:1 contrast against their selection background; ANSI colors in the default theme remain controlled by the terminal.
+The **Recent** column shows the latest ten probe outcomes, oldest to newest: a quiet `·` means a reply and a colored `×` means a timeout (dim for hops that have never replied). Loss shows `–` until a probe completes; zero loss is quiet, any loss plain, 5% or more a warning and 20% or more an error. A dim `RL` tag after the loss marks suspected ICMP rate limiting. Without ASN lookups the ASN column is omitted. RGB themes adjust selected-row foreground colors to a minimum 4.5:1 contrast against their selection background; ANSI colors in the default theme remain controlled by the terminal.
 
 ### PeeringDB Section
 

@@ -35,15 +35,22 @@ EXAMPLES:
     Continuous monitoring:
         ttl --daemon --prometheus :9090 host   # Headless + metrics endpoint
 
-DETECTION INDICATORS:
-    [NAT]  - Source port rewriting detected (affects multi-flow accuracy)
-    [RL?]  - Router rate-limiting ICMP (loss may be artificial)
-    [ASYM] - Asymmetric routing detected (return path differs)
-    [TTL!] - TTL manipulation detected (middlebox modifying TTL)
-    E      - ECMP detected at this hop (single-flow marker; see Paths in multi-flow)
-    !      - Route flap at this hop (path instability, when ECMP not indicated)
-    ~      - Asymmetric routing suspected at this hop
-    ^      - TTL manipulation suspected at this hop
+DETECTION INDICATORS (press ? in the TUI for the legend):
+  Title flags:
+    NAT     - Source port rewriting detected (affects multi-flow accuracy)
+    RL?     - Router rate-limiting ICMP (loss may be artificial)
+    ASYM    - Asymmetric routing detected (return path differs)
+    TTL!    - TTL manipulation detected (middlebox modifying TTL)
+    MTU     - Path MTU discovered (or unconfirmed) with --pmtud
+    max_ttl - Destination not reached within the default max TTL
+  Loss column:
+    RL      - Loss at this hop is likely ICMP rate limiting
+  Host markers:
+    E       - ECMP detected at this hop (single-flow marker; see Paths in multi-flow)
+    !       - Route flap at this hop (path instability, when ECMP not indicated)
+    ~       - Asymmetric routing suspected at this hop
+    ^       - TTL manipulation suspected at this hop
+    +       - Interface/MPLS details available (Enter)
 
 For detailed documentation: https://github.com/lance0/ttl/blob/master/docs/FEATURES.md
 ")]

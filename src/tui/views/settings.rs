@@ -2,7 +2,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 
 use crate::lookup::ix::CacheStatus;
 use crate::prefs::DisplayMode;
@@ -156,9 +156,26 @@ pub struct SettingsView<'a> {
     theme_names: &'a [&'static str],
     cache_status: Option<CacheStatus>,
     ix_enabled: bool,
+    /// Why the update check is locked off for this run, if it is.
+    update_lock: Option<&'static str>,
 }
 
 impl<'a> SettingsView<'a> {
+    /// Mark the update check as locked off (by the build, environment or
+    /// --no-update-check), so the row says why instead of looking broken.
+    pub fn with_update_locked(mut self, locked: bool) -> Self {
+        self.update_lock = locked.then(|| {
+            if !crate::update::ENABLED {
+                "not in this build"
+            } else if crate::update::env_opt_out() {
+                "set by environment"
+            } else {
+                "set by --no-update-check"
+            }
+        });
+        self
+    }
+
     pub fn new(
         theme: &'a Theme,
         state: &'a SettingsState,
@@ -172,6 +189,7 @@ impl<'a> SettingsView<'a> {
             theme_names,
             cache_status,
             ix_enabled,
+            update_lock: None,
         }
     }
 
@@ -198,25 +216,23 @@ impl<'a> SettingsView<'a> {
 
 impl Widget for SettingsView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Calculate centered popup area (taller if IX is enabled). The extra 4
-        // rows hold the Update Check section (blank + header + toggle + hint).
-        let popup_width = 44.min(area.width.saturating_sub(4));
-        let base_height = if self.ix_enabled { 27 } else { 21 };
-        let popup_height = base_height.min(area.height.saturating_sub(4));
-        let popup_x = (area.width - popup_width) / 2 + area.x;
-        let popup_y = (area.height - popup_height) / 2 + area.y;
-        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
-
-        // Clear the popup area
-        Clear.render(popup_area, buf);
-
-        let block = Block::default()
-            .title(" Settings ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border));
-
-        let inner = block.inner(popup_area);
-        block.render(popup_area, buf);
+        // Taller when the PeeringDB section is shown.
+        let popup_width = 48.min(area.width.saturating_sub(4));
+        let content_height = if self.ix_enabled { 21 } else { 16 };
+        let popup_height = (content_height + super::POPUP_ROWS).min(area.height.saturating_sub(4));
+        let inner = super::popup(
+            area,
+            buf,
+            (popup_width, popup_height),
+            "Settings",
+            &[
+                ("Esc", "close"),
+                ("Tab", "section"),
+                ("↑/↓", "move"),
+                ("Enter", "select"),
+            ],
+            self.theme,
+        );
 
         let mut lines = Vec::new();
         let mut section_starts = vec![0];
@@ -229,10 +245,7 @@ impl Widget for SettingsView<'_> {
         } else {
             Style::default().fg(self.theme.text_dim)
         };
-        lines.push(Line::from(vec![Span::styled(
-            "  Theme",
-            theme_header_style,
-        )]));
+        lines.push(Line::from(vec![Span::styled("Theme", theme_header_style)]));
 
         // Show visible themes (5 at a time)
         let visible_themes = 5.min(self.theme_names.len());
@@ -242,7 +255,7 @@ impl Widget for SettingsView<'_> {
         // Scroll indicator (up)
         if start > 0 {
             lines.push(Line::from(vec![Span::styled(
-                "    \u{25b2} more",
+                "  \u{25b2} more",
                 Style::default().fg(self.theme.text_dim),
             )]));
         } else {
@@ -256,7 +269,7 @@ impl Widget for SettingsView<'_> {
             let bullet = if is_selected { "\u{25cf}" } else { "\u{25cb}" };
             let style = if is_selected && self.state.selected_section == 0 {
                 Style::default()
-                    .fg(self.theme.shortcut)
+                    .fg(self.theme.header)
                     .add_modifier(Modifier::BOLD)
             } else if is_selected {
                 Style::default().fg(self.theme.text)
@@ -264,7 +277,7 @@ impl Widget for SettingsView<'_> {
                 Style::default().fg(self.theme.text_dim)
             };
             lines.push(Line::from(vec![Span::styled(
-                format!("    {} {}", bullet, name),
+                format!("  {} {}", bullet, name),
                 style,
             )]));
         }
@@ -272,7 +285,7 @@ impl Widget for SettingsView<'_> {
         // Scroll indicator (down)
         if end < self.theme_names.len() {
             lines.push(Line::from(vec![Span::styled(
-                "    \u{25bc} more",
+                "  \u{25bc} more",
                 Style::default().fg(self.theme.text_dim),
             )]));
         } else {
@@ -291,18 +304,15 @@ impl Widget for SettingsView<'_> {
             Style::default().fg(self.theme.text_dim)
         };
         lines.push(Line::from(vec![Span::styled(
-            "  Display Mode",
+            "Display Mode",
             display_header_style,
         )]));
 
         // Display mode selector
-        let mode_text = format!(
-            "    [{}]  (Enter to cycle)",
-            self.state.display_mode.label()
-        );
+        let mode_text = format!("  [{}]  (Enter to cycle)", self.state.display_mode.label());
         let mode_style = if self.state.selected_section == 1 {
             Style::default()
-                .fg(self.theme.shortcut)
+                .fg(self.theme.header)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(self.theme.text_dim)
@@ -316,7 +326,7 @@ impl Widget for SettingsView<'_> {
             DisplayMode::Wide => "generous column widths",
         };
         lines.push(Line::from(vec![Span::styled(
-            format!("    {}", desc),
+            format!("  {}", desc),
             Style::default().fg(self.theme.text_dim),
         )]));
 
@@ -334,7 +344,7 @@ impl Widget for SettingsView<'_> {
                 Style::default().fg(self.theme.text_dim)
             };
             lines.push(Line::from(vec![Span::styled(
-                "  PeeringDB (IX Detection)",
+                "PeeringDB (IX Detection)",
                 pdb_header_style,
             )]));
 
@@ -346,7 +356,7 @@ impl Widget for SettingsView<'_> {
             };
 
             // Build the API key display with cursor
-            let label = "    API Key: ";
+            let label = "  API Key: ";
             let display_key = if self.state.api_key.is_empty() {
                 "(not set)".to_string()
             } else {
@@ -376,7 +386,7 @@ impl Widget for SettingsView<'_> {
                     display_key,
                     if self.state.selected_section == 2 {
                         Style::default()
-                            .fg(self.theme.shortcut)
+                            .fg(self.theme.header)
                             .add_modifier(Modifier::BOLD)
                     } else {
                         api_key_style
@@ -387,9 +397,9 @@ impl Widget for SettingsView<'_> {
             // Cache status
             if let Some(ref status) = self.cache_status {
                 let status_text = if status.refreshing {
-                    "    Cache: Refreshing...".to_string()
+                    "  Cache: Refreshing...".to_string()
                 } else if !status.loaded && status.prefix_count == 0 {
-                    "    Cache: Not loaded".to_string()
+                    "  Cache: Not loaded".to_string()
                 } else {
                     let age_str = status
                         .fetched_at
@@ -397,7 +407,7 @@ impl Widget for SettingsView<'_> {
                         .unwrap_or_else(|| "unknown".to_string());
                     let status_indicator = if status.expired { " (expired)" } else { "" };
                     format!(
-                        "    Cache: {} prefixes, {}{}",
+                        "  Cache: {} prefixes, {}{}",
                         status.prefix_count, age_str, status_indicator
                     )
                 };
@@ -409,7 +419,7 @@ impl Widget for SettingsView<'_> {
                 // Refresh hint when in PeeringDB section
                 if self.state.selected_section == 2 && !status.refreshing {
                     lines.push(Line::from(vec![Span::styled(
-                        "    Press Ctrl+R to refresh cache",
+                        "  Press Ctrl+R to refresh cache",
                         Style::default().fg(self.theme.text_dim),
                     )]));
                 } else {
@@ -432,23 +442,27 @@ impl Widget for SettingsView<'_> {
             Style::default().fg(self.theme.text_dim)
         };
         lines.push(Line::from(vec![Span::styled(
-            "  Update Check",
+            "Update Check",
             uc_header_style,
         )]));
         let uc_state = if self.state.update_check { "on" } else { "off" };
         let uc_style = if uc_selected {
             Style::default()
-                .fg(self.theme.shortcut)
+                .fg(self.theme.header)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(self.theme.text_dim)
         };
+        // A locked toggle names what locked it instead of offering Enter.
+        lines.push(Line::from(vec![
+            Span::styled(format!("  [{uc_state}]  "), uc_style),
+            match self.update_lock {
+                Some(reason) => Span::styled(reason, Style::default().fg(self.theme.text_dim)),
+                None => Span::styled("(Enter to toggle)", uc_style),
+            },
+        ]));
         lines.push(Line::from(vec![Span::styled(
-            format!("    [{}]  (Enter to toggle)", uc_state),
-            uc_style,
-        )]));
-        lines.push(Line::from(vec![Span::styled(
-            "    check GitHub for new releases at startup",
+            "  check GitHub for new releases at startup",
             Style::default().fg(self.theme.text_dim),
         )]));
 
@@ -465,7 +479,7 @@ impl Widget for SettingsView<'_> {
         let section = self.state.selected_section.min(section_starts.len() - 2);
         let start = offsets[section_starts[section]];
         let end = offsets[section_starts[section + 1]];
-        let body_height = inner.height.saturating_sub(2);
+        let body_height = inner.height;
         let focus = if section == 0 {
             start
                 + 2
@@ -483,27 +497,44 @@ impl Widget for SettingsView<'_> {
         };
         Paragraph::new(wrapped)
             .scroll((offset.min(usize::from(u16::MAX)) as u16, 0))
-            .render(
-                Rect {
-                    height: body_height,
-                    ..inner
-                },
-                buf,
-            );
-        if inner.height >= 2 {
-            Paragraph::new(vec![
-                Line::from(super::fit_text("Esc close · Tab section", inner.width)),
-                Line::from(super::fit_text("↑/↓ navigate · Enter select", inner.width)),
-            ])
-            .style(Style::default().fg(self.theme.text_dim))
-            .render(Rect::new(inner.x, inner.bottom() - 2, inner.width, 2), buf);
-        }
+            .render(inner, buf);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn locked_update_check_says_why_on_one_line() {
+        use ratatui::{buffer::Buffer, layout::Rect};
+        let theme = Theme::default();
+        let mut state = SettingsState::new(0, DisplayMode::Auto, None);
+        state.update_check = false;
+        state.selected_section = SettingsState::update_check_section(false);
+        let rows = |locked: bool| {
+            let area = Rect::new(0, 0, 80, 30);
+            let mut buf = Buffer::empty(area);
+            SettingsView::new(&theme, &state, Theme::list(), None, false)
+                .with_update_locked(locked)
+                .render(area, &mut buf);
+            (0..30)
+                .map(|y| (0..80).map(|x| buf[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            rows(false)
+                .iter()
+                .any(|r| r.contains("[off]  (Enter to toggle)"))
+        );
+        let locked = rows(true);
+        let row = locked.iter().find(|r| r.contains("[off]")).unwrap();
+        assert!(
+            row.contains("[off]  set by") || row.contains("[off]  not in this build"),
+            "{row}"
+        );
+        assert!(!locked.iter().any(|r| r.contains("Enter to toggle")));
+    }
 
     #[test]
     fn test_settings_state_new() {

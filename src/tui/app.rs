@@ -7,10 +7,10 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Span;
 use ratatui::widgets::{LineGauge, Paragraph};
 use scopeguard::defer;
-use std::borrow::Cow;
 use std::io::stdout;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use crate::trace::receiver::SessionMap;
 use crate::tui::theme::Theme;
 use crate::tui::views::{
     AddTargetRequest, HelpView, HopDetailView, MainView, SettingsState, SettingsView, TargetInfo,
-    TargetInputState, TargetInputView, TargetListView, extract_target_infos,
+    TargetInputState, TargetInputView, TargetListView, extract_target_infos, fit_text, hint_line,
 };
 
 /// State for animated replay playback
@@ -150,6 +150,9 @@ impl UiState {
     }
 }
 
+/// Address, name, hops, loss and RTT of one target-list row.
+type TargetRow = (IpAddr, String, String, String, String);
+
 /// Post-poll render fingerprint (LAN-1222). Built after status expiry,
 /// add-target, update check, IX cache status, and target-list refresh so
 /// idle skip cannot leave those chrome surfaces stale.
@@ -184,7 +187,7 @@ struct RenderFingerprint {
         bool,
     ),
     ix_cache: Option<(bool, usize, Option<u64>, bool, bool)>,
-    target_list_rows: Option<Vec<(IpAddr, String, String, String)>>,
+    target_list_rows: Option<Vec<TargetRow>>,
 }
 
 fn render_fingerprint(
@@ -219,7 +222,7 @@ fn render_fingerprint(
         target_list_tick: _,
         show_target_input,
         target_input,
-        update_check_locked: _, // only gates the toggle; settings.update_check is hashed
+        update_check_locked: _, // fixed for the whole run; settings.update_check is hashed
     } = ui_state;
     let SettingsState {
         selected_section,
@@ -303,8 +306,15 @@ fn render_fingerprint(
                         hostname,
                         hops_str,
                         loss_str,
+                        rtt_str,
                     } = t;
-                    (*ip, hostname.clone(), hops_str.clone(), loss_str.clone())
+                    (
+                        *ip,
+                        hostname.clone(),
+                        hops_str.clone(),
+                        loss_str.clone(),
+                        rtt_str.clone(),
+                    )
                 })
                 .collect()
         }),
@@ -344,6 +354,7 @@ fn handle_help_key(ui_state: &mut UiState, code: KeyCode, area: Rect, theme: &Th
     let page = HelpView::visible_rows(area).max(1);
     let max_scroll = HelpView::new(theme)
         .with_replay(ui_state.replay_state.is_some())
+        .with_update(ui_state.update_available.is_some())
         .max_scroll(area);
     let scroll = ui_state.help_scroll.min(max_scroll);
     ui_state.help_scroll = match code {
@@ -1479,6 +1490,68 @@ fn handle_target_input_key(
     }
 }
 
+/// Replay position label: `▶ 0:45 / 4:23 · 5× `.
+fn replay_label(replay: &ReplayState, current_ms: u64, total_ms: u64) -> String {
+    let icon = if replay.finished {
+        "■"
+    } else if replay.paused {
+        "‖"
+    } else {
+        "▶"
+    };
+    let speed = replay.speed_multiplier;
+    let speed = if speed.fract() == 0.0 {
+        format!("{speed:.0}×")
+    } else {
+        format!("{speed:.1}×")
+    };
+    let clock = |ms: u64| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60);
+    let time = if total_ms == 0 && !replay.events.is_empty() {
+        "instant".to_string()
+    } else {
+        format!("{} / {}", clock(current_ms), clock(total_ms))
+    };
+    format!("{icon} {time} · {speed} ")
+}
+
+/// Bottom row: key hints on the left. A transient status message sits
+/// right-aligned on the same row, so it never hides the hints entirely.
+fn draw_status_bar(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    hints: &[(&str, &str)],
+    ui_state: &UiState,
+    theme: &Theme,
+) {
+    // Inset to line up with the table content inside its border.
+    let area = Rect {
+        x: area.x.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        ..area
+    };
+    let mut hint_width = area.width;
+    if let Some((ref message, _)) = ui_state.status_message {
+        let message = fit_text(message, area.width);
+        let width = Span::raw(&message).width() as u16;
+        hint_width = area.width.saturating_sub(width + 2);
+        f.render_widget(
+            Paragraph::new(message).style(Style::default().fg(theme.text)),
+            Rect {
+                x: area.right() - width,
+                width,
+                ..area
+            },
+        );
+    }
+    f.render_widget(
+        Paragraph::new(hint_line(hints, hint_width, theme)),
+        Rect {
+            width: hint_width,
+            ..area
+        },
+    );
+}
+
 /// Draw the empty state shown when no targets are being traced yet
 fn draw_empty_state(
     f: &mut ratatui::Frame,
@@ -1507,21 +1580,18 @@ fn draw_empty_state(
     let empty = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
     f.render_widget(empty, chunks[0]);
 
-    let (status_text, status_style): (Cow<'_, str>, Style) =
-        if let Some((ref msg, _)) = ui_state.status_message {
-            (
-                Cow::Borrowed(msg.as_str()),
-                Style::default().fg(theme.text_dim),
-            )
-        } else {
-            (
-                Cow::Borrowed("q quit | o add target | t theme | s settings"),
-                Style::default().fg(theme.text_dim),
-            )
-        };
-    f.render_widget(
-        Paragraph::new(format!("? help · {}", status_text)).style(status_style),
+    draw_status_bar(
+        f,
         chunks[1],
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("o", "add target"),
+            ("t", "theme"),
+            ("s", "settings"),
+        ],
+        ui_state,
+        theme,
     );
 
     // Overlays available in empty mode
@@ -1529,6 +1599,7 @@ fn draw_empty_state(
         f.render_widget(
             HelpView::new(theme)
                 .with_replay(false)
+                .with_update(ui_state.update_available.is_some())
                 .with_scroll(ui_state.help_scroll),
             area,
         );
@@ -1542,7 +1613,8 @@ fn draw_empty_state(
                 theme_names,
                 cache_status,
                 ix_enabled,
-            ),
+            )
+            .with_update_locked(ui_state.update_check_locked),
             area,
         );
     }
@@ -1587,14 +1659,27 @@ fn draw_ui(
     // Update notification banner (if available)
     if has_update {
         if let Some(ref version) = ui_state.update_available {
-            let update_text = format!(
-                " Update available: v{} -> {} | Press 'u' to dismiss ",
-                env!("CARGO_PKG_VERSION"),
-                version
-            );
-            let update_bar = Paragraph::new(update_text)
-                .style(Style::default().fg(Color::Black).bg(Color::Yellow));
-            f.render_widget(update_bar, chunks[idx]);
+            let chunk = Rect {
+                x: chunks[idx].x.saturating_add(1),
+                width: chunks[idx].width.saturating_sub(2),
+                ..chunks[idx]
+            };
+            let mut line = ratatui::text::Line::from(vec![
+                Span::styled(
+                    " UPDATE ",
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                ),
+                Span::styled(
+                    format!(" v{} → {}  ", env!("CARGO_PKG_VERSION"), version),
+                    Style::default().fg(theme.text),
+                ),
+            ]);
+            let room = chunk.width.saturating_sub(line.width() as u16);
+            line.spans
+                .extend(hint_line(&[("u", "dismiss"), ("?", "update command")], room, theme).spans);
+            f.render_widget(Paragraph::new(line), chunk);
         }
         idx += 1;
     }
@@ -1622,110 +1707,90 @@ fn draw_ui(
     if let (Some(chunk), Some(replay)) = (progress_chunk, &ui_state.replay_state) {
         let current_ms = replay_current_ms(replay);
         let total_ms = replay.events.last().map_or(0, |e| e.offset_ms);
-        let icon = if replay.finished {
-            "--"
-        } else if replay.paused {
-            "||"
-        } else {
-            ">>"
-        };
-        let instant_suffix = if total_ms == 0 && !replay.events.is_empty() {
-            " instant"
-        } else {
-            ""
-        };
-        let label = format!(
-            " {} {}/{} {} / {} {:.1}x{} ",
-            icon,
-            replay.current_index,
-            replay.events.len(),
-            format_replay_time(current_ms),
-            format_replay_time(total_ms),
-            replay.speed_multiplier,
-            instant_suffix,
-        );
+        let label = replay_label(replay, current_ms, total_ms);
         let ratio = if total_ms > 0 {
             (current_ms as f64 / total_ms as f64).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let selected_theme = theme.for_selection();
         let gauge = LineGauge::default()
-            .filled_style(
-                Style::default()
-                    .fg(selected_theme.success)
-                    .bg(theme.highlight_bg),
-            )
-            .label(label)
+            .filled_style(Style::default().fg(theme.header))
+            .unfilled_style(Style::default().fg(theme.text_dim))
+            .label(Span::styled(label, Style::default().fg(theme.text)))
             .ratio(ratio);
-        f.render_widget(gauge, chunk);
+        // Inset to line up with the table content.
+        f.render_widget(
+            gauge,
+            Rect {
+                x: chunk.x.saturating_add(1),
+                width: chunk.width.saturating_sub(2),
+                ..chunk
+            },
+        );
     }
 
-    // Status bar (use Cow to avoid allocation for static strings)
-    // Update notification takes priority over normal status
-    let (status_text, status_style): (Cow<'_, str>, Style) = if let Some(ref version) =
-        ui_state.update_available
-    {
-        (
-            Cow::Owned(format!(
-                "UPDATE: v{} -> {} available | Press 'u' to dismiss | ? for update command",
-                env!("CARGO_PKG_VERSION"),
-                version
-            )),
-            Style::default().fg(Color::Yellow),
-        )
-    } else if let Some((ref msg, _)) = ui_state.status_message {
-        (
-            Cow::Borrowed(msg.as_str()),
-            Style::default().fg(theme.text_dim),
-        )
-    } else if status_chunk.width < 110 {
-        let hints = if ui_state.replay_state.is_some() {
-            "q quit · p pause · ←/→ seek · +/- speed · Home/End"
-        } else if num_targets > 1 {
-            "q quit · p pause · o add · l targets · s settings · Enter details"
-        } else {
-            "q quit · p pause · o add · s settings · Enter details"
-        };
-        // Fall back to the shortest hints rather than clip after "? help · ".
-        let hints = if usize::from(status_chunk.width) < hints.chars().count() + 9 {
-            "q quit · p pause · Enter details"
-        } else {
-            hints
-        };
-        (Cow::Borrowed(hints), Style::default().fg(theme.text_dim))
-    } else if ui_state.replay_state.is_some() {
-        (
-            Cow::Borrowed(
-                "q quit | p pause | Left/Right seek | [/] seek 5s | +/- speed | Home/End",
-            ),
-            Style::default().fg(theme.text_dim),
-        )
+    // Hints in priority order; the lowest-priority pairs drop first.
+    let hints: &[(&str, &str)] = if ui_state.replay_state.is_some() {
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("p", "pause"),
+            ("←/→", "seek"),
+            ("[/]", "seek 5s"),
+            ("+/-", "speed"),
+            ("Home/End", "jump"),
+            ("Enter", "details"),
+        ]
     } else if num_targets > 1 {
-        (
-            Cow::Borrowed(
-                "q quit | Tab next | l list | o add | p pause | r reset | t theme | w display | s settings | e export",
-            ),
-            Style::default().fg(theme.text_dim),
-        )
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("Enter", "details"),
+            ("p", "pause"),
+            ("Tab", "next"),
+            ("l", "list"),
+            ("o", "add"),
+            ("s", "settings"),
+            ("t", "theme"),
+            ("w", "display"),
+            ("r", "reset"),
+            ("e", "export"),
+        ]
+    } else if session.started_instant.is_none() {
+        // Static replay of a loaded file: nothing probes, so pausing and
+        // adding targets do nothing.
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("Enter", "details"),
+            ("s", "settings"),
+            ("t", "theme"),
+            ("w", "display"),
+            ("r", "reset"),
+            ("e", "export"),
+        ]
     } else {
-        (
-            Cow::Borrowed(
-                "q quit | o add | p pause | r reset | t theme | w display | s settings | e export",
-            ),
-            Style::default().fg(theme.text_dim),
-        )
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("Enter", "details"),
+            ("p", "pause"),
+            ("o", "add"),
+            ("s", "settings"),
+            ("t", "theme"),
+            ("w", "display"),
+            ("r", "reset"),
+            ("e", "export"),
+        ]
     };
-
-    let status_text = format!("? help · {}", status_text);
-    let status_bar = Paragraph::new(status_text).style(status_style);
-    f.render_widget(status_bar, status_chunk);
+    draw_status_bar(f, status_chunk, hints, ui_state, theme);
 
     // Overlays
     if ui_state.show_help {
         f.render_widget(
             HelpView::new(theme)
                 .with_replay(ui_state.replay_state.is_some())
+                .with_update(ui_state.update_available.is_some())
                 .with_scroll(ui_state.help_scroll),
             area,
         );
@@ -1740,7 +1805,8 @@ fn draw_ui(
                 theme_names,
                 cache_status,
                 ix_enabled,
-            ),
+            )
+            .with_update_locked(ui_state.update_check_locked),
             area,
         );
     }
@@ -1929,6 +1995,18 @@ mod tests {
             flow_id: 0,
             outcome: ProbeOutcome::Timeout,
         }
+    }
+
+    #[test]
+    fn replay_label_shows_clock_and_speed_without_event_counts() {
+        let mut replay = ReplayState::new(vec![make_timeout_event(263_000, 1, 0)], 5.0);
+        assert_eq!(
+            replay_label(&replay, 45_000, 263_000),
+            "▶ 0:45 / 4:23 · 5× "
+        );
+        replay.paused = true;
+        replay.speed_multiplier = 2.5;
+        assert_eq!(replay_label(&replay, 0, 263_000), "‖ 0:00 / 4:23 · 2.5× ");
     }
 
     #[test]
@@ -2222,32 +2300,81 @@ mod tests {
     }
 
     #[test]
+    fn static_replay_hints_omit_live_only_keys() {
+        use ratatui::backend::TestBackend;
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let mut session = Session::new(Target::new("example.net".into(), ip), Config::default());
+        let status = |session: &Session| {
+            let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
+            terminal
+                .draw(|f| {
+                    draw_ui(
+                        f,
+                        session,
+                        &UiState::default(),
+                        &Theme::default(),
+                        1,
+                        None,
+                        false,
+                    )
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer();
+            (0..140).map(|x| buf[(x, 11)].symbol()).collect::<String>()
+        };
+        let live = status(&session);
+        assert!(live.contains("p pause") && live.contains("o add"), "{live}");
+        session.started_instant = None; // loaded from a file
+        let replay = status(&session);
+        assert!(
+            !replay.contains("p pause") && !replay.contains("o add"),
+            "{replay}"
+        );
+        assert!(replay.contains("e export"), "{replay}");
+    }
+
+    #[test]
     fn status_hints_are_never_clipped() {
         use ratatui::backend::TestBackend;
         let ip: IpAddr = "192.0.2.1".parse().unwrap();
         let session = Session::new(Target::new("example.net".into(), ip), Config::default());
-        for width in 41..110 {
+        let labels = [
+            "help", "quit", "details", "pause", "next", "list", "add", "settings", "theme",
+            "display", "reset", "export",
+        ];
+        for width in 20..140 {
             for targets in [1, 2] {
-                let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
-                terminal
-                    .draw(|f| {
-                        draw_ui(
-                            f,
-                            &session,
-                            &UiState::default(),
-                            &Theme::default(),
-                            targets,
-                            None,
-                            false,
-                        )
-                    })
-                    .unwrap();
-                let buf = terminal.backend().buffer();
-                let status: String = (0..width).map(|x| buf[(x, 11)].symbol()).collect();
-                assert!(
-                    status.trim_end().ends_with("Enter details"),
-                    "{width}: {status}"
-                );
+                for message in [None, Some("Exported to ttl-192.0.2.1-20261016.json")] {
+                    let mut state = UiState::default();
+                    if let Some(message) = message {
+                        state.set_status(message);
+                    }
+                    let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+                    terminal
+                        .draw(|f| {
+                            draw_ui(f, &session, &state, &Theme::default(), targets, None, false)
+                        })
+                        .unwrap();
+                    let buf = terminal.backend().buffer();
+                    let status: String = (0..width).map(|x| buf[(x, 11)].symbol()).collect();
+                    let hints = match message {
+                        // The message keeps its row slot at the right edge.
+                        Some(message) if usize::from(width) > message.len() + 2 => {
+                            assert!(status.trim_end().ends_with(message), "{width}: {status}");
+                            &status[..status.len() - message.len() - 1]
+                        }
+                        Some(_) => continue,
+                        None => &status,
+                    };
+                    let hints = hints.trim_end();
+                    assert!(
+                        hints.is_empty() || labels.iter().any(|l| hints.ends_with(l)),
+                        "{width}: clipped {status}"
+                    );
+                    if width >= 40 && message.is_none() {
+                        assert!(hints.contains("? help  q quit  Enter details"), "{status}");
+                    }
+                }
             }
         }
     }

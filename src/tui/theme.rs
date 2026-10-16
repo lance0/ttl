@@ -45,8 +45,10 @@ impl Theme {
             // UI chrome - original ttl used Cyan for borders
             border: Color::Cyan,
             border_focused: Color::Cyan,
-            text: Color::White,
-            text_dim: Color::Gray,
+            // Reset keeps the terminal's own foreground, so the default theme
+            // reads on light and dark terminals alike.
+            text: Color::Reset,
+            text_dim: Color::DarkGray,
             highlight_bg: Color::DarkGray,
 
             // Status indicators
@@ -88,7 +90,7 @@ impl Theme {
             border: Color::Rgb(0, 255, 255), // Cyan neon
             border_focused: Color::Rgb(0, 255, 255),
             text: Color::Rgb(255, 255, 255),
-            text_dim: Color::Rgb(100, 100, 120),
+            text_dim: Color::Rgb(121, 121, 138),
             highlight_bg: Color::Rgb(20, 20, 35),
 
             success: Color::Rgb(0, 255, 150), // Neon green
@@ -108,7 +110,7 @@ impl Theme {
             border: Color::Rgb(189, 147, 249), // Purple
             border_focused: Color::Rgb(189, 147, 249),
             text: Color::Rgb(248, 248, 242),      // Foreground
-            text_dim: Color::Rgb(98, 114, 164),   // Comment
+            text_dim: Color::Rgb(133, 146, 184),  // Comment, lifted for contrast
             highlight_bg: Color::Rgb(68, 71, 90), // Current line
 
             success: Color::Rgb(80, 250, 123),  // Green
@@ -148,7 +150,7 @@ impl Theme {
             border: Color::Rgb(0, 255, 0), // Bright green
             border_focused: Color::Rgb(0, 255, 0),
             text: Color::Rgb(0, 255, 0),
-            text_dim: Color::Rgb(0, 100, 0),
+            text_dim: Color::Rgb(0, 170, 60),
             highlight_bg: Color::Rgb(0, 20, 0),
 
             success: Color::Rgb(0, 255, 0),     // Bright green
@@ -168,7 +170,7 @@ impl Theme {
             border: Color::Rgb(136, 192, 208), // Nord8 cyan
             border_focused: Color::Rgb(136, 192, 208),
             text: Color::Rgb(236, 239, 244),      // Nord6
-            text_dim: Color::Rgb(76, 86, 106),    // Nord3
+            text_dim: Color::Rgb(147, 158, 178),  // Nord3, lifted for contrast
             highlight_bg: Color::Rgb(59, 66, 82), // Nord1
 
             success: Color::Rgb(163, 190, 140), // Nord14 green
@@ -188,7 +190,7 @@ impl Theme {
             border: Color::Rgb(254, 128, 25), // Orange
             border_focused: Color::Rgb(254, 128, 25),
             text: Color::Rgb(235, 219, 178),      // fg
-            text_dim: Color::Rgb(146, 131, 116),  // Gray
+            text_dim: Color::Rgb(168, 153, 132),  // fg4
             highlight_bg: Color::Rgb(80, 73, 69), // bg2
 
             success: Color::Rgb(184, 187, 38), // Green
@@ -208,7 +210,7 @@ impl Theme {
             border: Color::Rgb(203, 166, 247), // Mauve
             border_focused: Color::Rgb(203, 166, 247),
             text: Color::Rgb(205, 214, 244),       // Text
-            text_dim: Color::Rgb(108, 112, 134),   // Overlay0
+            text_dim: Color::Rgb(147, 153, 178),   // Overlay2
             highlight_bg: Color::Rgb(88, 91, 112), // Surface2
 
             success: Color::Rgb(166, 227, 161), // Green
@@ -228,7 +230,7 @@ impl Theme {
             border: Color::Rgb(187, 154, 247), // Purple
             border_focused: Color::Rgb(187, 154, 247),
             text: Color::Rgb(192, 202, 245),      // Foreground
-            text_dim: Color::Rgb(86, 95, 137),    // Comment
+            text_dim: Color::Rgb(125, 132, 164),  // Comment, lifted for contrast
             highlight_bg: Color::Rgb(59, 66, 97), // bg_highlight
 
             success: Color::Rgb(158, 206, 106), // Green
@@ -247,8 +249,8 @@ impl Theme {
 
             border: Color::Rgb(42, 161, 152), // Cyan
             border_focused: Color::Rgb(42, 161, 152),
-            text: Color::Rgb(131, 148, 150),     // base0
-            text_dim: Color::Rgb(88, 110, 117),  // base01
+            text: Color::Rgb(147, 161, 161),     // base1
+            text_dim: Color::Rgb(131, 148, 150), // base0
             highlight_bg: Color::Rgb(7, 54, 66), // base02
 
             success: Color::Rgb(133, 153, 0), // Green
@@ -277,6 +279,20 @@ impl Theme {
             *foreground = readable_on(*foreground, self.highlight_bg);
         }
         selected
+    }
+
+    /// Loss severity: quiet at zero, plain text for any loss, then warning
+    /// and error. Loss is never green, so color always means "look here".
+    pub fn loss_color(&self, loss_pct: f64) -> Color {
+        if loss_pct >= 20.0 {
+            self.error
+        } else if loss_pct >= 5.0 {
+            self.warning
+        } else if loss_pct > 0.0 {
+            self.text
+        } else {
+            self.text_dim
+        }
     }
 
     /// Get a theme by name
@@ -342,6 +358,16 @@ fn contrast(a: [u8; 3], b: [u8; 3]) -> f64 {
 }
 
 fn readable_on(foreground: Color, background: Color) -> Color {
+    // The default theme's DarkGray selection bar is dark in every common
+    // palette, so the terminal foreground (dark on light terminals) and the
+    // DarkGray dim text would vanish on it.
+    if background == Color::DarkGray {
+        match foreground {
+            Color::Reset => return Color::White,
+            Color::DarkGray => return Color::Gray,
+            _ => {}
+        }
+    }
     let (Color::Rgb(r, g, b), Color::Rgb(br, bg, bb)) = (foreground, background) else {
         return foreground;
     };
@@ -415,6 +441,64 @@ mod tests {
             readable_on(Color::Rgb(255, 255, 255), Color::Rgb(0, 0, 0)),
             Color::Rgb(255, 255, 255)
         );
+    }
+
+    #[test]
+    fn dim_text_stays_readable_on_each_themes_intended_background() {
+        // RGB themes do not paint a background; these are the dark terminal
+        // backgrounds each palette is designed for.
+        let backgrounds = [
+            ("kawaii", [40, 30, 45]),
+            ("cyber", [10, 10, 20]),
+            ("dracula", [40, 42, 54]),
+            ("monochrome", [0, 0, 0]),
+            ("matrix", [0, 0, 0]),
+            ("nord", [46, 52, 64]),
+            ("gruvbox", [40, 40, 40]),
+            ("catppuccin", [30, 30, 46]),
+            ("tokyo_night", [26, 27, 38]),
+            ("solarized", [0, 43, 54]),
+        ];
+        assert_eq!(backgrounds.len(), Theme::list().len() - 1);
+        for (name, bg) in backgrounds {
+            let theme = Theme::by_name(name);
+            for color in [theme.text, theme.text_dim] {
+                let Color::Rgb(r, g, b) = color else {
+                    panic!("{name}: ANSI color")
+                };
+                assert!(contrast([r, g, b], bg) >= 4.5, "{name}: {color:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn default_theme_follows_terminal_foreground_and_stays_readable_selected() {
+        let theme = Theme::default();
+        assert_eq!(theme.text, Color::Reset);
+        let selected = theme.for_selection();
+        assert_eq!(selected.text, Color::White);
+        assert_eq!(selected.text_dim, Color::Gray);
+    }
+
+    #[test]
+    fn loss_color_thresholds() {
+        let theme = Theme::dracula();
+        assert_eq!(theme.loss_color(0.0), theme.text_dim);
+        assert_eq!(theme.loss_color(0.1), theme.text);
+        assert_eq!(theme.loss_color(4.9), theme.text);
+        assert_eq!(theme.loss_color(5.0), theme.warning);
+        assert_eq!(theme.loss_color(19.9), theme.warning);
+        assert_eq!(theme.loss_color(20.0), theme.error);
+        assert_eq!(theme.loss_color(100.0), theme.error);
+        for name in Theme::list() {
+            let theme = Theme::by_name(name);
+            for loss in [0.0, 1.0, 10.0, 50.0] {
+                if theme.text == theme.success && loss < 5.0 {
+                    continue; // matrix: all text is green
+                }
+                assert_ne!(theme.loss_color(loss), theme.success, "{name}");
+            }
+        }
     }
 
     #[test]
