@@ -17,7 +17,7 @@ EXAMPLES:
         ttl -p tcp --port 443 host       # TCP to HTTPS
 
     ECMP path discovery:
-        ttl --flows 4 host               # Discover load-balanced paths
+        ttl -p udp --flows 4 host        # Discover load-balanced paths
 
     Path MTU discovery:
         ttl --pmtud 8.8.8.8              # Find max packet size
@@ -173,9 +173,10 @@ pub struct Args {
     #[arg(long = "prometheus", value_name = "ADDR", conflicts_with_all = ["json", "csv", "report", "replay", "diff"])]
     pub prometheus: Option<String>,
 
-    /// Color theme (default, kawaii, cyber, dracula, monochrome, matrix, nord, gruvbox, catppuccin, tokyo_night, solarized)
-    #[arg(long = "theme", default_value = "default")]
-    pub theme: String,
+    /// Color theme (default, kawaii, cyber, dracula, monochrome, matrix, nord, gruvbox, catppuccin, tokyo_night, solarized).
+    /// Overrides the saved theme; omit to keep it.
+    #[arg(long = "theme")]
+    pub theme: Option<String>,
 
     /// Wide mode: expand columns for wider terminals
     #[arg(long = "wide")]
@@ -304,6 +305,12 @@ impl Args {
                 self.protocol
             ));
         }
+        // PMTUD only sends its sized probes in ICMP mode
+        if self.pmtud && (protocol == "udp" || protocol == "tcp") {
+            return Err(format!(
+                "--pmtud requires ICMP probes; drop -p {protocol} or use -p icmp"
+            ));
+        }
 
         Self::validate_duration_arg("Interval", self.interval)?;
         Self::validate_duration_arg("Timeout", self.timeout)?;
@@ -401,9 +408,11 @@ impl Args {
             // Reject early rather than failing on every probe send at runtime.
             #[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
             {
-                return Err("Interface binding (-i) is not supported on this platform. \
+                return Err(
+                    "Interface binding (--interface) is not supported on this platform. \
                      Use --source-ip or run on Linux/macOS for interface binding."
-                    .to_string());
+                        .to_string(),
+                );
             }
             #[cfg(not(any(target_os = "freebsd", target_os = "netbsd")))]
             {
@@ -504,7 +513,7 @@ mod tests {
             stream_json: false,
             daemon: false,
             prometheus: None,
-            theme: "default".to_string(),
+            theme: None,
             wide: false,
             interface: None,
             recv_any: false,
@@ -898,6 +907,27 @@ mod tests {
             err.contains("--pmtud"),
             "error should mention --pmtud: {err}"
         );
+    }
+
+    #[test]
+    fn test_explicit_default_theme_is_distinguishable_from_unset() {
+        let args = Args::try_parse_from(["ttl", "--theme", "default", "host"]).unwrap();
+        assert_eq!(args.theme.as_deref(), Some("default"));
+        let args = Args::try_parse_from(["ttl", "host"]).unwrap();
+        assert_eq!(args.theme, None);
+    }
+
+    #[test]
+    fn test_pmtud_requires_icmp_probes() {
+        for proto in ["udp", "TCP"] {
+            let mut args = Args::try_parse_from(["ttl", "--pmtud", "-p", proto, "host"]).unwrap();
+            let err = args.validate().unwrap_err();
+            assert!(err.contains("--pmtud"), "{proto}: {err}");
+        }
+        for proto in ["auto", "icmp"] {
+            let mut args = Args::try_parse_from(["ttl", "--pmtud", "-p", proto, "host"]).unwrap();
+            assert!(args.validate().is_ok(), "{proto} should allow --pmtud");
+        }
     }
 
     #[test]

@@ -61,9 +61,18 @@ fn icmp_ipv6_checksum(data: &[u8], src_addr: Ipv6Addr, dest_addr: Ipv6Addr) -> u
     !sum as u16
 }
 
-/// Get process identifier for ICMP identification field
+/// ICMP Echo identifier for this process: random, chosen once, never 0.
+///
+/// Not the PID: instances in separate containers are all PID 1, and a shared
+/// identifier lets one instance's raw socket accept another's replies.
 pub fn get_identifier() -> u16 {
-    std::process::id() as u16
+    static ID: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+    *ID.get_or_init(|| {
+        use std::hash::BuildHasher;
+        // RandomState is seeded from OS randomness per process
+        let r = std::collections::hash_map::RandomState::new().hash_one(0u8);
+        (r as u16).max(1)
+    })
 }
 
 /// Build an ICMP Echo Request packet with configurable payload size
@@ -163,6 +172,13 @@ pub fn build_echo_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identifier_is_stable_and_nonzero() {
+        let id = get_identifier();
+        assert_ne!(id, 0);
+        assert_eq!(id, get_identifier(), "engine and receiver must agree");
+    }
 
     #[test]
     fn test_build_echo_request() {

@@ -291,7 +291,7 @@ pub fn bind_socket_to_interface(socket: &Socket, info: &InterfaceInfo, ipv6: boo
     {
         let _ = (socket, info, ipv6); // Suppress unused warnings
         Err(anyhow!(
-            "Interface binding (-i) is not supported on FreeBSD/NetBSD. \
+            "Interface binding (--interface) is not supported on FreeBSD/NetBSD. \
              These platforms lack SO_BINDTODEVICE and IP_BOUND_IF socket options."
         ))
     }
