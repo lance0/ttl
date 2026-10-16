@@ -407,6 +407,7 @@ pub async fn run_tui(
         }
     }
 
+    let event_rx = spawn_event_reader(tick_rate, cancel.clone());
     run_app(
         &mut terminal,
         sessions,
@@ -416,6 +417,7 @@ pub async fn run_tui(
         tick_rate,
         ix_lookup.clone(),
         add_target_tx,
+        event_rx,
     )
     .await?;
 
@@ -695,21 +697,21 @@ fn adjust_replay_speed(ui_state: &mut UiState, delta: f32) {
 ///
 /// `event::poll` and `event::read` are blocking calls that must not run on the
 /// async executor — they'd stall the tokio runtime for up to `tick_rate` each
-/// iteration. This thread forwards `Event`s over a channel so the async loop
-/// can `try_recv` without blocking.
+/// iteration. A bounded channel wakes the async loop as input arrives while
+/// applying backpressure to large pastes without an unbounded event queue.
 ///
 /// The thread exits when `cancel` fires or the receiver is dropped.
 fn spawn_event_reader(
     tick_rate: Duration,
     cancel: CancellationToken,
-) -> std::sync::mpsc::Receiver<Event> {
-    let (tx, rx) = std::sync::mpsc::channel::<Event>();
+) -> tokio::sync::mpsc::Receiver<Event> {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Event>(256);
 
     std::thread::spawn(move || {
-        while !cancel.is_cancelled() {
+        while !cancel.is_cancelled() && !tx.is_closed() {
             if event::poll(tick_rate).unwrap_or(false)
                 && let Ok(ev) = event::read()
-                && tx.send(ev).is_err()
+                && tx.blocking_send(ev).is_err()
             {
                 // Receiver dropped — TUI is shutting down.
                 break;
@@ -730,13 +732,14 @@ async fn run_app<B>(
     tick_rate: Duration,
     ix_lookup: Option<Arc<IxLookup>>,
     add_target_tx: Option<tokio::sync::mpsc::UnboundedSender<AddTargetRequest>>,
+    mut event_rx: tokio::sync::mpsc::Receiver<Event>,
 ) -> Result<()>
 where
     B: ratatui::backend::Backend,
     B::Error: Send + Sync + 'static,
 {
     let theme_names = Theme::list();
-    let event_rx = spawn_event_reader(tick_rate, cancel.clone());
+    let mut next_frame = tokio::time::Instant::now();
     let mut last_draw: Option<RenderFingerprint> = None;
     let ix_enabled = ix_lookup.is_some();
 
@@ -744,6 +747,12 @@ where
         // Check cancellation
         if cancel.is_cancelled() {
             break;
+        }
+
+        let now = tokio::time::Instant::now();
+        let frame_due = now >= next_frame;
+        if frame_due {
+            next_frame = now + tick_rate;
         }
 
         // Clear old status messages
@@ -812,7 +821,9 @@ where
         let cache_status = ix_lookup.as_ref().map(|ix| ix.get_cache_status());
 
         // Snapshot only when dirty so no locks are held during rendering.
-        refresh_target_list_cache(ui_state, &sessions, &targets);
+        if frame_due || (ui_state.show_target_list && ui_state.target_list_cache.is_none()) {
+            refresh_target_list_cache(ui_state, &sessions, &targets);
+        }
 
         // Fingerprint after polls so status expiry, add-target, update
         // check, IX cache, and target-list rows participate (LAN-1222).
@@ -830,7 +841,7 @@ where
         );
         let dirty = last_draw.as_ref() != Some(&fingerprint);
 
-        if dirty {
+        if dirty && frame_due {
             let session_snapshot = {
                 let sessions_read = sessions.read();
                 sessions_read
@@ -857,9 +868,18 @@ where
             }
             last_draw = Some(fingerprint);
         }
-        // Handle input — non-blocking: the event-reader thread forwards
-        // crossterm events over the channel so we never stall the async runtime.
-        let event = event_rx.try_recv().ok();
+        // Input and cancellation wake immediately. Rendering stays capped at
+        // the frame interval, so a burst changes state without drawing/sleeping
+        // once per key. The timer still polls probe/update/status changes.
+        let event = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => break,
+            received = event_rx.recv() => match received {
+                Some(event) => Some(event),
+                None => break,
+            },
+            _ = tokio::time::sleep_until(next_frame) => None,
+        };
         // A resize changes the layout without touching any fingerprinted state,
         // so force the next tick to draw (terminal.draw re-measures the area).
         if matches!(event, Some(Event::Resize(..))) {
@@ -868,6 +888,14 @@ where
         if let Some(Event::Key(key)) = event {
             if key.kind != KeyEventKind::Press {
                 continue;
+            }
+
+            // Ctrl-C is global, including overlays that accept text input.
+            if (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
+                || key.code == KeyCode::Char('\x03')
+            {
+                cancel.cancel();
+                break;
             }
 
             // Handle overlays first
@@ -1109,15 +1137,6 @@ where
                     cancel.cancel();
                     break;
                 }
-                // Ctrl+C also quits (some terminals send ETX '\x03' instead of Ctrl+C)
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    cancel.cancel();
-                    break;
-                }
-                KeyCode::Char('\x03') => {
-                    cancel.cancel();
-                    break;
-                }
                 KeyCode::Char('?') | KeyCode::Char('h') => {
                     ui_state.show_help = true;
                     ui_state.help_scroll = 0;
@@ -1342,11 +1361,6 @@ where
                 _ => {}
             }
         }
-
-        // Yield to the async runtime so other tasks (receiver, enrichment
-        // workers, cancellation) are not starved. Previously the blocking
-        // `event::poll(tick_rate)` provided this pacing implicitly.
-        tokio::time::sleep(tick_rate).await;
     }
 
     Ok(())
@@ -1734,6 +1748,140 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(target, Arc::new(SessionLock::new(session)));
         Arc::new(parking_lot::RwLock::new(map))
+    }
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
+        Event::Key(crossterm::event::KeyEvent::new(code, modifiers))
+    }
+
+    #[tokio::test]
+    async fn queued_input_is_processed_without_waiting_for_frames() {
+        use ratatui::backend::TestBackend;
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let mut session = Session::new(Target::new("example.net".into(), ip), Config::default());
+        for hop in &mut session.hops {
+            hop.sent = 1;
+        }
+        let sessions = make_single_session_map(ip, session);
+        let (tx, rx) = tokio::sync::mpsc::channel(256);
+        for _ in 0..80 {
+            tx.try_send(key(KeyCode::Char('j'), KeyModifiers::NONE))
+                .unwrap();
+        }
+        tx.try_send(key(KeyCode::Char('p'), KeyModifiers::NONE))
+            .unwrap();
+        tx.try_send(key(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut state = UiState::default();
+        let cancel = CancellationToken::new();
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            run_app(
+                &mut terminal,
+                sessions.clone(),
+                vec![ip],
+                &mut state,
+                cancel.clone(),
+                Duration::from_secs(1),
+                None,
+                None,
+                rx,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(state.selected.is_some());
+        assert!(state.paused);
+        assert!(sessions.read().get(&ip).unwrap().read().paused);
+        assert!(cancel.is_cancelled());
+        assert_eq!(
+            terminal.get_frame().count(),
+            1,
+            "burst should not draw per key"
+        );
+    }
+
+    #[tokio::test]
+    async fn ctrl_c_quits_from_every_overlay_and_text_input() {
+        use ratatui::backend::TestBackend;
+        for code in [
+            key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            key(KeyCode::Char('\x03'), KeyModifiers::NONE),
+        ] {
+            for overlay in 0..6 {
+                let ip: IpAddr = "192.0.2.1".parse().unwrap();
+                let sessions = make_single_session_map(
+                    ip,
+                    Session::new(Target::new("example.net".into(), ip), Config::default()),
+                );
+                let mut state = UiState {
+                    show_help: overlay == 0,
+                    show_settings: overlay == 1,
+                    show_hop_detail: overlay == 2,
+                    show_target_list: overlay == 3,
+                    show_target_input: overlay == 4,
+                    ..UiState::default()
+                };
+                let (tx, rx) = tokio::sync::mpsc::channel(2);
+                tx.try_send(code.clone()).unwrap();
+                let cancel = CancellationToken::new();
+                let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+                tokio::time::timeout(
+                    Duration::from_millis(500),
+                    run_app(
+                        &mut terminal,
+                        sessions,
+                        vec![ip],
+                        &mut state,
+                        cancel.clone(),
+                        Duration::from_secs(1),
+                        None,
+                        None,
+                        rx,
+                    ),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                assert!(cancel.is_cancelled(), "overlay {overlay}");
+                assert!(state.target_input.input.is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_wakes_an_idle_ui_without_waiting_for_a_frame() {
+        use ratatui::backend::TestBackend;
+        let cancel = CancellationToken::new();
+        let trigger = cancel.clone();
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut state = UiState::default();
+        let sessions = Arc::new(parking_lot::RwLock::new(HashMap::new()));
+        let stop = async {
+            tokio::task::yield_now().await;
+            trigger.cancel();
+        };
+        let run = run_app(
+            &mut terminal,
+            sessions,
+            vec![],
+            &mut state,
+            cancel,
+            Duration::from_secs(60),
+            None,
+            None,
+            rx,
+        );
+        let (result, ()) = tokio::time::timeout(Duration::from_millis(500), async {
+            tokio::join!(run, stop)
+        })
+        .await
+        .unwrap();
+        result.unwrap();
+        drop(tx);
     }
 
     fn make_timeout_event(offset_ms: u64, ttl: u8, seq: u8) -> ProbeEvent {
