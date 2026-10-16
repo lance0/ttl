@@ -53,10 +53,11 @@ impl AsnLookup {
 
     /// A fresh cached miss must not consume a worker batch slot.
     fn needs_lookup(&self, ip: IpAddr) -> bool {
-        !self.cache.read().get(&ip).is_some_and(|entry| {
-            entry.asn.is_none()
-                && entry.cached_at.elapsed() < self.cache_ttl.min(super::NEGATIVE_CACHE_TTL)
-        })
+        !self
+            .cache
+            .read()
+            .get(&ip)
+            .is_some_and(|entry| entry.asn.is_none() && entry.cached_at.elapsed() < self.cache_ttl)
     }
 
     /// Lookup ASN info for an IP via Team Cymru DNS
@@ -65,12 +66,7 @@ impl AsnLookup {
         {
             let cache = self.cache.read();
             if let Some(entry) = cache.get(&ip)
-                && entry.cached_at.elapsed()
-                    < if entry.asn.is_some() {
-                        self.cache_ttl
-                    } else {
-                        self.cache_ttl.min(super::NEGATIVE_CACHE_TTL)
-                    }
+                && entry.cached_at.elapsed() < self.cache_ttl
             {
                 return entry.asn.clone();
             }
@@ -94,14 +90,7 @@ impl AsnLookup {
                 &mut cache,
                 self.cache_ttl,
                 |e| e.cached_at,
-                |e, ttl| {
-                    e.cached_at.elapsed()
-                        >= if e.asn.is_some() {
-                            ttl
-                        } else {
-                            ttl.min(super::NEGATIVE_CACHE_TTL)
-                        }
-                },
+                |e, ttl| e.cached_at.elapsed() >= ttl,
             );
         }
 
@@ -268,7 +257,9 @@ pub async fn run_asn_worker(
                     .collect();
 
                 // Wait for all lookups to complete
-                let Some(results) = super::lookup_batch(&cancel, futures).await else { break; };
+                let Some(results) = cancel.run_until_cancelled(futures::future::join_all(futures)).await else {
+                    break;
+                };
 
                 // Update all sessions with results
                 let sessions = sessions.read();
@@ -325,36 +316,6 @@ mod tests {
         )
         .await;
     }
-
-    #[tokio::test]
-    async fn negative_cache_retries_after_a_minute_without_expiring_positive_results() {
-        let lookup = AsnLookup::new().await.unwrap();
-        let ip = "192.0.2.1".parse().unwrap();
-        lookup.cache.write().insert(
-            ip,
-            CacheEntry {
-                asn: None,
-                cached_at: Instant::now(),
-            },
-        );
-        assert!(!lookup.needs_lookup(ip));
-        lookup.cache.write().get_mut(&ip).unwrap().cached_at =
-            Instant::now() - Duration::from_secs(61);
-        assert!(lookup.needs_lookup(ip));
-        lookup.cache.write().insert(
-            ip,
-            CacheEntry {
-                asn: Some(AsnInfo {
-                    number: 64500,
-                    name: "Example".into(),
-                    prefix: None,
-                }),
-                cached_at: Instant::now() - Duration::from_secs(61),
-            },
-        );
-        assert!(lookup.lookup(ip).await.is_some());
-    }
-
     #[test]
     fn test_ipv4_reverse_format() {
         // Test the format directly without the struct

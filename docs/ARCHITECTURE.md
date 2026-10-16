@@ -154,6 +154,5 @@ Multi-flow probing for ECMP path enumeration:
 
 DNS, ASN, GeoIP and IX workers exclude fresh negative cache entries before
 applying their batch limit. Missing data on early hops therefore does not block
-later addresses. DNS/ASN misses are cached for at most 60 seconds, while successful
-results retain their normal cache TTL. In-flight DNS/ASN/IX batches are cancelled
-on shutdown without waiting for the remote resolver or API timeout.
+later addresses. In-flight DNS/ASN/IX batches are cancelled on shutdown without
+waiting for the remote resolver or API timeout.

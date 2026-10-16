@@ -759,7 +759,9 @@ pub async fn run_ix_worker(
                     .collect();
 
                 // Wait for all lookups to complete
-                let Some(results) = super::lookup_batch(&cancel, futures).await else { break; };
+                let Some(results) = cancel.run_until_cancelled(futures::future::join_all(futures)).await else {
+                    break;
+                };
 
                 // Update all sessions with results
                 let sessions = sessions.read();

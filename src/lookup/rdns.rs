@@ -53,8 +53,7 @@ impl DnsLookup {
     /// A fresh cached miss must not consume a worker batch slot.
     fn needs_lookup(&self, ip: IpAddr) -> bool {
         !self.cache.read().get(&ip).is_some_and(|entry| {
-            entry.hostname.is_none()
-                && entry.cached_at.elapsed() < self.cache_ttl.min(super::NEGATIVE_CACHE_TTL)
+            entry.hostname.is_none() && entry.cached_at.elapsed() < self.cache_ttl
         })
     }
 
@@ -64,12 +63,7 @@ impl DnsLookup {
         {
             let cache = self.cache.read();
             if let Some(entry) = cache.get(&ip)
-                && entry.cached_at.elapsed()
-                    < if entry.hostname.is_some() {
-                        self.cache_ttl
-                    } else {
-                        self.cache_ttl.min(super::NEGATIVE_CACHE_TTL)
-                    }
+                && entry.cached_at.elapsed() < self.cache_ttl
             {
                 return entry.hostname.clone();
             }
@@ -107,14 +101,7 @@ impl DnsLookup {
                 &mut cache,
                 self.cache_ttl,
                 |e| e.cached_at,
-                |e, ttl| {
-                    e.cached_at.elapsed()
-                        >= if e.hostname.is_some() {
-                            ttl
-                        } else {
-                            ttl.min(super::NEGATIVE_CACHE_TTL)
-                        }
-                },
+                |e, ttl| e.cached_at.elapsed() >= ttl,
             );
         }
 
@@ -153,7 +140,9 @@ pub async fn run_dns_worker(dns: Arc<DnsLookup>, sessions: SessionMap, cancel: C
                     .collect();
 
                 // Wait for all lookups to complete
-                let Some(results) = super::lookup_batch(&cancel, futures).await else { break; };
+                let Some(results) = cancel.run_until_cancelled(futures::future::join_all(futures)).await else {
+                    break;
+                };
 
                 // Update all sessions with results
                 let sessions = sessions.read();
@@ -205,30 +194,5 @@ mod tests {
             |stats| stats.hostname.is_some(),
         )
         .await;
-    }
-
-    #[tokio::test]
-    async fn negative_cache_retries_after_a_minute_without_expiring_positive_results() {
-        let lookup = DnsLookup::new().await.unwrap();
-        let ip = "192.0.2.1".parse().unwrap();
-        lookup.cache.write().insert(
-            ip,
-            CacheEntry {
-                hostname: None,
-                cached_at: Instant::now(),
-            },
-        );
-        assert!(!lookup.needs_lookup(ip));
-        lookup.cache.write().get_mut(&ip).unwrap().cached_at =
-            Instant::now() - Duration::from_secs(61);
-        assert!(lookup.needs_lookup(ip));
-        lookup.cache.write().insert(
-            ip,
-            CacheEntry {
-                hostname: Some("router.example.test".to_string()),
-                cached_at: Instant::now() - Duration::from_secs(61),
-            },
-        );
-        assert!(lookup.reverse_lookup(ip).await.is_some());
     }
 }
