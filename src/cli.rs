@@ -173,9 +173,10 @@ pub struct Args {
     #[arg(long = "prometheus", value_name = "ADDR", conflicts_with_all = ["json", "csv", "report", "replay", "diff"])]
     pub prometheus: Option<String>,
 
-    /// Color theme (default, kawaii, cyber, dracula, monochrome, matrix, nord, gruvbox, catppuccin, tokyo_night, solarized)
-    #[arg(long = "theme", default_value = "default")]
-    pub theme: String,
+    /// Color theme (default, kawaii, cyber, dracula, monochrome, matrix, nord, gruvbox, catppuccin, tokyo_night, solarized).
+    /// Overrides the saved theme; omit to keep it.
+    #[arg(long = "theme")]
+    pub theme: Option<String>,
 
     /// Wide mode: expand columns for wider terminals
     #[arg(long = "wide")]
@@ -512,7 +513,7 @@ mod tests {
             stream_json: false,
             daemon: false,
             prometheus: None,
-            theme: "default".to_string(),
+            theme: None,
             wide: false,
             interface: None,
             recv_any: false,
@@ -906,6 +907,14 @@ mod tests {
             err.contains("--pmtud"),
             "error should mention --pmtud: {err}"
         );
+    }
+
+    #[test]
+    fn test_explicit_default_theme_is_distinguishable_from_unset() {
+        let args = Args::try_parse_from(["ttl", "--theme", "default", "host"]).unwrap();
+        assert_eq!(args.theme.as_deref(), Some("default"));
+        let args = Args::try_parse_from(["ttl", "host"]).unwrap();
+        assert_eq!(args.theme, None);
     }
 
     #[test]

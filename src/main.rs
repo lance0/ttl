@@ -531,8 +531,8 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
         let mut prefs = Prefs::load();
 
         // Apply CLI overrides
-        if args.theme != "default" {
-            prefs.theme = Some(args.theme.clone());
+        if let Some(theme) = &args.theme {
+            prefs.theme = Some(theme.clone());
         }
         if args.wide {
             prefs.display_mode = Some(DisplayMode::Wide);
@@ -895,8 +895,8 @@ async fn run_interactive_mode(
     let mut prefs = Prefs::load();
 
     // Apply CLI overrides
-    if args.theme != "default" {
-        prefs.theme = Some(args.theme.clone());
+    if let Some(theme) = &args.theme {
+        prefs.theme = Some(theme.clone());
     }
     if args.wide {
         prefs.display_mode = Some(DisplayMode::Wide);
