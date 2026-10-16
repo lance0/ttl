@@ -219,6 +219,7 @@ impl Widget for SettingsView<'_> {
         block.render(popup_area, buf);
 
         let mut lines = Vec::new();
+        let mut section_starts = vec![0];
 
         // Theme section header
         let theme_header_style = if self.state.selected_section == 0 {
@@ -280,6 +281,7 @@ impl Widget for SettingsView<'_> {
 
         lines.push(Line::from(""));
 
+        section_starts.push(lines.len());
         // Display mode section header
         let display_header_style = if self.state.selected_section == 1 {
             Style::default()
@@ -322,6 +324,7 @@ impl Widget for SettingsView<'_> {
         if self.ix_enabled {
             lines.push(Line::from(""));
 
+            section_starts.push(lines.len());
             // PeeringDB section header
             let pdb_header_style = if self.state.selected_section == 2 {
                 Style::default()
@@ -350,7 +353,19 @@ impl Widget for SettingsView<'_> {
                 // Show the key with cursor indicator when section is selected
                 if self.state.selected_section == 2 {
                     let (before, after) = self.state.api_key.split_at(self.state.api_key_cursor);
-                    format!("{}\u{2502}{}", before, after)
+                    let budget = usize::from(inner.width).saturating_sub(label.len() + 1);
+                    let mut start = before.len();
+                    let mut used = 0;
+                    for (index, _) in before.char_indices().rev() {
+                        let cells = Span::raw(&before[index..start]).width();
+                        if used + cells > budget {
+                            break;
+                        }
+                        start = index;
+                        used += cells;
+                    }
+                    let after = super::fit_text(after, budget.saturating_sub(used) as u16);
+                    format!("{}│{}", &before[start..], after)
                 } else {
                     self.state.api_key.clone()
                 }
@@ -406,6 +421,7 @@ impl Widget for SettingsView<'_> {
         // Update Check section (always shown; sits after the optional PeeringDB
         // section so its index shifts with ix_enabled).
         lines.push(Line::from(""));
+        section_starts.push(lines.len());
         let uc_section = SettingsState::update_check_section(self.ix_enabled);
         let uc_selected = self.state.selected_section == uc_section;
         let uc_header_style = if uc_selected {
@@ -436,20 +452,52 @@ impl Widget for SettingsView<'_> {
             Style::default().fg(self.theme.text_dim),
         )]));
 
-        lines.push(Line::from(""));
-
-        // Footer with keybindings
-        lines.push(Line::from(vec![Span::styled(
-            "  \u{2191}\u{2193} navigate  Tab section  Enter select",
-            Style::default().fg(self.theme.text_dim),
-        )]));
-        lines.push(Line::from(vec![Span::styled(
-            "  Esc close",
-            Style::default().fg(self.theme.text_dim),
-        )]));
-
-        let paragraph = Paragraph::new(lines);
-        paragraph.render(inner, buf);
+        // Keep the active section and close/navigation hints visible when
+        // the terminal is shorter than the settings content.
+        section_starts.push(lines.len());
+        let mut wrapped = Vec::new();
+        let mut offsets = Vec::new();
+        for line in lines {
+            offsets.push(wrapped.len());
+            wrapped.extend(super::hop::wrap_lines(vec![line], inner.width));
+        }
+        offsets.push(wrapped.len());
+        let section = self.state.selected_section.min(section_starts.len() - 2);
+        let start = offsets[section_starts[section]];
+        let end = offsets[section_starts[section + 1]];
+        let body_height = inner.height.saturating_sub(2);
+        let focus = if section == 0 {
+            start
+                + 2
+                + self
+                    .state
+                    .theme_index
+                    .saturating_sub(self.state.theme_scroll)
+        } else {
+            start + 1
+        };
+        let offset = if end.saturating_sub(start) <= usize::from(body_height) {
+            end.saturating_sub(usize::from(body_height))
+        } else {
+            focus.saturating_sub(usize::from(body_height).saturating_sub(1))
+        };
+        Paragraph::new(wrapped)
+            .scroll((offset.min(usize::from(u16::MAX)) as u16, 0))
+            .render(
+                Rect {
+                    height: body_height,
+                    ..inner
+                },
+                buf,
+            );
+        if inner.height >= 2 {
+            Paragraph::new(vec![
+                Line::from(super::fit_text("Esc close · Tab section", inner.width)),
+                Line::from(super::fit_text("↑/↓ navigate · Enter select", inner.width)),
+            ])
+            .style(Style::default().fg(self.theme.text_dim))
+            .render(Rect::new(inner.x, inner.bottom() - 2, inner.width, 2), buf);
+        }
     }
 }
 

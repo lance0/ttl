@@ -1,7 +1,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Cell, Row, Table, Widget};
+use ratatui::widgets::{Block, Borders, Cell, Row, StatefulWidget, Table, TableState, Widget};
 
 use crate::prefs::DisplayMode;
 use crate::state::{PmtudPhase, Session};
@@ -24,67 +24,97 @@ struct ColumnWidths {
     asn: u16,
 }
 
-fn expected_column_count(is_wide: bool, multi_flow: bool) -> usize {
-    let mut count = 12; // base columns including sparkline
-    if is_wide {
-        count += 2; // JAvg, JMax
-    }
-    if multi_flow {
-        count += 2; // NAT, Paths
-    }
-    count
+/// Select whole columns that fit, preserving readable numeric cells. Extra
+/// statistics remain available in the hop detail view at every terminal size.
+struct TableLayout {
+    indices: Vec<usize>,
+    widths: Vec<Constraint>,
+    host: u16,
+    asn: u16,
 }
 
-fn build_header_cells(is_wide: bool, multi_flow: bool) -> Vec<Cell<'static>> {
-    let mut header_cells = vec![
-        Cell::from("#").style(Style::default().bold()),
-        Cell::from("Host").style(Style::default().bold()),
-        Cell::from("ASN").style(Style::default().bold()),
-        Cell::from("Loss%").style(Style::default().bold()),
-        Cell::from("Sent").style(Style::default().bold()),
-        Cell::from("Last").style(Style::default().bold()),
-        Cell::from("Avg").style(Style::default().bold()),
-        Cell::from("Min").style(Style::default().bold()),
-        Cell::from("Max").style(Style::default().bold()),
-        Cell::from("StdDev").style(Style::default().bold()),
-        Cell::from("Jitter").style(Style::default().bold()),
-    ];
-    if is_wide {
-        header_cells.push(Cell::from("JAvg").style(Style::default().bold()));
-        header_cells.push(Cell::from("JMax").style(Style::default().bold()));
+fn table_layout(available: u16, preferred: &ColumnWidths, wide: bool, multi: bool) -> TableLayout {
+    let mut sizes = vec![3, 8, 12, 7, 7, 7, 7, 7, 7, 7, 7];
+    if wide {
+        sizes.extend([7, 7]);
     }
-    if multi_flow {
-        header_cells.push(Cell::from("NAT").style(Style::default().bold()));
-        header_cells.push(Cell::from("Paths").style(Style::default().bold()));
+    if multi {
+        sizes.extend([3, 5]);
     }
-    header_cells.push(Cell::from("").style(Style::default().bold())); // Sparkline
-    header_cells
+    sizes.push(10);
+    let mut indices: Vec<usize> = (0..sizes.len()).collect();
+    // Drop secondary statistics before identity, loss, counts, and latency.
+    let mut remove = Vec::new();
+    if wide {
+        remove.extend([12, 11]);
+    }
+    remove.extend([10, 9, 7, 8, 2, sizes.len() - 1]);
+    if multi {
+        remove.extend([sizes.len() - 2, sizes.len() - 3]);
+    }
+    remove.extend([5, 4, 6, 3]);
+    let total = |columns: &[usize], sizes: &[u16]| -> u16 {
+        columns.iter().map(|&i| sizes[i]).sum::<u16>() + columns.len().saturating_sub(1) as u16
+    };
+    for i in remove {
+        if total(&indices, &sizes) <= available {
+            break;
+        }
+        indices.retain(|&column| column != i);
+    }
+    // Identity can consume spare space, but never steal numeric column widths.
+    let spare = available.saturating_sub(total(&indices, &sizes));
+    let host_extra = spare.min(preferred.host.saturating_sub(sizes[1]));
+    sizes[1] += host_extra;
+    if indices.contains(&2) {
+        sizes[2] += (spare - host_extra).min(preferred.asn.saturating_sub(sizes[2]));
+    } else {
+        sizes[1] += spare - host_extra;
+    }
+    // Very small windows still get a host cell without arithmetic overflow.
+    if available < 12 {
+        indices = vec![1];
+        sizes[1] = available;
+    }
+    TableLayout {
+        widths: indices
+            .iter()
+            .map(|&i| Constraint::Length(sizes[i]))
+            .collect(),
+        indices,
+        host: sizes[1],
+        asn: sizes[2],
+    }
 }
 
-fn build_widths(col_widths: &ColumnWidths, is_wide: bool, multi_flow: bool) -> Vec<Constraint> {
-    let mut widths: Vec<Constraint> = vec![
-        Constraint::Length(3),                  // #
-        Constraint::Min(col_widths.host),       // Host (dynamic)
-        Constraint::Length(col_widths.asn + 1), // ASN (dynamic, +1 for padding)
-        Constraint::Length(7),                  // Loss%
-        Constraint::Length(5),                  // Sent
-        Constraint::Length(7),                  // Last
-        Constraint::Length(7),                  // Avg
-        Constraint::Length(7),                  // Min
-        Constraint::Length(7),                  // Max
-        Constraint::Length(7),                  // StdDev
-        Constraint::Length(7),                  // Jitter
+fn build_header_cells(wide: bool, multi: bool) -> Vec<Cell<'static>> {
+    let mut names = vec![
+        "#", "Host", "ASN", "Loss%", "Sent", "Last ms", "Avg ms", "Min ms", "Max ms", "StdDev",
+        "Jit ms",
     ];
-    if is_wide {
-        widths.push(Constraint::Length(7)); // JAvg
-        widths.push(Constraint::Length(7)); // JMax
+    if wide {
+        names.extend(["JAvg ms", "JMax ms"]);
     }
-    if multi_flow {
-        widths.push(Constraint::Length(4)); // NAT
-        widths.push(Constraint::Length(6)); // Paths
+    if multi {
+        names.extend(["NAT", "Paths"]);
     }
-    widths.push(Constraint::Length(11)); // Sparkline
-    widths
+    names.push("Recent");
+    names
+        .into_iter()
+        .map(|name| Cell::from(name).style(Style::default().bold()))
+        .collect()
+}
+
+/// Scientific notation keeps unusually large counters/RTTs readable rather
+/// than silently clipping digits. RTTs are still expressed in milliseconds.
+fn numeric_cell(value: String) -> String {
+    if value.len() <= 7 {
+        return value;
+    }
+    value
+        .parse::<f64>()
+        .map(|n| format!("{n:.1e}"))
+        .unwrap_or(value)
 }
 
 fn build_hop_indicators(
@@ -127,14 +157,7 @@ fn build_hop_indicators(
 
 /// Truncate a string to max_len characters, adding ellipsis if truncated
 fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
-    if s.chars().count() <= max_len {
-        s.to_string()
-    } else if max_len <= 3 {
-        s.chars().take(max_len).collect()
-    } else {
-        let truncated: String = s.chars().take(max_len - 1).collect();
-        format!("{}…", truncated)
-    }
+    super::fit_text(s, max_len as u16)
 }
 
 /// Main table view showing all hops
@@ -338,21 +361,12 @@ impl Widget for MainView<'_> {
             }
         };
 
+        let flags =
+            format!("{status}{nat_warn}{rl_warn}{asym_warn}{ttl_warn}{pmtud_status}{max_ttl_warn}");
         let title = format!(
-            "ttl \u{2500}\u{2500} {}{}{} \u{2500}\u{2500} {} probes \u{2500}\u{2500} {}ms interval{}{}{}{}{}{}{}",
-            target_indicator,
-            target_str,
-            routing_str,
-            probe_count,
-            interval_ms,
-            status,
-            nat_warn,
-            rl_warn,
-            asym_warn,
-            ttl_warn,
-            max_ttl_warn,
-            pmtud_status
+            "ttl{flags} ── {target_indicator}{target_str}{routing_str} ── {probe_count} probes ── {interval_ms}ms interval ── RTT ms"
         );
+        let title = super::fit_text(&title, area.width.saturating_sub(2));
 
         let block = Block::default()
             .title(title)
@@ -366,14 +380,21 @@ impl Widget for MainView<'_> {
         let multi_flow = self.session.config.flows > 1;
         let is_wide = matches!(self.display_mode, DisplayMode::Wide);
 
-        // Build header - add conditional columns for wide and multi-flow modes.
-        let header_cells = build_header_cells(is_wide, multi_flow);
-        let header_cell_count = header_cells.len();
-        let header = Row::new(header_cells).height(1);
-
-        // Build rows - only show hops up to the destination
         let max_display_ttl = self.session.dest_ttl.unwrap_or(self.session.config.max_ttl);
-        let col_widths = self.compute_column_widths(max_display_ttl);
+        let preferred = self.compute_column_widths(max_display_ttl);
+        let layout = table_layout(inner.width, &preferred, is_wide, multi_flow);
+        let col_widths = ColumnWidths {
+            host: layout.host,
+            asn: layout.asn,
+        };
+        let all_headers = build_header_cells(is_wide, multi_flow);
+        let header = Row::new(
+            layout
+                .indices
+                .iter()
+                .map(|&i| all_headers[i].clone())
+                .collect::<Vec<_>>(),
+        );
         let rows: Vec<Row> = self
             .session
             .hops
@@ -390,13 +411,16 @@ impl Widget for MainView<'_> {
                         stats.ip.to_string()
                     };
                     let asn = if let Some(ref asn_info) = stats.asn {
-                        // Use computed ASN width (minus 1 for padding)
-                        // Show "AS##### name" so ASN number is always visible even when truncated
-                        let asn_max_len = (col_widths.asn as usize).saturating_sub(1);
-                        truncate_with_ellipsis(
-                            &format!("AS{} {}", asn_info.number, asn_info.name),
-                            asn_max_len,
-                        )
+                        // Preserve the full ASN; truncate only its optional name.
+                        let number = format!("AS{}", asn_info.number);
+                        if number.len() + 2 > usize::from(col_widths.asn) {
+                            number
+                        } else {
+                            truncate_with_ellipsis(
+                                &format!("{} {}", number, asn_info.name),
+                                usize::from(col_widths.asn),
+                            )
+                        }
                     } else {
                         String::new()
                     };
@@ -536,17 +560,17 @@ impl Widget for MainView<'_> {
                     Cell::from(host),
                     Cell::from(asn_display).style(Style::default().fg(self.theme.text_dim)),
                     Cell::from(loss_display).style(loss_style),
-                    Cell::from(hop.sent.to_string()),
-                    Cell::from(last),
-                    Cell::from(avg),
-                    Cell::from(min),
-                    Cell::from(max),
-                    Cell::from(stddev),
-                    Cell::from(jitter),
+                    Cell::from(numeric_cell(hop.sent.to_string())),
+                    Cell::from(numeric_cell(last)),
+                    Cell::from(numeric_cell(avg)),
+                    Cell::from(numeric_cell(min)),
+                    Cell::from(numeric_cell(max)),
+                    Cell::from(numeric_cell(stddev)),
+                    Cell::from(numeric_cell(jitter)),
                 ];
                 if is_wide {
-                    cells.push(Cell::from(j_avg));
-                    cells.push(Cell::from(j_max));
+                    cells.push(Cell::from(numeric_cell(j_avg)));
+                    cells.push(Cell::from(numeric_cell(j_max)));
                 }
 
                 // Add "NAT" and "Paths" columns if multi-flow mode
@@ -573,29 +597,22 @@ impl Widget for MainView<'_> {
 
                 cells.push(Cell::from(sparkline).style(Style::default().fg(sparkline_color)));
 
-                Row::new(cells).style(row_style)
+                Row::new(
+                    layout
+                        .indices
+                        .iter()
+                        .map(|&i| cells[i].clone())
+                        .collect::<Vec<_>>(),
+                )
+                .style(row_style)
             })
             .collect();
 
-        // Build column widths - use computed widths from display mode
-        let widths = build_widths(&col_widths, is_wide, multi_flow);
-
-        debug_assert_eq!(
-            header_cell_count,
-            expected_column_count(is_wide, multi_flow),
-            "header cell count mismatch for mode"
-        );
-        debug_assert_eq!(
-            widths.len(),
-            expected_column_count(is_wide, multi_flow),
-            "width constraint count mismatch for mode"
-        );
-
-        let table = Table::new(rows, widths)
+        let table = Table::new(rows, layout.widths)
             .header(header)
             .row_highlight_style(Style::default().bg(self.theme.highlight_bg));
-
-        table.render(inner, buf);
+        let mut state = TableState::default().with_selected(self.selected);
+        StatefulWidget::render(table, inner, buf, &mut state);
     }
 }
 
@@ -604,22 +621,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_column_count_matrix() {
-        assert_eq!(expected_column_count(false, false), 12);
-        assert_eq!(expected_column_count(true, false), 14);
-        assert_eq!(expected_column_count(false, true), 14);
-        assert_eq!(expected_column_count(true, true), 16);
+    fn responsive_columns_fit_without_squeezing_numbers() {
+        for available in [0, 5, 20, 40, 58, 78, 98, 158, 240] {
+            for (wide, multi) in [(false, false), (true, false), (false, true), (true, true)] {
+                let layout =
+                    table_layout(available, &ColumnWidths { host: 45, asn: 36 }, wide, multi);
+                let width: u16 = layout
+                    .widths
+                    .iter()
+                    .map(|c| match c {
+                        Constraint::Length(w) => *w,
+                        _ => unreachable!(),
+                    })
+                    .sum();
+                assert!(width + layout.widths.len().saturating_sub(1) as u16 <= available);
+                assert!(
+                    layout
+                        .indices
+                        .iter()
+                        .all(|&i| i < build_header_cells(wide, multi).len())
+                );
+                if available >= 58 {
+                    assert!(layout.indices.contains(&3));
+                    assert!(layout.indices.contains(&6));
+                }
+            }
+        }
     }
 
     #[test]
-    fn test_header_and_width_counts_match_in_all_modes() {
-        let col_widths = ColumnWidths { host: 20, asn: 12 };
-        for &(is_wide, multi_flow) in &[(false, false), (true, false), (false, true), (true, true)]
-        {
-            let header = build_header_cells(is_wide, multi_flow);
-            let widths = build_widths(&col_widths, is_wide, multi_flow);
-            assert_eq!(header.len(), widths.len());
-            assert_eq!(header.len(), expected_column_count(is_wide, multi_flow));
+    fn huge_numbers_remain_complete() {
+        assert_eq!(numeric_cell("12345.6".into()), "12345.6");
+        for value in [u64::MAX.to_string(), "123456789.1".into()] {
+            let compact = numeric_cell(value);
+            assert!(compact.len() <= 7);
+            assert!(compact.parse::<f64>().is_ok());
         }
     }
 

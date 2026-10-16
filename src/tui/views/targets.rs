@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
 use crate::trace::receiver::SessionMap;
@@ -88,78 +88,93 @@ impl<'a> TargetListView<'a> {
 
 impl Widget for TargetListView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Calculate centered popup area
-        let popup_width = 65.min(area.width.saturating_sub(4));
-        let popup_height =
-            (self.target_infos.len() + 8).min(area.height.saturating_sub(4) as usize) as u16;
-        let popup_x = (area.width - popup_width) / 2 + area.x;
-        let popup_y = (area.height - popup_height) / 2 + area.y;
-        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
-
-        // Clear the popup area
-        Clear.render(popup_area, buf);
-
+        let width = 76.min(area.width.saturating_sub(4));
+        let height = (self.target_infos.len().saturating_mul(2) + 4)
+            .min(usize::from(area.height.saturating_sub(4))) as u16;
+        let popup = Rect::new(
+            area.x + (area.width - width) / 2,
+            area.y + (area.height - height) / 2,
+            width,
+            height,
+        );
+        Clear.render(popup, buf);
         let block = Block::default()
-            .title(" Targets ")
+            .title(format!(
+                " Targets [{}/{}] ",
+                if self.target_infos.is_empty() {
+                    0
+                } else {
+                    self.selected_index + 1
+                },
+                self.target_infos.len()
+            ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(self.theme.border));
-
-        let inner = block.inner(popup_area);
-        block.render(popup_area, buf);
-
+        let inner = block.inner(popup);
+        block.render(popup, buf);
+        let body_height = inner.height.saturating_sub(2);
+        let visible = usize::from(body_height / 2);
+        let start = self
+            .selected_index
+            .saturating_add(1)
+            .saturating_sub(visible);
         let mut lines = Vec::new();
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![Span::styled(
-            format!("  Resolved {} addresses:", self.target_infos.len()),
-            Style::default().fg(self.theme.header),
-        )]));
-        lines.push(Line::from(""));
-
-        for (i, info) in self.target_infos.iter().enumerate() {
-            let is_selected = i == self.selected_index;
-            let marker = if is_selected { ">" } else { " " };
-
-            let style = if is_selected {
+        for (i, info) in self
+            .target_infos
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(visible)
+        {
+            let selected = i == self.selected_index;
+            let style = if selected {
                 Style::default()
-                    .fg(self.theme.shortcut)
+                    .fg(self.theme.text)
+                    .bg(self.theme.highlight_bg)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(self.theme.text)
             };
-
-            // Truncate hostname to fit (by characters, not bytes — UTF-8 safe)
-            let hostname_display = if info.hostname.chars().count() > 18 {
-                let truncated: String = info.hostname.chars().take(15).collect();
-                format!("{truncated}...")
-            } else {
-                info.hostname.clone()
-            };
-
-            lines.push(Line::from(vec![Span::styled(
-                format!(
-                    "  {} {:2}. {:17} {:18} {:8} {:>5}",
-                    marker,
-                    i + 1,
-                    info.ip,
-                    hostname_display,
-                    info.hops_str,
-                    info.loss_str
+            lines.push(Line::styled(
+                super::fit_text(
+                    &format!(
+                        "{} {}. {}",
+                        if selected { ">" } else { " " },
+                        i + 1,
+                        info.ip
+                    ),
+                    inner.width,
                 ),
                 style,
-            )]));
+            ));
+            lines.push(Line::styled(
+                super::fit_text(
+                    &format!("   {}  {}  {}", info.hops_str, info.loss_str, info.hostname),
+                    inner.width,
+                ),
+                style,
+            ));
         }
-
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![Span::styled(
-            "  Up/Down navigate   Enter select   1-9 jump",
-            Style::default().fg(self.theme.text_dim),
-        )]));
-        lines.push(Line::from(vec![Span::styled(
-            "  Esc close",
-            Style::default().fg(self.theme.text_dim),
-        )]));
-
-        let paragraph = Paragraph::new(lines);
-        paragraph.render(inner, buf);
+        Paragraph::new(lines).render(
+            Rect {
+                height: body_height,
+                ..inner
+            },
+            buf,
+        );
+        if inner.height >= 2 {
+            let footer = [
+                "Esc close · Enter select · 1-9 jump",
+                "↑/↓ navigate targets",
+            ];
+            Paragraph::new(
+                footer
+                    .into_iter()
+                    .map(|s| Line::from(super::fit_text(s, inner.width)))
+                    .collect::<Vec<_>>(),
+            )
+            .style(Style::default().fg(self.theme.text_dim))
+            .render(Rect::new(inner.x, inner.bottom() - 2, inner.width, 2), buf);
+        }
     }
 }
