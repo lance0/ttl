@@ -1755,6 +1755,19 @@ fn draw_ui(
             ("r", "reset"),
             ("e", "export"),
         ]
+    } else if session.started_instant.is_none() {
+        // Static replay of a loaded file: nothing probes, so pausing and
+        // adding targets do nothing.
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("Enter", "details"),
+            ("s", "settings"),
+            ("t", "theme"),
+            ("w", "display"),
+            ("r", "reset"),
+            ("e", "export"),
+        ]
     } else {
         &[
             ("?", "help"),
@@ -2282,6 +2295,40 @@ mod tests {
         assert_eq!(current_gen, current_gen_after);
         assert_eq!(ui_state.target_list_tick, 30);
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn static_replay_hints_omit_live_only_keys() {
+        use ratatui::backend::TestBackend;
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let mut session = Session::new(Target::new("example.net".into(), ip), Config::default());
+        let status = |session: &Session| {
+            let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
+            terminal
+                .draw(|f| {
+                    draw_ui(
+                        f,
+                        session,
+                        &UiState::default(),
+                        &Theme::default(),
+                        1,
+                        None,
+                        false,
+                    )
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer();
+            (0..140).map(|x| buf[(x, 11)].symbol()).collect::<String>()
+        };
+        let live = status(&session);
+        assert!(live.contains("p pause") && live.contains("o add"), "{live}");
+        session.started_instant = None; // loaded from a file
+        let replay = status(&session);
+        assert!(
+            !replay.contains("p pause") && !replay.contains("o add"),
+            "{replay}"
+        );
+        assert!(replay.contains("e export"), "{replay}");
     }
 
     #[test]
