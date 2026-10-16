@@ -749,3 +749,22 @@ Available targets:
 - `aarch64-unknown-linux-gnu` - Linux ARM64
 - `aarch64-apple-darwin` - macOS Apple Silicon
 - `x86_64-apple-darwin` - macOS Intel
+
+### Saving and loading long recordings
+
+Preferences and TUI JSON exports are written to a private temporary file beside
+the destination, synced, then atomically replace the previous file. A failed
+write leaves the previous save intact. Preference files keep owner-only Unix
+permissions.
+
+Replay and diff keep a 10 MiB input limit by default. For a larger trusted
+recording, raise the limit explicitly (1–1024 MiB):
+
+```bash
+ttl --replay long-session.json --replay-size-limit 64
+ttl --diff before.json after.json --replay-size-limit 64
+```
+
+The limit applies to each input file and to bytes read, including files that grow
+while being loaded. Large exports retain their complete history; raising the
+load limit does not truncate events or alter the saved format.

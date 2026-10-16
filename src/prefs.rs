@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Display mode for column widths
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -92,49 +92,56 @@ impl Prefs {
         }
     }
 
-    /// Save preferences to disk with restrictive permissions (0600 on Unix).
+    /// Save preferences atomically with restrictive permissions (0600 on Unix).
     pub fn save(&self) -> anyhow::Result<()> {
         if let Some(path) = Self::path() {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let data = toml::to_string_pretty(self)?;
-            #[cfg(unix)]
-            {
-                use std::fs::OpenOptions;
-                use std::io::Write;
-                use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-                match fs::metadata(&path) {
-                    Ok(_) => fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(e.into()),
-                }
-
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&path)?;
-                file.write_all(data.as_bytes())?;
-                file.sync_all()?;
-
-                // Enforce owner-only permissions for existing files too.
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
-            }
-            #[cfg(not(unix))]
-            {
-                fs::write(&path, data)?;
-            }
+            self.save_to_path(&path)?;
         }
         Ok(())
+    }
+
+    fn save_to_path(&self, path: &Path) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)?;
+        }
+        let data = toml::to_string_pretty(self)?;
+        crate::persistence::atomic_write(path, |writer| Ok(writer.write_all(data.as_bytes())?))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saving_to_an_isolated_path_roundtrips_and_restricts_existing_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preferences/config.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "old value").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let prefs = Prefs {
+            theme: Some("nord".into()),
+            peeringdb_api_key: Some("test-key".into()),
+            ..Prefs::default()
+        };
+        prefs.save_to_path(&path).unwrap();
+        let loaded: Prefs = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(loaded.peeringdb_api_key, prefs.peeringdb_api_key);
+        assert_eq!(loaded.theme, prefs.theme);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
 
     #[test]
     fn test_prefs_default() {

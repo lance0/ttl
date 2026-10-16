@@ -145,6 +145,10 @@ pub struct Args {
     #[arg(long = "replay")]
     pub replay: Option<String>,
 
+    /// Maximum saved-session size in MiB for replay/diff (default: 10; raise for trusted large recordings)
+    #[arg(long = "replay-size-limit", value_name = "MiB", value_parser = clap::value_parser!(u64).range(1..=1024))]
+    pub replay_size_limit: Option<u64>,
+
     /// Animate replay showing probe-by-probe discovery
     #[arg(long = "animate", requires = "replay")]
     pub animate: bool,
@@ -222,6 +226,10 @@ pub struct Args {
 }
 
 impl Args {
+    pub fn replay_limit_bytes(&self) -> u64 {
+        self.replay_size_limit.unwrap_or(10) * 1024 * 1024
+    }
+
     /// Get probe interval as Duration
     pub fn interval_duration(&self) -> Duration {
         Duration::from_secs_f64(self.interval)
@@ -299,6 +307,10 @@ impl Args {
 
         Self::validate_duration_arg("Interval", self.interval)?;
         Self::validate_duration_arg("Timeout", self.timeout)?;
+
+        if self.replay_size_limit.is_some() && !replay_or_diff {
+            return Err("--replay-size-limit requires --replay or --diff".into());
+        }
 
         if self.max_ttl == 0 {
             return Err("Max TTL must be at least 1".into());
@@ -485,6 +497,7 @@ mod tests {
             csv: false,
             report: false,
             replay: None,
+            replay_size_limit: None,
             animate: false,
             speed: 10.0,
             diff: None,
@@ -890,5 +903,43 @@ mod tests {
         let mut args =
             Args::try_parse_from(["ttl", "--diff", "a.json", "b.json", "--json"]).unwrap();
         assert!(args.validate().is_ok(), "--diff --json should validate");
+    }
+    #[test]
+    fn replay_size_limit_is_bounded_and_only_accepted_with_saved_sessions() {
+        for value in ["0", "1025", "-1", "NaN"] {
+            assert!(
+                Args::try_parse_from([
+                    "ttl",
+                    "--replay",
+                    "saved.json",
+                    "--replay-size-limit",
+                    value
+                ])
+                .is_err()
+            );
+        }
+        let mut live =
+            Args::try_parse_from(["ttl", "192.0.2.1", "--replay-size-limit", "20"]).unwrap();
+        assert!(
+            live.validate()
+                .unwrap_err()
+                .contains("requires --replay or --diff")
+        );
+        let mut replay =
+            Args::try_parse_from(["ttl", "--replay", "saved.json", "--replay-size-limit", "20"])
+                .unwrap();
+        replay.validate().unwrap();
+        assert_eq!(replay.replay_limit_bytes(), 20 * 1024 * 1024);
+        let mut diff = Args::try_parse_from([
+            "ttl",
+            "--diff",
+            "a.json",
+            "b.json",
+            "--replay-size-limit",
+            "20",
+        ])
+        .unwrap();
+        diff.validate().unwrap();
+        assert_eq!(diff.replay_limit_bytes(), replay.replay_limit_bytes());
     }
 }
