@@ -1408,6 +1408,8 @@ async fn run_streaming_mode(
     interface: Option<InterfaceInfo>,
     resolve_info: Option<ResolveInfo>,
 ) -> Result<()> {
+    configure_stream_event_recording(&sessions, args.stream_json);
+
     // Print skip warnings for non-TUI mode
     if let Some(ref info) = resolve_info {
         if info.skipped_ipv6 > 0 {
@@ -1659,6 +1661,14 @@ async fn run_streaming_mode(
     Ok(())
 }
 
+/// Only JSON streams consume events in headless mode. Configure this before
+/// starting receivers so Prometheus/plain output never builds replay history.
+fn configure_stream_event_recording(sessions: &SessionMap, stream_json: bool) {
+    for state in sessions.read().values() {
+        state.write().set_event_recording(stream_json);
+    }
+}
+
 /// Drain newly recorded probe events from each session and emit them as
 /// line-delimited JSON on stdout. Draining (rather than indexing) keeps
 /// memory bounded for long-running streams; nothing else consumes events
@@ -1779,6 +1789,24 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
     use std::net::Ipv6Addr;
+
+    #[test]
+    fn headless_modes_only_record_events_for_json_streams() {
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        for stream in [false, true] {
+            let sessions = make_session_map(&[(ip, 1)]);
+            configure_stream_event_recording(&sessions, stream);
+            let state = sessions.read().get(&ip).unwrap().clone();
+            state.write().record_event(state::ProbeEvent {
+                offset_ms: 0,
+                ttl: 1,
+                seq: 0,
+                flow_id: 0,
+                outcome: state::ProbeOutcome::Timeout,
+            });
+            assert_eq!(state.read().events.len(), usize::from(stream));
+        }
+    }
 
     #[test]
     fn test_effective_flows_icmp_forces_single_flow() {

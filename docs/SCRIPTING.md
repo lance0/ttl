@@ -278,3 +278,9 @@ fi
 3. **Use `--no-tui`** in headless environments to avoid terminal issues
 4. **Set capabilities once** with `setcap` to avoid needing sudo in scripts
 5. **Handle timeouts** - some targets may not respond to ICMP, try `-p udp` or `-p tcp`
+
+### Event retention in headless mode
+
+`--daemon`, Prometheus-only and plain `--no-tui` runs keep aggregate hop
+statistics without retaining replay events. `--stream-json` records events until
+its next output drain. TUI and batch JSON sessions retain their replay history.

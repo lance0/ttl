@@ -1409,10 +1409,18 @@ pub struct Session {
     /// Recorded probe events for animated replay
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<ProbeEvent>,
+    /// Runtime recording policy. Headless modes without an event consumer turn
+    /// this off; saved sessions retain the normal replay-compatible default.
+    #[serde(skip, default = "default_event_recording")]
+    pub record_events: bool,
     /// Bumped every time a [`SessionLock`] write guard is released, so the TUI
     /// can skip snapshot+draw on ticks where nothing changed. Not serialized.
     #[serde(skip)]
     pub render_generation: u64,
+}
+
+fn default_event_recording() -> bool {
+    true
 }
 
 /// `RwLock<Session>` whose write guard bumps [`Session::render_generation`]
@@ -1485,6 +1493,7 @@ impl Session {
             source_ip: None,
             gateway: None,
             events: Vec::new(),
+            record_events: true,
             render_generation: 0,
         }
     }
@@ -1631,13 +1640,25 @@ impl Session {
             source_ip: self.source_ip,
             gateway: self.gateway,
             events: Vec::new(),
+            record_events: self.record_events,
             render_generation: self.render_generation,
         }
     }
 
-    /// Record a probe event for animated replay
+    /// Enable recording only when events have a consumer. Disabling recording
+    /// releases any previously allocated history without changing hop statistics.
+    pub fn set_event_recording(&mut self, enabled: bool) {
+        self.record_events = enabled;
+        if !enabled {
+            self.events = Vec::new();
+        }
+    }
+
+    /// Record a probe event for animated replay or streaming output.
     pub fn record_event(&mut self, event: ProbeEvent) {
-        self.events.push(event);
+        if self.record_events {
+            self.events.push(event);
+        }
     }
 
     /// Get monotonic offset in milliseconds since session start.
@@ -1680,6 +1701,61 @@ mod duration_serde {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disabled_recording_keeps_history_allocation_constant_during_long_runs() {
+        let mut session = Session::new(
+            Target::new("example.test".into(), "192.0.2.1".parse().unwrap()),
+            Config::default(),
+        );
+        let event = ProbeEvent {
+            offset_ms: 0,
+            ttl: 1,
+            seq: 0,
+            flow_id: 0,
+            outcome: ProbeOutcome::Timeout,
+        };
+        session.record_event(event.clone());
+        assert_eq!(session.events.len(), 1);
+        session.set_event_recording(false);
+        for _ in 0..1_000_000 {
+            let hop = session.hop_mut(1).unwrap();
+            hop.record_sent();
+            hop.record_timeout();
+            session.record_event(event.clone());
+        }
+        assert_eq!(session.events.capacity(), 0);
+        assert_eq!(session.hop(1).unwrap().timeouts, 1_000_000);
+        session.reset_stats();
+        session.record_event(event);
+        assert!(
+            session.events.is_empty(),
+            "reset must preserve the recording policy"
+        );
+    }
+
+    #[test]
+    fn recording_policy_is_runtime_only_and_legacy_sessions_record_by_default() {
+        let mut session = Session::new(
+            Target::new("example.test".into(), "192.0.2.1".parse().unwrap()),
+            Config::default(),
+        );
+        session.set_event_recording(false);
+        assert!(!session.snapshot_for_render().record_events);
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(!json.contains("record_events"));
+        let restored: Session = serde_json::from_str(&json).unwrap();
+        assert!(restored.record_events);
+        session.set_event_recording(true);
+        session.record_event(ProbeEvent {
+            offset_ms: 0,
+            ttl: 1,
+            seq: 0,
+            flow_id: 0,
+            outcome: ProbeOutcome::Timeout,
+        });
+        assert_eq!(session.events.len(), 1);
+    }
 
     #[test]
     fn test_responder_stats_initial_state() {
