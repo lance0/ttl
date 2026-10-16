@@ -31,7 +31,7 @@ impl Widget for HelpView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Calculate centered popup area
         let popup_width = 50.min(area.width.saturating_sub(4));
-        let base_height: u16 = if self.is_replay { 31 } else { 24 };
+        let base_height: u16 = if self.is_replay { 33 } else { 26 };
         let popup_height = base_height.min(area.height.saturating_sub(4));
         let popup_x = (area.width - popup_width) / 2 + area.x;
         let popup_y = (area.height - popup_height) / 2 + area.y;
@@ -118,6 +118,14 @@ impl Widget for HelpView<'_> {
             Line::from(vec![
                 Span::styled("  Esc     ", Style::default().fg(self.theme.shortcut)),
                 Span::raw("Close popup / Deselect"),
+            ]),
+            Line::from(vec![
+                Span::styled("  PgUp/Dn ", Style::default().fg(self.theme.shortcut)),
+                Span::raw("Scroll hop details"),
+            ]),
+            Line::from(vec![
+                Span::styled("  +       ", Style::default().fg(self.theme.shortcut)),
+                Span::raw("Hop has interface/MPLS details"),
             ]),
             Line::from(""),
         ];

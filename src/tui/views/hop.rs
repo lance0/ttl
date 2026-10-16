@@ -4,7 +4,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
-use crate::state::{EcmpKind, Hop};
+use crate::state::{EcmpKind, Hop, ResponderStats};
 use crate::tui::theme::Theme;
 use crate::tui::widgets::sparkline_string;
 
@@ -12,15 +12,36 @@ use crate::tui::widgets::sparkline_string;
 pub struct HopDetailView<'a> {
     hop: &'a Hop,
     theme: &'a Theme,
+    scroll: u16,
 }
 
 impl<'a> HopDetailView<'a> {
     pub fn new(hop: &'a Hop, theme: &'a Theme) -> Self {
-        Self { hop, theme }
+        Self {
+            hop,
+            theme,
+            scroll: 0,
+        }
+    }
+
+    pub fn with_scroll(mut self, scroll: u16) -> Self {
+        self.scroll = scroll;
+        self
     }
 }
 
 impl HopDetailView<'_> {
+    pub fn max_scroll(&self, area: Rect) -> u16 {
+        let width = area.width.saturating_sub(10).min(80).saturating_sub(2);
+        let height = u16::try_from(self.build_lines(width).len()).unwrap_or(u16::MAX);
+        height.saturating_sub(Self::visible_rows(area))
+    }
+
+    /// Detail rows visible at once: popup margin (4), borders (2) and footer (1).
+    pub fn visible_rows(area: Rect) -> u16 {
+        area.height.saturating_sub(7)
+    }
+
     /// Build all content lines for the modal
     fn build_lines(&self, inner_width: u16) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
@@ -196,55 +217,7 @@ impl HopDetailView<'_> {
                 ]));
             }
 
-            // MPLS labels (if present)
-            if let Some(ref labels) = stats.mpls_labels {
-                lines.push(Line::from(""));
-                let label_str = labels
-                    .iter()
-                    .map(|l| format!("{} (TTL {})", l.label, l.ttl))
-                    .collect::<Vec<_>>()
-                    .join(" → ");
-                lines.push(Line::from(vec![
-                    Span::styled("  MPLS: ", Style::default().fg(self.theme.text_dim)),
-                    Span::styled(label_str, Style::default().fg(self.theme.shortcut)),
-                ]));
-            }
-
-            // RFC 5837 Interface Information (if present)
-            if let Some(ifaces) = &stats.interface_info {
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![Span::styled(
-                    "  Interface (RFC 5837):",
-                    Style::default().fg(self.theme.text_dim),
-                )]));
-                for iface in ifaces {
-                    let mut parts = Vec::new();
-                    if let Some(name) = &iface.name {
-                        parts.push(format!("\"{}\"", name));
-                    }
-                    if let Some(ip) = iface.ip_addr {
-                        parts.push(format!("IP {}", ip));
-                    }
-                    if let Some(if_index) = iface.if_index {
-                        parts.push(format!("idx {}", if_index));
-                    }
-                    if let Some(mtu) = iface.mtu {
-                        parts.push(format!("MTU {}", mtu));
-                    }
-                    let detail_str = if parts.is_empty() {
-                        "(no details)".to_string()
-                    } else {
-                        parts.join(", ")
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("    {}: ", iface.role.as_str()),
-                            Style::default().fg(self.theme.text_dim),
-                        ),
-                        Span::styled(detail_str, Style::default().fg(self.theme.shortcut)),
-                    ]));
-                }
-            }
+            append_extensions(&mut lines, stats, self.theme);
 
             // NAT detection info (if present)
             if let Some(ref nat_info) = self.hop.nat_info {
@@ -571,6 +544,7 @@ impl HopDetailView<'_> {
                                 Style::default().fg(self.theme.text_dim),
                             ),
                         ]));
+                        append_extensions(&mut lines, other_stats, self.theme);
                     }
                 }
             }
@@ -578,13 +552,86 @@ impl HopDetailView<'_> {
             lines.push(Line::from("  No responses received at this TTL"));
         }
 
+        wrap_lines(lines, inner_width)
+    }
+}
+
+/// Wrap on grapheme boundaries before measuring height, retaining span styles.
+/// Long interface/hostname values must not hide the MTU at the end of a line.
+fn wrap_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut wrapped = Vec::new();
+    for line in lines {
+        let mut spans = Vec::new();
+        let mut used = 0;
+        for grapheme in line.styled_graphemes(Style::default()) {
+            let span = Span::styled(grapheme.symbol.to_owned(), grapheme.style);
+            let cells = span.width();
+            if used + cells > usize::from(width) && !spans.is_empty() {
+                wrapped.push(Line::from(std::mem::take(&mut spans)));
+                used = 0;
+            }
+            if cells <= usize::from(width) {
+                used += cells;
+                spans.push(span);
+            }
+        }
+        wrapped.push(Line::from(spans));
+    }
+    wrapped
+}
+
+fn append_extensions(lines: &mut Vec<Line<'static>>, stats: &ResponderStats, theme: &Theme) {
+    // MPLS labels (if present)
+    if let Some(ref labels) = stats.mpls_labels {
+        lines.push(Line::from(""));
+        let label_str = labels
+            .iter()
+            .map(|l| format!("{} (TTL {})", l.label, l.ttl))
+            .collect::<Vec<_>>()
+            .join(" → ");
+        lines.push(Line::from(vec![
+            Span::styled("  MPLS: ", Style::default().fg(theme.text_dim)),
+            Span::styled(label_str, Style::default().fg(theme.shortcut)),
+        ]));
+    }
+
+    // RFC 5837 Interface Information (if present)
+    if let Some(ifaces) = &stats.interface_info {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
-            "  [↑/↓] navigate  [1-9] jump  [Esc/q] back",
-            Style::default().fg(self.theme.text_dim),
+            "  Interface (RFC 5837):",
+            Style::default().fg(theme.text_dim),
         )]));
-
-        lines
+        for iface in ifaces {
+            let mut parts = Vec::new();
+            if let Some(name) = &iface.name {
+                parts.push(format!("\"{}\"", name));
+            }
+            if let Some(ip) = iface.ip_addr {
+                parts.push(format!("IP {}", ip));
+            }
+            if let Some(if_index) = iface.if_index {
+                parts.push(format!("idx {}", if_index));
+            }
+            if let Some(mtu) = iface.mtu {
+                parts.push(format!("MTU {}", mtu));
+            }
+            let detail_str = if parts.is_empty() {
+                "(no details)".to_string()
+            } else {
+                parts.join(", ")
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("    {}: ", iface.role.as_str()),
+                    Style::default().fg(theme.text_dim),
+                ),
+                Span::styled(detail_str, Style::default().fg(theme.shortcut)),
+            ]));
+        }
     }
 }
 
@@ -596,11 +643,11 @@ impl Widget for HopDetailView<'_> {
 
         // Build content first to calculate required height
         let lines = self.build_lines(inner_width);
-        let content_height = lines.len() as u16;
+        let content_height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
 
         // Calculate centered popup area with dynamic height
-        // +2 for top/bottom borders
-        let needed_height = content_height + 2;
+        // Borders plus a fixed navigation footer.
+        let needed_height = content_height.saturating_add(3);
         let max_height = area.height.saturating_sub(4);
         let popup_height = needed_height.min(max_height);
         let popup_x = (area.width - popup_width) / 2 + area.x;
@@ -624,7 +671,153 @@ impl Widget for HopDetailView<'_> {
         let inner = block.inner(popup_area);
         block.render(popup_area, buf);
 
-        let paragraph = Paragraph::new(lines);
-        paragraph.render(inner, buf);
+        let content = Rect {
+            height: inner.height.saturating_sub(1),
+            ..inner
+        };
+        let max_scroll = content_height.saturating_sub(content.height);
+        Paragraph::new(lines)
+            .scroll((self.scroll.min(max_scroll), 0))
+            .render(content, buf);
+        if inner.height > 0 {
+            let footer = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
+            Paragraph::new(" ↑/↓ hop  PgUp/PgDn scroll  Esc back")
+                .style(Style::default().fg(self.theme.text_dim))
+                .render(footer, buf);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{IcmpInterfaceInfo, InterfaceRole, MplsLabel};
+    use std::time::Duration;
+
+    fn extension_hop() -> Hop {
+        let mut hop = Hop::new(3);
+        hop.record_sent();
+        hop.record_response_with_extensions(
+            "192.0.2.1".parse().unwrap(),
+            Duration::from_millis(10),
+            None,
+            Some(vec![IcmpInterfaceInfo {
+                role: InterfaceRole::IncomingIp,
+                if_index: Some(1000001),
+                ip_addr: Some("2001:db8:1234:5678:abcd:abcd:abcd:abcd".parse().unwrap()),
+                name: Some("Ethernet123/456@a-router-with-a-long-hostname.example.net".into()),
+                mtu: Some(9000),
+            }]),
+        );
+        hop
+    }
+
+    fn buffer_text(buf: &Buffer) -> String {
+        buf.content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn long_interface_details_wrap_and_keep_mtu_visible() {
+        let hop = extension_hop();
+        let theme = Theme::default();
+        for width in [60, 100, 200] {
+            let area = Rect::new(0, 0, width, 50);
+            let mut buf = Buffer::empty(area);
+            HopDetailView::new(&hop, &theme).render(area, &mut buf);
+            let text = buffer_text(&buf);
+            assert!(text.contains("MTU 9000"), "MTU missing at width {width}");
+        }
+    }
+
+    #[test]
+    fn paging_by_visible_rows_reaches_every_line() {
+        let hop = extension_hop();
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 70, 12);
+        let view = HopDetailView::new(&hop, &theme);
+        let (page, max) = (HopDetailView::visible_rows(area), view.max_scroll(area));
+        assert!(max > page, "content must span several pages");
+        let mut seen = Vec::new();
+        for scroll in (0..=max).step_by(page.into()).chain([max]) {
+            let mut buf = Buffer::empty(area);
+            HopDetailView::new(&hop, &theme)
+                .with_scroll(scroll)
+                .render(area, &mut buf);
+            seen.extend(
+                buf.content
+                    .chunks(70)
+                    .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>()),
+            );
+        }
+        for line in view.build_lines(58) {
+            let line = line.to_string();
+            let line = line.trim();
+            assert!(
+                line.is_empty() || seen.iter().any(|row| row.contains(line)),
+                "{line:?} never shown"
+            );
+        }
+    }
+
+    #[test]
+    fn small_terminal_can_scroll_to_end_without_losing_footer() {
+        let hop = extension_hop();
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 70, 12);
+        let view = HopDetailView::new(&hop, &theme);
+        assert!(view.max_scroll(area) > 0);
+        let mut buf = Buffer::empty(area);
+        view.with_scroll(u16::MAX).render(area, &mut buf);
+        let text = buffer_text(&buf);
+        assert!(text.contains("MTU 9000"));
+        assert!(text.contains("PgUp/PgDn"));
+    }
+
+    #[test]
+    fn secondary_responder_extensions_are_visible() {
+        let mut hop = extension_hop();
+        let primary = "192.0.2.1".parse().unwrap();
+        hop.record_response(primary, Duration::from_millis(10));
+        hop.record_response_with_mpls(
+            "192.0.2.2".parse().unwrap(),
+            Duration::from_millis(20),
+            Some(vec![MplsLabel {
+                label: 416760,
+                exp: 0,
+                bottom: true,
+                ttl: 1,
+            }]),
+        );
+        let theme = Theme::default();
+        let lines = HopDetailView::new(&hop, &theme).build_lines(78);
+        let text = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("192.0.2.2"));
+        assert!(text.contains("416760 (TTL 1)"));
+    }
+
+    #[test]
+    fn wrapping_preserves_unicode_graphemes_and_styles() {
+        let style = Style::default().fg(ratatui::style::Color::Yellow);
+        let value = "界e\u{301}🙂abcdef";
+        let lines = wrap_lines(vec![Line::styled(value, style)], 4);
+        assert!(lines.iter().all(|line| line.width() <= 4));
+        assert_eq!(
+            lines.iter().map(ToString::to_string).collect::<String>(),
+            value
+        );
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| &line.spans)
+                .all(|span| span.style == style)
+        );
+        assert!(wrap_lines(vec![Line::from(value)], 0).is_empty());
     }
 }

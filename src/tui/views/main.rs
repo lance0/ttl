@@ -93,6 +93,7 @@ fn build_hop_indicators(
     has_route_changes: bool,
     has_asymmetry: bool,
     has_ttl_manip: bool,
+    has_extensions: bool,
 ) -> String {
     let show_ecmp_marker = !multi_flow && has_ecmp;
     let has_flap = !multi_flow && has_route_changes && !has_ecmp;
@@ -111,6 +112,10 @@ fn build_hop_indicators(
     }
     if has_ttl {
         ind.push('^');
+    }
+
+    if has_extensions {
+        ind.push('+');
     }
 
     if ind.is_empty() {
@@ -207,7 +212,7 @@ impl<'a> MainView<'a> {
                             .as_ref()
                             .map(|h| h.chars().count())
                             .unwrap_or_else(|| stats.ip.to_string().len())
-                            + 4; // space for " E~^" / " !~^"
+                            + 5; // space for " E~^+" / " !~^+"
                         max_host = max_host.max(host_len);
 
                         // ASN column shows "AS##### name", account for full format
@@ -400,12 +405,17 @@ impl Widget for MainView<'_> {
                     // ! = route flap (single-flow only, suppressed when ECMP is detected)
                     // ~ = asymmetric routing (single-flow only)
                     // ^ = TTL manipulation (all flow modes)
+                    // + = ICMP interface/MPLS details available (Enter)
                     let indicators = build_hop_indicators(
                         multi_flow,
                         hop.has_ecmp(),
                         !hop.route_changes.is_empty(),
                         hop.has_asymmetry(),
                         hop.has_ttl_manip(),
+                        hop.responders.values().any(|stats| {
+                            stats.interface_info.as_ref().is_some_and(|v| !v.is_empty())
+                                || stats.mpls_labels.as_ref().is_some_and(|v| !v.is_empty())
+                        }),
                     );
                     // Use computed host width for truncation
                     let max_len = (col_widths.host as usize).saturating_sub(indicators.len());
@@ -614,11 +624,25 @@ mod tests {
     }
 
     #[test]
+    fn test_extension_indicator_in_all_flow_modes() {
+        for multi_flow in [false, true] {
+            assert_eq!(
+                build_hop_indicators(multi_flow, false, false, false, false, true),
+                " +"
+            );
+        }
+        assert_eq!(
+            build_hop_indicators(false, true, true, true, true, true),
+            " E~^+"
+        );
+    }
+
+    #[test]
     fn test_build_hop_indicators_single_flow_ecmp_suppresses_flap() {
-        let indicators = build_hop_indicators(true, true, true, true, true);
+        let indicators = build_hop_indicators(true, true, true, true, true, false);
         assert_eq!(indicators, " ^", "multi-flow hides E/!/~ markers");
 
-        let indicators = build_hop_indicators(false, true, true, true, true);
+        let indicators = build_hop_indicators(false, true, true, true, true, false);
         assert_eq!(indicators, " E~^", "ECMP suppresses route flap marker");
     }
 }

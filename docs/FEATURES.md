@@ -78,6 +78,14 @@ Classification uses a primary concentration heuristic: if no single responder do
 
 ttl implements Paris-style ECMP detection using source port variation.
 
+## ICMP Extension Details
+
+A `+` beside a hop means interface information (RFC 5837), MPLS labels
+(RFC 4950), or both are available from one of its responders. Press Enter to
+inspect the details, including additional responders at that hop. Long values
+wrap to the popup width. PgUp/PgDn scroll the details; Home/End jump to the
+start/end, while Up/Down continue to select adjacent hops.
+
 ## NAT Detection
 
 ttl automatically detects NAT devices that rewrite source ports:

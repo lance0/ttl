@@ -6,7 +6,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{LineGauge, Paragraph};
 use scopeguard::defer;
@@ -82,6 +82,8 @@ pub struct UiState {
     pub show_help: bool,
     /// Show expanded hop view
     pub show_hop_detail: bool,
+    /// Scroll offset within the expanded hop view.
+    pub hop_detail_scroll: u16,
     /// Show settings modal
     pub show_settings: bool,
     /// Settings modal state
@@ -138,6 +140,7 @@ struct RenderFingerprint {
     paused: bool,
     show_help: bool,
     show_hop_detail: bool,
+    hop_detail_scroll: u16,
     show_settings: bool,
     show_target_list: bool,
     show_target_input: bool,
@@ -178,6 +181,7 @@ fn render_fingerprint(
         paused,
         show_help,
         show_hop_detail,
+        hop_detail_scroll,
         show_settings,
         settings,
         status_message,
@@ -234,6 +238,7 @@ fn render_fingerprint(
         paused: *paused,
         show_help: *show_help,
         show_hop_detail: *show_hop_detail,
+        hop_detail_scroll: *hop_detail_scroll,
         show_settings: *show_settings,
         show_target_list: *show_target_list,
         show_target_input: *show_target_input,
@@ -948,34 +953,61 @@ where
             }
 
             if ui_state.show_hop_detail {
-                // Get hop count for bounds checking
-                let hop_count = {
+                let size = terminal.size()?;
+                let area = Rect::new(0, 0, size.width, size.height);
+                // Page by the visible rows so PgUp/PgDn never skip detail lines.
+                let page = HopDetailView::visible_rows(area).max(1);
+                let (hop_count, max_scroll) = {
                     let sessions_read = sessions.read();
                     let current_target = targets[ui_state.selected_target];
                     sessions_read
                         .get(&current_target)
                         .map(|state| {
                             let session = state.read();
-                            session.hops.iter().filter(|h| h.sent > 0).count()
+                            let hops: Vec<_> = session.hops.iter().filter(|h| h.sent > 0).collect();
+                            let max_scroll = ui_state
+                                .selected
+                                .and_then(|selected| hops.get(selected))
+                                .map(|hop| {
+                                    HopDetailView::new(hop, &Theme::default()).max_scroll(area)
+                                })
+                                .unwrap_or(0);
+                            (hops.len(), max_scroll)
                         })
-                        .unwrap_or(0)
+                        .unwrap_or((0, 0))
                 };
+                ui_state.hop_detail_scroll = ui_state.hop_detail_scroll.min(max_scroll);
 
                 match key.code {
                     KeyCode::Up | KeyCode::Char('k') => {
+                        ui_state.hop_detail_scroll = 0;
                         if let Some(sel) = ui_state.selected {
                             ui_state.selected = Some(sel.saturating_sub(1));
                         }
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
+                        ui_state.hop_detail_scroll = 0;
                         if let Some(sel) = ui_state.selected {
                             ui_state.selected = Some((sel + 1).min(hop_count.saturating_sub(1)));
                         }
                     }
                     KeyCode::Char(c @ '1'..='9') => {
+                        ui_state.hop_detail_scroll = 0;
                         let idx = (c as usize - '1' as usize).min(hop_count.saturating_sub(1));
                         ui_state.selected = Some(idx);
                     }
+                    KeyCode::PageUp => {
+                        ui_state.hop_detail_scroll =
+                            ui_state.hop_detail_scroll.saturating_sub(page);
+                    }
+                    KeyCode::PageDown => {
+                        ui_state.hop_detail_scroll = ui_state
+                            .hop_detail_scroll
+                            .saturating_add(page)
+                            .min(max_scroll);
+                    }
+                    KeyCode::Home => ui_state.hop_detail_scroll = 0,
+                    KeyCode::End => ui_state.hop_detail_scroll = max_scroll,
                     KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
                         ui_state.show_hop_detail = false;
                     }
@@ -1244,6 +1276,7 @@ where
                     }
                 }
                 KeyCode::Enter if ui_state.selected.is_some() => {
+                    ui_state.hop_detail_scroll = 0;
                     ui_state.show_hop_detail = true;
                 }
                 KeyCode::Esc => {
@@ -1611,7 +1644,10 @@ fn draw_ui(
     {
         let hops: Vec<_> = session.hops.iter().filter(|h| h.sent > 0).collect();
         if let Some(hop) = hops.get(selected) {
-            f.render_widget(HopDetailView::new(hop, theme), area);
+            f.render_widget(
+                HopDetailView::new(hop, theme).with_scroll(ui_state.hop_detail_scroll),
+                area,
+            );
         }
     }
 
@@ -1876,6 +1912,17 @@ mod tests {
         assert_eq!(current_gen, current_gen_after);
         assert_eq!(ui_state.target_list_tick, 30);
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn test_fingerprint_updates_when_hop_details_scroll() {
+        let mut state = UiState {
+            show_hop_detail: true,
+            ..UiState::default()
+        };
+        let before = render_fingerprint(&state, 1, Some(0), None);
+        state.hop_detail_scroll = 10;
+        assert_ne!(before, render_fingerprint(&state, 1, Some(0), None));
     }
 
     #[test]
