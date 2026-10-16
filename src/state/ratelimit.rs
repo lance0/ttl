@@ -80,6 +80,12 @@ fn detect_rate_limiting(session: &Session, ttl: u8) -> Option<RateLimitInfo> {
         return None; // Not enough data
     }
 
+    // A hop that never answers is silent (filtered or unreachable), not
+    // rate-limited: rate limiting means *some* replies get through.
+    if hop.received == 0 {
+        return None;
+    }
+
     let hop_loss = hop.loss_pct();
 
     // Skip if no significant loss
@@ -266,6 +272,61 @@ pub async fn run_ratelimit_worker(sessions: SessionMap, cancel: CancellationToke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::config::Config;
+    use crate::state::session::Target;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    /// Session with hop 1 answering every `reply_every`th probe (0 = never)
+    /// and hop 2 answering every probe.
+    fn session_with_hop1(reply_every: usize) -> Session {
+        let target = Target::new("t".into(), IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+        let mut session = Session::new(target, Config::default());
+        for i in 0..30 {
+            let hop = session.hop_mut(1).unwrap();
+            hop.record_sent();
+            if reply_every != 0 && i % reply_every == 0 {
+                hop.record_response(
+                    IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                    Duration::from_millis(1),
+                );
+            } else {
+                hop.record_timeout();
+            }
+            let hop = session.hop_mut(2).unwrap();
+            hop.record_sent();
+            hop.record_response(
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                Duration::from_millis(2),
+            );
+        }
+        session
+    }
+
+    #[test]
+    fn silent_hop_is_not_rate_limited() {
+        let mut session = session_with_hop1(0);
+        analyze_rate_limiting(&mut session);
+        assert!(session.hop(1).unwrap().rate_limit.is_none());
+
+        // Unreachable target: every hop silent, nothing downstream
+        let target = Target::new("t".into(), IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)));
+        let mut session = Session::new(target, Config::default());
+        let hop = session.hop_mut(3).unwrap();
+        for _ in 0..30 {
+            hop.record_sent();
+            hop.record_timeout();
+        }
+        analyze_rate_limiting(&mut session);
+        assert!(session.hop(3).unwrap().rate_limit.is_none());
+    }
+
+    #[test]
+    fn partial_loss_with_clean_downstream_is_rate_limited() {
+        let mut session = session_with_hop1(2);
+        analyze_rate_limiting(&mut session);
+        assert!(session.hop(1).unwrap().rate_limit.is_some());
+    }
 
     #[test]
     fn test_stable_loss_ratio_empty() {
