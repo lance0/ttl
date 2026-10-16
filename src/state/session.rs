@@ -904,22 +904,17 @@ impl PmtudState {
         if self.phase != PmtudPhase::Searching {
             return;
         }
-        if reported_mtu == 0 || reported_mtu >= self.current_size {
-            // A non-decreasing hint cannot explain this packet's failure.
+        if reported_mtu >= self.current_size || reported_mtu < self.min_size {
+            // A non-decreasing hint cannot explain this packet's failure; one
+            // below the floor is invalid (RFC 8201 §4) or contradicts a
+            // confirmed size. Count the drop instead of trusting the value.
             self.record_failure();
             return;
         }
-        self.max_size = self.max_size.min(reported_mtu);
+        self.max_size = reported_mtu;
+        self.current_size = reported_mtu;
         self.successes = 0;
         self.failures = 0;
-        if self.max_size < self.min_size {
-            // Below the protocol floor or inconsistent with earlier success.
-            // Do not invent a working size or probe below the search floor.
-            self.confirmed_size = None;
-            self.finish();
-        } else {
-            self.current_size = self.max_size;
-        }
     }
 
     /// A local EMSGSIZE is definitive for this size, without waiting for retries.

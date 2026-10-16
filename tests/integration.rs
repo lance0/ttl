@@ -549,6 +549,28 @@ fn test_pmtud_multiple_router_limits_require_confirmation() {
 }
 
 #[test]
+fn test_pmtud_hint_below_floor_is_not_trusted() {
+    // RFC 8201 §4: a Packet Too Big below 1280 is discarded, so the search
+    // keeps going and can still confirm the floor.
+    let mut pmtud = PmtudState::new(true, false);
+    pmtud.start_search();
+    pmtud.record_frag_needed(1000);
+    assert_eq!(pmtud.phase, PmtudPhase::Searching);
+    assert_eq!(pmtud.max_size, 1500);
+    for _ in 0..64 {
+        if pmtud.phase == PmtudPhase::Complete {
+            break;
+        }
+        if pmtud.current_size == 1280 {
+            pmtud.record_success();
+        } else {
+            pmtud.record_frag_needed(1000);
+        }
+    }
+    assert_eq!(pmtud.discovered_mtu, Some(1280));
+}
+
+#[test]
 fn test_pmtud_no_replies_never_invents_an_mtu() {
     for ipv6 in [false, true] {
         for local_errors in [false, true] {
