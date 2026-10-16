@@ -130,11 +130,11 @@ pub struct Args {
     pub no_update_check: bool,
 
     /// Output JSON (batch mode, requires -c)
-    #[arg(long = "json")]
+    #[arg(long = "json", conflicts_with_all = ["csv", "report"])]
     pub json: bool,
 
     /// Output CSV (batch mode, requires -c)
-    #[arg(long = "csv")]
+    #[arg(long = "csv", conflicts_with = "report")]
     pub csv: bool,
 
     /// Report mode (batch, requires -c)
@@ -146,7 +146,7 @@ pub struct Args {
     pub replay: Option<String>,
 
     /// Animate replay showing probe-by-probe discovery
-    #[arg(long = "animate", requires = "replay")]
+    #[arg(long = "animate", requires = "replay", conflicts_with_all = ["json", "csv", "report", "no_tui"])]
     pub animate: bool,
 
     /// Replay speed multiplier (1.0 = realtime, 10.0 = 10x faster)
@@ -154,7 +154,7 @@ pub struct Args {
     pub speed: f32,
 
     /// Compare two saved sessions: show added/removed hops, path and latency changes
-    #[arg(long = "diff", num_args = 2, value_names = ["BEFORE", "AFTER"], conflicts_with_all = ["targets", "replay"])]
+    #[arg(long = "diff", num_args = 2, value_names = ["BEFORE", "AFTER"], conflicts_with_all = ["targets", "replay", "csv", "report"])]
     pub diff: Option<Vec<String>>,
 
     /// Stream probe events as line-delimited JSON to stdout (implies --no-tui)
@@ -363,8 +363,8 @@ impl Args {
         }
 
         // Validate replay speed
-        if self.speed < 0.1 || self.speed > 1000.0 {
-            return Err("Replay speed must be between 0.1 and 1000.0".into());
+        if !self.speed.is_finite() || self.speed < 0.1 || self.speed > 1000.0 {
+            return Err("Replay speed must be finite and between 0.1 and 1000.0".into());
         }
 
         // Validate prometheus listen address early (":9090" means all interfaces)
@@ -506,6 +506,73 @@ mod tests {
         };
         overrides(&mut args);
         args
+    }
+
+    #[test]
+    fn test_conflicting_output_modes_are_rejected() {
+        for flags in [
+            ["--json", "--csv"],
+            ["--json", "--report"],
+            ["--csv", "--report"],
+        ] {
+            assert!(
+                Args::try_parse_from(["ttl", "-c", "1", flags[0], flags[1], "192.0.2.1"]).is_err(),
+                "accepted conflicting modes: {flags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_diff_rejects_unsupported_csv_and_report_outputs() {
+        for flag in ["--csv", "--report"] {
+            assert!(
+                Args::try_parse_from(["ttl", "--diff", "before.json", "after.json", flag]).is_err(),
+                "diff silently ignores {flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_animation_requires_interactive_output() {
+        for flag in ["--json", "--csv", "--report", "--no-tui"] {
+            assert!(
+                Args::try_parse_from(["ttl", "--replay", "trace.json", "--animate", flag]).is_err(),
+                "animation silently ignored with {flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_valid_output_and_replay_combinations_remain_available() {
+        for flag in ["--json", "--csv", "--report"] {
+            let mut live = Args::try_parse_from(["ttl", "-c", "1", flag, "192.0.2.1"]).unwrap();
+            assert!(live.validate().is_ok());
+            let mut replay = Args::try_parse_from(["ttl", "--replay", "trace.json", flag]).unwrap();
+            assert!(replay.validate().is_ok());
+        }
+        let mut diff =
+            Args::try_parse_from(["ttl", "--diff", "before.json", "after.json", "--json"]).unwrap();
+        assert!(diff.validate().is_ok());
+        for speed in ["0.1", "10", "1000"] {
+            let mut args = Args::try_parse_from([
+                "ttl",
+                "--replay",
+                "trace.json",
+                "--animate",
+                "--speed",
+                speed,
+            ])
+            .unwrap();
+            assert!(args.validate().is_ok());
+        }
+    }
+
+    #[test]
+    fn test_replay_speed_must_be_finite() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut args = make_args(|a| a.speed = value);
+            assert!(args.validate().is_err(), "accepted invalid speed {value}");
+        }
     }
 
     #[test]

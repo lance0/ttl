@@ -2,6 +2,11 @@
 
 How to use ttl in scripts, CI/CD pipelines, and integrate with other tools.
 
+Choose one batch format (`--json`, `--csv`, or `--report`) per run.
+`--diff` supports its default text output or `--json`. Animated replay requires
+the interactive TUI and a finite speed between 0.1 and 1000; batch formats and
+`--no-tui` cannot be combined with `--animate`.
+
 ## Non-Interactive Output Modes
 
 TTL provides several output formats for scripting:
