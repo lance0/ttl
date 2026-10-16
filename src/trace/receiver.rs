@@ -11,8 +11,8 @@ use crate::probe::{
     recv_icmp_with_ttl,
 };
 use crate::state::{
-    IcmpInterfaceInfo, IcmpResponseType, MplsLabel, PmtudPhase, ProbeEvent, ProbeId, ProbeOutcome,
-    SessionLock,
+    IcmpInterfaceInfo, IcmpResponseType, MplsLabel, PmtudPhase, PmtudState, ProbeEvent, ProbeId,
+    ProbeOutcome, SessionLock,
 };
 use crate::trace::pending::{PendingKey, PendingMap, PendingProbe};
 
@@ -69,6 +69,32 @@ struct BatchedResponse {
     response_ttl: Option<u8>,
     /// Quoted TTL from ICMP error payload (for TTL manipulation detection)
     quoted_ttl: Option<u8>,
+}
+
+fn is_packet_too_big(response_type: IcmpResponseType, ipv6: bool) -> bool {
+    response_type == IcmpResponseType::PacketTooBig
+        || (!ipv6 && response_type == IcmpResponseType::DestUnreachable(4))
+}
+
+fn record_pmtud_response(
+    pmtud: &mut PmtudState,
+    response_type: IcmpResponseType,
+    responder: IpAddr,
+    target: IpAddr,
+    reported_mtu: Option<u16>,
+) {
+    if is_packet_too_big(response_type, target.is_ipv6()) {
+        if let Some(mtu) = reported_mtu {
+            pmtud.record_frag_needed(mtu);
+        } else {
+            pmtud.record_failure();
+        }
+    } else if response_type == IcmpResponseType::EchoReply && responder == target {
+        pmtud.record_success();
+    } else {
+        // An intermediate response or rejection does not prove delivery.
+        pmtud.record_failure();
+    }
 }
 
 /// The receiver listens for ICMP responses and correlates them to probes
@@ -218,11 +244,7 @@ impl Receiver {
                             // For Frag Needed / Packet Too Big: these are always PMTUD responses
                             // (only PMTUD probes set DF), so also route to PMTUD pending entry.
                             let is_pmtud_response = parsed.is_pmtud
-                                || matches!(
-                                    parsed.response_type,
-                                    IcmpResponseType::DestUnreachable(4)
-                                        | IcmpResponseType::PacketTooBig
-                                );
+                                || is_packet_too_big(parsed.response_type, self.config.ipv6);
 
                             // Find matching pending probe (key includes flow_id, target, is_pmtud)
                             let mut found_probe = None;
@@ -430,26 +452,13 @@ impl Receiver {
                             && pmtud.phase == PmtudPhase::Searching
                             && probe_size == pmtud.current_size
                         {
-                            // Check if this is Fragmentation Needed / Packet Too Big
-                            let is_frag_needed = matches!(
+                            record_pmtud_response(
+                                pmtud,
                                 resp.response_type,
-                                IcmpResponseType::DestUnreachable(4)  // IPv4 Frag Needed
-                                    | IcmpResponseType::PacketTooBig // ICMPv6 Packet Too Big
+                                resp.responder,
+                                resp.target,
+                                resp.reported_mtu,
                             );
-
-                            if is_frag_needed {
-                                // ICMP Frag Needed - use reported MTU if available
-                                if let Some(mtu) = resp.reported_mtu {
-                                    pmtud.record_frag_needed(mtu);
-                                } else {
-                                    // No MTU in response - treat as failure
-                                    pmtud.record_failure();
-                                }
-                            } else {
-                                // Any other response = success at this size
-                                // (EchoReply, TimeExceeded, PortUnreachable, etc.)
-                                pmtud.record_success();
-                            }
                         }
                     }
                 }
@@ -594,6 +603,52 @@ mod tests {
             recv_any: false,
         };
         Receiver::new(sessions, pending, cancel, config)
+    }
+
+    #[test]
+    fn pmtud_requires_destination_echo_replies() {
+        for (target, router) in [("192.0.2.1", "192.0.2.2"), ("2001:db8::1", "2001:db8::2")] {
+            let target: IpAddr = target.parse().unwrap();
+            let router: IpAddr = router.parse().unwrap();
+            for (kind, responder) in [
+                (IcmpResponseType::TimeExceeded(0), router),
+                (IcmpResponseType::DestUnreachable(1), router),
+                (IcmpResponseType::EchoReply, router),
+            ] {
+                let mut pmtud = PmtudState::new(target.is_ipv6(), false);
+                pmtud.start_search();
+                record_pmtud_response(&mut pmtud, kind, responder, target, None);
+                record_pmtud_response(&mut pmtud, kind, responder, target, None);
+                assert_eq!(pmtud.confirmed_size, None);
+                assert_eq!(pmtud.discovered_mtu, None);
+                assert!(pmtud.max_size < 1500);
+            }
+            let mut pmtud = PmtudState::new(target.is_ipv6(), false);
+            pmtud.start_search();
+            record_pmtud_response(
+                &mut pmtud,
+                IcmpResponseType::EchoReply,
+                target,
+                target,
+                None,
+            );
+            record_pmtud_response(
+                &mut pmtud,
+                IcmpResponseType::EchoReply,
+                target,
+                target,
+                None,
+            );
+            assert_eq!(pmtud.discovered_mtu, Some(1500));
+        }
+        assert!(!is_packet_too_big(
+            IcmpResponseType::DestUnreachable(4),
+            true
+        ));
+        assert!(is_packet_too_big(
+            IcmpResponseType::DestUnreachable(4),
+            false
+        ));
     }
 
     #[test]

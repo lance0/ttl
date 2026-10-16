@@ -130,13 +130,12 @@ Identifies a probe:
 
 Path MTU Discovery uses binary search:
 
-1. Start with `min=68` (IPv4) or `min=1280` (IPv6), `max=9216`
-2. Send probe with size `mid = (min + max) / 2`, DF flag set
-3. On success: `min = mid + 1`
-4. On Frag Needed: `max = reported_mtu - 1` (or `mid - 1` if no MTU)
-5. On timeout: retry up to 3 times, then `max = mid - 1`
-6. Repeat until `min > max`
-7. Result: last successful size (or min-1 if none succeeded)
+1. Start with `min=68` (IPv4) or `min=1280` (IPv6) and `max=1500` (9216 with `--jumbo`); probe `max` first, DF set, at the destination TTL
+2. Two destination Echo Replies at a size: `min = size`, record it as `confirmed_size`
+3. Two failures (timeout, intermediate reply) or one local EMSGSIZE: `max = size - 1`
+4. Frag Needed / Packet Too Big with an MTU between `min` and the probe size: `max = reported_mtu` and probe it next (a later link may be smaller); other MTU values count as a failure
+5. Next probe is `(min + max) / 2`; once `max - min < 8`, an unconfirmed `min` is probed before finishing
+6. Result: `confirmed_size`, or none (`MTU: unconfirmed`) if no size was ever confirmed
 
 PMTUD probes use a separate `is_pmtud` flag in the pending map key to avoid collisions with normal probes.
 

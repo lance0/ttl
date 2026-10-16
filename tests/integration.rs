@@ -386,7 +386,7 @@ fn test_pmtud_default_max_is_1500() {
 
 #[test]
 fn test_pmtud_frag_needed_below_min() {
-    // Test that record_frag_needed trusts ICMP-reported MTU per RFC 1191
+    // A router hint narrows the range, but still needs destination confirmation.
     let mut pmtud = PmtudState::new(false, false); // IPv4
     pmtud.start_search();
 
@@ -396,8 +396,11 @@ fn test_pmtud_frag_needed_below_min() {
     // max_size should be clamped to 576
     assert_eq!(pmtud.max_size, 576);
 
-    // Per RFC 1191, router-reported MTU is trusted directly - complete immediately
-    assert_eq!(pmtud.phase, PmtudPhase::Complete);
+    assert_eq!(pmtud.phase, PmtudPhase::Searching);
+    assert_eq!(pmtud.discovered_mtu, None);
+    assert_eq!(pmtud.current_size, 576);
+    pmtud.record_success();
+    pmtud.record_success();
     assert_eq!(pmtud.discovered_mtu, Some(576));
 }
 
@@ -413,8 +416,13 @@ fn test_pmtud_frag_needed_at_min() {
     assert_eq!(pmtud.max_size, 1280);
     assert_eq!(pmtud.min_size, 1280);
 
-    // Should immediately converge since min == max
+    // Even the IPv6 floor must be tested rather than assumed reachable.
     assert!(pmtud.is_converged());
+    assert_eq!(pmtud.phase, PmtudPhase::Searching);
+    assert_eq!(pmtud.discovered_mtu, None);
+    pmtud.record_success();
+    pmtud.record_success();
+    assert_eq!(pmtud.discovered_mtu, Some(1280));
 }
 
 #[test]
@@ -499,10 +507,13 @@ fn test_pmtud_frag_needed_jumbo() {
     // Router reports 9000 (jumbo frame MTU) - within our max of 9216
     pmtud.record_frag_needed(9000);
 
-    // 9000 < 9216, so router-reported MTU is trusted per RFC 1191
     assert_eq!(pmtud.max_size, 9000);
+    assert_eq!(pmtud.current_size, 9000);
+    assert_eq!(pmtud.discovered_mtu, None);
+    assert_eq!(pmtud.phase, PmtudPhase::Searching);
+    pmtud.record_success();
+    pmtud.record_success();
     assert_eq!(pmtud.discovered_mtu, Some(9000));
-    assert_eq!(pmtud.phase, PmtudPhase::Complete);
 }
 
 #[test]
@@ -519,6 +530,94 @@ fn test_pmtud_frag_needed_above_max() {
 
     // Search continues normally
     assert_eq!(pmtud.phase, PmtudPhase::Searching);
+}
+
+#[test]
+fn test_pmtud_multiple_router_limits_require_confirmation() {
+    let mut pmtud = PmtudState::new(true, false);
+    pmtud.start_search();
+    pmtud.record_frag_needed(1400);
+    assert_eq!(pmtud.phase, PmtudPhase::Searching);
+    assert_eq!(pmtud.discovered_mtu, None);
+    pmtud.record_frag_needed(1320);
+    assert_eq!(pmtud.current_size, 1320);
+    pmtud.record_success();
+    assert_eq!(pmtud.discovered_mtu, None);
+    pmtud.record_success();
+    assert_eq!(pmtud.phase, PmtudPhase::Complete);
+    assert_eq!(pmtud.discovered_mtu, Some(1320));
+}
+
+#[test]
+fn test_pmtud_hint_below_floor_is_not_trusted() {
+    // RFC 8201 §4: a Packet Too Big below 1280 is discarded, so the search
+    // keeps going and can still confirm the floor.
+    let mut pmtud = PmtudState::new(true, false);
+    pmtud.start_search();
+    pmtud.record_frag_needed(1000);
+    assert_eq!(pmtud.phase, PmtudPhase::Searching);
+    assert_eq!(pmtud.max_size, 1500);
+    for _ in 0..64 {
+        if pmtud.phase == PmtudPhase::Complete {
+            break;
+        }
+        if pmtud.current_size == 1280 {
+            pmtud.record_success();
+        } else {
+            pmtud.record_frag_needed(1000);
+        }
+    }
+    assert_eq!(pmtud.discovered_mtu, Some(1280));
+}
+
+#[test]
+fn test_pmtud_no_replies_never_invents_an_mtu() {
+    for ipv6 in [false, true] {
+        for local_errors in [false, true] {
+            let mut pmtud = PmtudState::new(ipv6, false);
+            pmtud.start_search();
+            for _ in 0..64 {
+                if pmtud.phase == PmtudPhase::Complete {
+                    break;
+                }
+                assert!(pmtud.current_size >= if ipv6 { 1280 } else { 68 });
+                if local_errors {
+                    pmtud.record_local_size_error();
+                } else {
+                    pmtud.record_failure();
+                }
+            }
+            assert_eq!(pmtud.phase, PmtudPhase::Complete);
+            assert_eq!(pmtud.discovered_mtu, None);
+            assert_eq!(pmtud.confirmed_size, None);
+        }
+    }
+}
+
+#[test]
+fn test_pmtud_confirmed_floor_and_blackholed_larger_probes() {
+    let mut pmtud = PmtudState::new(true, false);
+    pmtud.start_search();
+    for _ in 0..64 {
+        if pmtud.phase == PmtudPhase::Complete {
+            break;
+        }
+        if pmtud.current_size == 1280 {
+            pmtud.record_success();
+        } else {
+            pmtud.record_failure();
+        }
+    }
+    assert_eq!(pmtud.phase, PmtudPhase::Complete);
+    assert_eq!(pmtud.discovered_mtu, Some(1280));
+}
+
+#[test]
+fn test_pmtud_old_json_without_confirmation_field_loads() {
+    let mut json = serde_json::to_value(PmtudState::new(true, false)).unwrap();
+    json.as_object_mut().unwrap().remove("confirmed_size");
+    let restored: PmtudState = serde_json::from_value(json).unwrap();
+    assert_eq!(restored.confirmed_size, None);
 }
 
 #[test]
@@ -794,11 +893,13 @@ fn test_session_json_file_roundtrip() {
     assert_eq!(loaded.hop(2).unwrap().timeouts, 1);
     assert_eq!(loaded.hop(3).unwrap().primary, Some(target));
 
-    // Verify PMTUD state - with RFC 1191 behavior, record_frag_needed completes immediately
+    // An unconfirmed MTU hint remains an in-progress search after loading.
     assert!(loaded.pmtud.is_some());
     let pmtud = loaded.pmtud.as_ref().unwrap();
-    assert_eq!(pmtud.phase, PmtudPhase::Complete);
-    assert_eq!(pmtud.discovered_mtu, Some(1400));
+    assert_eq!(pmtud.phase, PmtudPhase::Searching);
+    assert_eq!(pmtud.discovered_mtu, None);
+    assert_eq!(pmtud.confirmed_size, None);
+    assert_eq!(pmtud.current_size, 1400);
     assert!(pmtud.max_size <= 1400);
 
     // Cleanup

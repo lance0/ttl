@@ -808,7 +808,7 @@ pub enum PmtudPhase {
 /// RFC 1191 (IPv4), RFC 8201 (IPv6).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PmtudState {
-    /// Lower bound - known to work (responses received at this size)
+    /// Search floor; only confirmed_size records positive delivery evidence.
     pub min_size: u16,
     /// Upper bound - known to fail or untested
     pub max_size: u16,
@@ -818,7 +818,10 @@ pub struct PmtudState {
     pub successes: u8,
     /// Consecutive failures at current_size (need 2 to confirm)
     pub failures: u8,
-    /// Final discovered MTU (set when phase == Complete)
+    /// Largest size confirmed by two destination Echo Replies during this search.
+    #[serde(default)]
+    pub confirmed_size: Option<u16>,
+    /// Confirmed result when complete; None if no size could be confirmed.
     pub discovered_mtu: Option<u16>,
     /// Current phase of PMTUD
     pub phase: PmtudPhase,
@@ -839,6 +842,7 @@ impl PmtudState {
             current_size: max, // Start high, binary search down
             successes: 0,
             failures: 0,
+            confirmed_size: None,
             discovered_mtu: None,
             phase: PmtudPhase::WaitingForDestination,
         }
@@ -856,6 +860,9 @@ impl PmtudState {
 
     /// Record a successful probe at the current size
     pub fn record_success(&mut self) {
+        if self.phase != PmtudPhase::Searching {
+            return;
+        }
         if self.failures > 0 {
             // Direction change (was failing, now succeeding) - restart count
             self.failures = 0;
@@ -865,6 +872,7 @@ impl PmtudState {
             if self.successes >= 2 {
                 // Confirmed working at this size - raise lower bound
                 self.min_size = self.current_size;
+                self.confirmed_size = Some(self.current_size);
                 self.successes = 0;
                 self.failures = 0;
                 self.advance();
@@ -874,6 +882,9 @@ impl PmtudState {
 
     /// Record a failed probe at the current size (timeout or Frag Needed without MTU)
     pub fn record_failure(&mut self) {
+        if self.phase != PmtudPhase::Searching {
+            return;
+        }
         if self.successes > 0 {
             // Direction change (was succeeding, now failing) - restart count
             self.successes = 0;
@@ -882,45 +893,62 @@ impl PmtudState {
             self.failures += 1;
             if self.failures >= 2 {
                 // Confirmed failing at this size - lower upper bound
-                self.max_size = self.current_size.saturating_sub(1);
-                self.successes = 0;
-                self.failures = 0;
-                self.advance();
+                self.record_local_size_error();
             }
         }
     }
 
-    /// Record ICMP Fragmentation Needed with reported MTU
-    /// Per RFC 1191, the router explicitly tells us the path MTU
+    /// Use a router MTU as an upper bound, then probe that size end to end.
+    /// A later router may have a smaller limit (RFC 8201 §3).
     pub fn record_frag_needed(&mut self, reported_mtu: u16) {
-        if reported_mtu < self.max_size {
-            // Router is telling us a lower MTU than we knew - trust it directly
-            // This is the path MTU, complete immediately
-            self.discovered_mtu = Some(reported_mtu);
-            self.phase = PmtudPhase::Complete;
-            self.max_size = reported_mtu;
-            self.min_size = self.min_size.min(reported_mtu);
-        } else {
-            // Reported MTU >= our current max (e.g., 9000 jumbo on a 1500 link)
-            // Can't trust it, continue binary search with current bounds
-            self.max_size = self.max_size.min(reported_mtu);
-            self.successes = 0;
-            self.failures = 0;
-            self.advance();
+        if self.phase != PmtudPhase::Searching {
+            return;
         }
+        if reported_mtu >= self.current_size || reported_mtu < self.min_size {
+            // A non-decreasing hint cannot explain this packet's failure; one
+            // below the floor is invalid (RFC 8201 §4) or contradicts a
+            // confirmed size. Count the drop instead of trusting the value.
+            self.record_failure();
+            return;
+        }
+        self.max_size = reported_mtu;
+        self.current_size = reported_mtu;
+        self.successes = 0;
+        self.failures = 0;
     }
 
-    /// Advance to next probe size or complete if converged
+    /// A local EMSGSIZE is definitive for this size, without waiting for retries.
+    pub fn record_local_size_error(&mut self) {
+        if self.phase != PmtudPhase::Searching {
+            return;
+        }
+        self.max_size = self.max_size.min(self.current_size.saturating_sub(1));
+        self.successes = 0;
+        self.failures = 0;
+        self.advance();
+    }
+
+    fn finish(&mut self) {
+        self.discovered_mtu = self.confirmed_size.filter(|size| *size <= self.max_size);
+        self.phase = PmtudPhase::Complete;
+    }
+
+    /// Advance the search, explicitly testing an unconfirmed protocol floor.
     fn advance(&mut self) {
-        if self.is_converged() {
-            self.discovered_mtu = Some(self.min_size);
-            self.phase = PmtudPhase::Complete;
+        if self.max_size < self.min_size {
+            self.finish();
+        } else if self.is_converged() {
+            if self.confirmed_size == Some(self.min_size) {
+                self.finish();
+            } else {
+                self.current_size = self.min_size;
+            }
         } else {
             self.current_size = self.next_probe_size();
         }
     }
 
-    /// Start the searching phase (called when destination is found)
+    /// Begin probing after the trace locates the destination.
     pub fn start_search(&mut self) {
         self.phase = PmtudPhase::Searching;
         self.current_size = self.max_size; // Start at max

@@ -1281,17 +1281,10 @@ impl ProbeEngine {
                 {
                     // Clamp PMTUD max to current size - 1
                     let mut state = self.state.write();
-                    if let Some(ref mut pmtud) = state.pmtud {
-                        pmtud.max_size = packet_size.saturating_sub(1);
-                        pmtud.successes = 0;
-                        pmtud.failures = 0;
-                        // Recalculate current size
-                        if pmtud.is_converged() {
-                            pmtud.discovered_mtu = Some(pmtud.min_size);
-                            pmtud.phase = PmtudPhase::Complete;
-                        } else {
-                            pmtud.current_size = pmtud.next_probe_size();
-                        }
+                    if let Some(ref mut pmtud) = state.pmtud
+                        && pmtud.current_size == packet_size
+                    {
+                        pmtud.record_local_size_error();
                     }
                     return false;
                 }
@@ -1370,16 +1363,10 @@ impl ProbeEngine {
                     && io_err.raw_os_error() == Some(libc::EMSGSIZE)
                 {
                     let mut state = self.state.write();
-                    if let Some(ref mut pmtud) = state.pmtud {
-                        pmtud.max_size = packet_size.saturating_sub(1);
-                        pmtud.successes = 0;
-                        pmtud.failures = 0;
-                        if pmtud.is_converged() {
-                            pmtud.discovered_mtu = Some(pmtud.min_size);
-                            pmtud.phase = PmtudPhase::Complete;
-                        } else {
-                            pmtud.current_size = pmtud.next_probe_size();
-                        }
+                    if let Some(ref mut pmtud) = state.pmtud
+                        && pmtud.current_size == packet_size
+                    {
+                        pmtud.record_local_size_error();
                     }
                     return false;
                 }
@@ -1439,13 +1426,7 @@ impl ProbeEngine {
                     let flow_id = 0u8; // ICMP uses single flow
                     let probe_opt = {
                         let mut pending = self.pending.write();
-                        // Try normal probe first
-                        pending
-                            .remove(&(parsed.probe_id, flow_id, self.target, false))
-                            .or_else(|| {
-                                // Try PMTUD probe
-                                pending.remove(&(parsed.probe_id, flow_id, self.target, true))
-                            })
+                        pending.remove(&(parsed.probe_id, flow_id, self.target, parsed.is_pmtud))
                     };
 
                     if let Some(probe) = probe_opt {
@@ -1476,7 +1457,8 @@ impl ProbeEngine {
                         }
 
                         // Handle PMTUD probe success
-                        if let Some(probe_size) = probe.packet_size
+                        if parsed.responder == self.target
+                            && let Some(probe_size) = probe.packet_size
                             && let Some(ref mut pmtud) = state.pmtud
                             && pmtud.phase == PmtudPhase::Searching
                             && probe_size == pmtud.current_size

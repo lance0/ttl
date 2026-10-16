@@ -294,7 +294,7 @@ impl Widget for MainView<'_> {
                 PmtudPhase::Complete => p
                     .discovered_mtu
                     .map(|mtu| format!(" [MTU: {}]", mtu))
-                    .unwrap_or_default(),
+                    .unwrap_or_else(|| " [MTU: unconfirmed]".to_string()),
             })
             .unwrap_or_default();
 
