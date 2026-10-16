@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-10-16
+
 ### Added
 - **Native Windows build** (#141): the crate now compiles and its test suite runs on Windows, checked by a new `build-windows` CI job. Live tracing still needs WSL2: on native Windows `ttl` exits with a pointer to WSL2 instead of probing, while `--replay` and `--diff` work. No pre-built Windows binaries yet. Contributed by @athallajovian9-cyber.
 - **MPLS and interface details in text reports** (#146): `--report` (including `--replay <file> --report`) now prints indented lines under each hop with RFC 5837 interface data (role, name, address, ifIndex, MTU) and the MPLS label stack (label, traffic class, bottom-of-stack flag, TTL), tagged with the responding IP. Responders are sorted by address so ECMP output is deterministic, and interface names are sanitized before printing. Hops without extensions are unchanged.

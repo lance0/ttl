@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-Current release: **v0.23.0**. Changes since then are listed under [Unreleased](CHANGELOG.md#unreleased) in the changelog.
+Current release: **v0.24.0**. Changes since then are listed under [Unreleased](CHANGELOG.md#unreleased) in the changelog.
 
 ## Market Context
 
@@ -120,6 +120,18 @@ Current release: **v0.23.0**. Changes since then are listed under [Unreleased](C
 - [x] RFC 5837 interface and next-hop identification (#134, #137): Interface Information Objects in ICMP Time Exceeded / Destination Unreachable messages — ifIndex, IP, interface name, MTU for the incoming/outgoing/sub-IP/next-hop roles — parsed alongside RFC 4950 MPLS labels, shown in the hop detail view and JSON export. Validated against Arista EOS captures. Fixed the ICMPv6 RFC 4884 length field, which had blocked all ICMPv6 extensions.
 - [x] `scripts/fakertr`: a containerised fake RFC 5837 router for end-to-end smoke tests of the ICMP extension path with real packets
 - [x] Security: rustls 0.23.45 (RUSTSEC-2026-0285), maxminddb 0.31 (MMDB decode DoS hardening)
+
+---
+
+## Completed (v0.24.0)
+
+- [x] Native Windows build (#141): the crate compiles and its tests run on Windows in CI; live tracing points to WSL2, `--replay`/`--diff` work natively
+- [x] One visual language across the TUI (#164): right-aligned stats, badge title flags, one popup and hint style, reworked hop detail, help legend, default theme readable on light terminals, ≥4.5:1 contrast enforced for every theme
+- [x] Correctness: PMTUD reports only destination-confirmed sizes (#159); random per-process ICMP identifier so concurrent instances never cross-talk (#163); enrichment no longer starves later hops (#156); ICMP extension checksums and padding (#144, #158); ICMPv6 Parameter Problem correlation (#160)
+- [x] Robustness: atomic saves (#157), bounded headless memory (#155), fragment-safe metrics endpoint (#150), conflicting output modes rejected (#148)
+- [x] MPLS/interface details in text reports (#146); `--replay-size-limit` for large trusted recordings (#157)
+- [x] Docs reorganized around a short README front door, `docs/INSTALL.md` and a docs index (#162); demo re-recorded to show only the TUI (#165)
+- [x] Security: rustls 0.23.46 (RUSTSEC-2026-0346..0349), quinn-proto 0.11.19 (RUSTSEC-2026-0338..0342)
 
 ---
 
