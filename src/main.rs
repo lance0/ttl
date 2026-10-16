@@ -508,7 +508,9 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
                 // Create fresh session with same config but no data
                 let events = session.events.clone();
                 let fresh_session = Session::new(session.target.clone(), session.config.clone());
-                let replay = ReplayState::new(events, args.speed);
+                let mut replay = ReplayState::new(events, args.speed);
+                // Events carry no enrichment; replay copies it from the loaded session
+                replay.source = Some(session);
                 (fresh_session, Some(replay))
             }
         } else {

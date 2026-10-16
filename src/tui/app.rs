@@ -46,6 +46,9 @@ pub struct ReplayState {
     pub finished: bool,
     /// Adjusted elapsed ms at time of pause (for accurate resume)
     pub paused_at_elapsed_ms: u64,
+    /// The loaded session, source of the per-responder enrichment (hostname,
+    /// ASN, geo, IX, ICMP extensions) that events don't carry
+    pub source: Option<Session>,
 }
 
 impl ReplayState {
@@ -60,6 +63,18 @@ impl ReplayState {
             paused: false,
             finished: false,
             paused_at_elapsed_ms: 0,
+            source: None,
+        }
+    }
+
+    /// Apply `events[range]` to `session`, then fill in enrichment for the
+    /// responders they introduced from the loaded session.
+    fn apply_events(&self, session: &mut Session, range: std::ops::Range<usize>) {
+        for event in &self.events[range] {
+            session.apply_replay_event(event);
+        }
+        if let Some(source) = &self.source {
+            session.copy_enrichment_from(source);
         }
     }
 }
@@ -231,6 +246,7 @@ fn render_fingerprint(
             paused: replay_paused,
             finished,
             paused_at_elapsed_ms: _,
+            source: _, // fixed after load
         } = r;
         (
             *replay_paused,
@@ -612,9 +628,7 @@ fn seek_replay_to(
             let target = session.target.clone();
             let config = session.config.clone();
             *session = Session::new(target, config);
-            for event in &replay.events[..target_index] {
-                session.apply_replay_event(event);
-            }
+            replay.apply_events(&mut session, 0..target_index);
         }
     } else {
         // Forward seek: apply events incrementally
@@ -622,9 +636,7 @@ fn seek_replay_to(
         let sessions_read = sessions.read();
         if let Some(session_lock) = sessions_read.get(&target_ip) {
             let mut session = session_lock.write();
-            for event in &replay.events[current_index..target_index] {
-                session.apply_replay_event(event);
-            }
+            replay.apply_events(&mut session, current_index..target_index);
         }
     }
 
@@ -660,9 +672,7 @@ fn seek_replay_to_end(ui_state: &mut UiState, sessions: &SessionMap, target_ip: 
         let sessions_read = sessions.read();
         if let Some(session_lock) = sessions_read.get(&target_ip) {
             let mut session = session_lock.write();
-            for event in &replay.events[current_index..target_index] {
-                session.apply_replay_event(event);
-            }
+            replay.apply_events(&mut session, current_index..target_index);
         }
     }
 
@@ -815,9 +825,7 @@ where
                     let sessions_read = sessions.read();
                     if let Some(session_lock) = sessions_read.get(&target_ip) {
                         let mut session = session_lock.write();
-                        for event in &replay.events[start..end] {
-                            session.apply_replay_event(event);
-                        }
+                        replay.apply_events(&mut session, start..end);
                     }
                     replay.current_index = end;
                 }
@@ -1985,6 +1993,7 @@ mod tests {
                 paused: false,
                 finished: false,
                 paused_at_elapsed_ms: 0,
+                source: None,
             }),
             ..UiState::default()
         };
@@ -2003,6 +2012,54 @@ mod tests {
     }
 
     #[test]
+    fn animated_replay_carries_enrichment_from_loaded_session() {
+        use crate::state::session::AsnInfo;
+        let target = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+        let router = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let fresh = || Session::new(Target::new("t".to_string(), target), Config::default());
+
+        // Loaded session: hop 1 responder enriched by the original run
+        let mut loaded = fresh();
+        let hop = loaded.hop_mut(1).unwrap();
+        hop.record_response(router, Duration::from_millis(1));
+        let stats = hop.responders.get_mut(&router).unwrap();
+        stats.hostname = Some("gw.example".into());
+        stats.asn = Some(AsnInfo {
+            number: 64500,
+            name: "EXAMPLE".into(),
+            prefix: Some("10.0.0.0/8".into()),
+        });
+
+        let sessions = make_single_session_map(target, fresh());
+        let mut replay = ReplayState::new(
+            vec![ProbeEvent {
+                offset_ms: 0,
+                ttl: 1,
+                seq: 0,
+                flow_id: 0,
+                outcome: ProbeOutcome::Reply {
+                    addr: router,
+                    rtt_us: 1000,
+                },
+            }],
+            1.0,
+        );
+        replay.source = Some(loaded);
+        let mut ui_state = UiState {
+            replay_state: Some(replay),
+            ..UiState::default()
+        };
+
+        seek_replay_to_end(&mut ui_state, &sessions, target);
+
+        let session_lock = sessions.read().get(&target).cloned().unwrap();
+        let session = session_lock.read();
+        let stats = &session.hop(1).unwrap().responders[&router];
+        assert_eq!(stats.hostname.as_deref(), Some("gw.example"));
+        assert_eq!(stats.asn.as_ref().map(|a| a.number), Some(64500));
+    }
+
+    #[test]
     fn test_seek_replay_to_same_position_is_noop_for_session_state() {
         let target = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
         let session = Session::new(Target::new("t".to_string(), target), Config::default());
@@ -2018,6 +2075,7 @@ mod tests {
                 paused: false,
                 finished: false,
                 paused_at_elapsed_ms: 0,
+                source: None,
             }),
             ..UiState::default()
         };

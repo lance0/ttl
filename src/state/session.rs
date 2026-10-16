@@ -1594,6 +1594,37 @@ impl Session {
         }
     }
 
+    /// Fill in missing per-responder enrichment (hostname, ASN, geo, IX, ICMP
+    /// extensions) from the same hop/responder in `src`. Used by animated
+    /// replay, whose events don't carry enrichment.
+    pub fn copy_enrichment_from(&mut self, src: &Session) {
+        for (hop, src_hop) in self.hops.iter_mut().zip(&src.hops) {
+            for (ip, stats) in &mut hop.responders {
+                let Some(s) = src_hop.responders.get(ip) else {
+                    continue;
+                };
+                if stats.hostname.is_none() {
+                    stats.hostname.clone_from(&s.hostname);
+                }
+                if stats.asn.is_none() {
+                    stats.asn.clone_from(&s.asn);
+                }
+                if stats.geo.is_none() {
+                    stats.geo.clone_from(&s.geo);
+                }
+                if stats.ix.is_none() {
+                    stats.ix.clone_from(&s.ix);
+                }
+                if stats.mpls_labels.is_none() {
+                    stats.mpls_labels.clone_from(&s.mpls_labels);
+                }
+                if stats.interface_info.is_none() {
+                    stats.interface_info.clone_from(&s.interface_info);
+                }
+            }
+        }
+    }
+
     /// Get discovered hops (those that have received at least one response)
     #[allow(dead_code)]
     pub fn discovered_hops(&self) -> impl Iterator<Item = &Hop> {
