@@ -17,7 +17,7 @@ EXAMPLES:
         ttl -p tcp --port 443 host       # TCP to HTTPS
 
     ECMP path discovery:
-        ttl --flows 4 host               # Discover load-balanced paths
+        ttl -p udp --flows 4 host        # Discover load-balanced paths
 
     Path MTU discovery:
         ttl --pmtud 8.8.8.8              # Find max packet size
@@ -401,9 +401,11 @@ impl Args {
             // Reject early rather than failing on every probe send at runtime.
             #[cfg(any(target_os = "freebsd", target_os = "netbsd"))]
             {
-                return Err("Interface binding (-i) is not supported on this platform. \
+                return Err(
+                    "Interface binding (--interface) is not supported on this platform. \
                      Use --source-ip or run on Linux/macOS for interface binding."
-                    .to_string());
+                        .to_string(),
+                );
             }
             #[cfg(not(any(target_os = "freebsd", target_os = "netbsd")))]
             {
