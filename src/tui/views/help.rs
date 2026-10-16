@@ -2,7 +2,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 
 use crate::tui::theme::Theme;
 use crate::update::InstallMethod;
@@ -152,9 +152,13 @@ impl<'a> HelpView<'a> {
         lines
     }
 
+    fn popup_width(area: Rect) -> u16 {
+        58.min(area.width.saturating_sub(4))
+    }
+
     /// Content lines wrapped to the popup width for `area`.
     pub fn wrapped_lines(&self, area: Rect) -> Vec<Line<'static>> {
-        let width = 50.min(area.width.saturating_sub(4)).saturating_sub(2);
+        let width = Self::popup_width(area).saturating_sub(super::POPUP_COLS);
         super::hop::wrap_lines(self.lines(), width)
     }
 
@@ -165,37 +169,27 @@ impl<'a> HelpView<'a> {
             .min(usize::from(u16::MAX)) as u16
     }
 
-    /// Help rows visible at once: popup margin (4), borders (2) and footer (1).
+    /// Help rows visible at once: popup margin (4) and the popup frame.
     pub fn visible_rows(area: Rect) -> u16 {
-        area.height.saturating_sub(7)
+        area.height.saturating_sub(4 + super::POPUP_ROWS)
     }
 }
 
 impl Widget for HelpView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Calculate centered popup area
-        let popup_width = 50.min(area.width.saturating_sub(4));
         let lines = self.wrapped_lines(area);
-        let popup_height = (lines.len() + 3).min(usize::from(area.height.saturating_sub(4))) as u16;
-        let popup_x = (area.width - popup_width) / 2 + area.x;
-        let popup_y = (area.height - popup_height) / 2 + area.y;
-        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
-
-        // Clear the popup area
-        Clear.render(popup_area, buf);
-
-        let block = Block::default()
-            .title(format!(" Help — ttl {} ", env!("CARGO_PKG_VERSION")))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border));
-
-        let inner = block.inner(popup_area);
-        block.render(popup_area, buf);
-
-        let body = Rect {
-            height: inner.height.saturating_sub(1),
-            ..inner
-        };
+        let height = u16::try_from(lines.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(super::POPUP_ROWS)
+            .min(area.height.saturating_sub(4));
+        let body = super::popup(
+            area,
+            buf,
+            (Self::popup_width(area), height),
+            &format!("Help · ttl {}", env!("CARGO_PKG_VERSION")),
+            &[("PgUp/PgDn", "scroll"), ("Esc", "close")],
+            self.theme,
+        );
         let max_scroll = lines
             .len()
             .saturating_sub(usize::from(body.height))
@@ -203,11 +197,5 @@ impl Widget for HelpView<'_> {
         Paragraph::new(lines)
             .scroll((self.scroll.min(max_scroll), 0))
             .render(body, buf);
-        if inner.height > 0 {
-            let footer = super::fit_text("PgUp/PgDn scroll · Esc/other key close", inner.width);
-            Paragraph::new(footer)
-                .style(Style::default().fg(self.theme.text_dim))
-                .render(Rect::new(inner.x, inner.bottom() - 1, inner.width, 1), buf);
-        }
     }
 }

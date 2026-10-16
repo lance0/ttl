@@ -2,7 +2,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 
 use crate::state::{EcmpKind, Hop, ResponderStats};
 use crate::tui::theme::Theme;
@@ -31,15 +31,19 @@ impl<'a> HopDetailView<'a> {
 }
 
 impl HopDetailView<'_> {
+    fn popup_width(area: Rect) -> u16 {
+        area.width.saturating_sub(10).min(80)
+    }
+
     pub fn max_scroll(&self, area: Rect) -> u16 {
-        let width = area.width.saturating_sub(10).min(80).saturating_sub(2);
+        let width = Self::popup_width(area).saturating_sub(super::POPUP_COLS);
         let height = u16::try_from(self.build_lines(width).len()).unwrap_or(u16::MAX);
         height.saturating_sub(Self::visible_rows(area))
     }
 
-    /// Detail rows visible at once: popup margin (4), borders (2) and footer (1).
+    /// Detail rows visible at once: popup margin (4) and the popup frame.
     pub fn visible_rows(area: Rect) -> u16 {
-        area.height.saturating_sub(7)
+        area.height.saturating_sub(4 + super::POPUP_ROWS)
     }
 
     /// Build all content lines for the modal
@@ -556,29 +560,56 @@ impl HopDetailView<'_> {
     }
 }
 
-/// Wrap on grapheme boundaries before measuring height, retaining span styles.
-/// Long interface/hostname values must not hide the MTU at the end of a line.
+/// Wrap before measuring height, retaining span styles. Lines break at the
+/// last space that fits and continue under the line's own leading indent
+/// (a hanging indent); a word longer than the width breaks between
+/// graphemes. Long interface/hostname values must not hide the MTU at the
+/// end of a line.
 pub(crate) fn wrap_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    let width = usize::from(width);
     if width == 0 {
         return Vec::new();
     }
+    let is_space = |span: &Span| span.content == " ";
     let mut wrapped = Vec::new();
     for line in lines {
-        let mut spans = Vec::new();
+        let graphemes: Vec<Span<'static>> = line
+            .styled_graphemes(Style::default())
+            .map(|g| Span::styled(g.symbol.to_owned(), g.style))
+            .filter(|span| span.width() <= width)
+            .collect();
+        let indent = graphemes.iter().take_while(|s| is_space(s)).count();
+        // An indent that leaves under half the width is not worth keeping.
+        let indent = if indent * 2 < width { indent } else { 0 };
+        let mut row: Vec<Span<'static>> = Vec::new();
         let mut used = 0;
-        for grapheme in line.styled_graphemes(Style::default()) {
-            let span = Span::styled(grapheme.symbol.to_owned(), grapheme.style);
+        for span in graphemes {
             let cells = span.width();
-            if used + cells > usize::from(width) && !spans.is_empty() {
-                wrapped.push(Line::from(std::mem::take(&mut spans)));
-                used = 0;
+            if used + cells > width && row.iter().any(|s| !is_space(s)) {
+                // Break after the last space past the indent, else hard-break.
+                let split = row
+                    .iter()
+                    .rposition(is_space)
+                    .filter(|&i| i >= indent && row[..i].iter().skip(indent).any(|s| !is_space(s)))
+                    .unwrap_or(row.len());
+                let mut rest = row.split_off(split);
+                while row.last().is_some_and(is_space) {
+                    row.pop();
+                }
+                let start = rest.iter().take_while(|s| is_space(s)).count();
+                rest.drain(..start);
+                wrapped.push(Line::from(std::mem::take(&mut row)));
+                row = vec![Span::raw(" "); indent];
+                row.extend(rest);
+                used = row.iter().map(Span::width).sum();
+                if is_space(&span) && row.len() == indent {
+                    continue; // the break consumed this space
+                }
             }
-            if cells <= usize::from(width) {
-                used += cells;
-                spans.push(span);
-            }
+            used += cells;
+            row.push(span);
         }
-        wrapped.push(Line::from(spans));
+        wrapped.push(Line::from(row));
     }
     wrapped
 }
@@ -637,54 +668,31 @@ fn append_extensions(lines: &mut Vec<Line<'static>>, stats: &ResponderStats, the
 
 impl Widget for HopDetailView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Calculate popup width first (needed for sparkline sizing)
-        let popup_width = area.width.saturating_sub(10).min(80);
-        let inner_width = popup_width.saturating_sub(2); // -2 for left/right borders
-
-        // Build content first to calculate required height
-        let lines = self.build_lines(inner_width);
+        let popup_width = Self::popup_width(area);
+        // Build content first: the sparkline and wrapping need the width,
+        // and the popup height follows the content.
+        let lines = self.build_lines(popup_width.saturating_sub(super::POPUP_COLS));
         let content_height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-
-        // Calculate centered popup area with dynamic height
-        // Borders plus a fixed navigation footer.
-        let needed_height = content_height.saturating_add(3);
-        let max_height = area.height.saturating_sub(4);
-        let popup_height = needed_height.min(max_height);
-        let popup_x = (area.width - popup_width) / 2 + area.x;
-        let popup_y = (area.height - popup_height) / 2 + area.y;
-        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
-
-        // Clear the popup area
-        Clear.render(popup_area, buf);
+        let popup_height = content_height
+            .saturating_add(super::POPUP_ROWS)
+            .min(area.height.saturating_sub(4));
 
         let stats = self.hop.primary_stats();
         let ip = stats
             .map(|s| s.ip.to_string())
             .unwrap_or_else(|| "* * *".to_string());
-        let title = format!(" Hop {}: {} ", self.hop.ttl, ip);
-
-        let block = Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border));
-
-        let inner = block.inner(popup_area);
-        block.render(popup_area, buf);
-
-        let content = Rect {
-            height: inner.height.saturating_sub(1),
-            ..inner
-        };
+        let content = super::popup(
+            area,
+            buf,
+            (popup_width, popup_height),
+            &format!("Hop {}: {}", self.hop.ttl, ip),
+            &[("↑/↓", "hop"), ("PgUp/PgDn", "scroll"), ("Esc", "back")],
+            self.theme,
+        );
         let max_scroll = content_height.saturating_sub(content.height);
         Paragraph::new(lines)
             .scroll((self.scroll.min(max_scroll), 0))
             .render(content, buf);
-        if inner.height > 0 {
-            let footer = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
-            Paragraph::new(" ↑/↓ hop  PgUp/PgDn scroll  Esc back")
-                .style(Style::default().fg(self.theme.text_dim))
-                .render(footer, buf);
-        }
     }
 }
 
@@ -752,7 +760,7 @@ mod tests {
                     .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>()),
             );
         }
-        for line in view.build_lines(58) {
+        for line in view.build_lines(70 - 10 - super::super::POPUP_COLS) {
             let line = line.to_string();
             let line = line.trim();
             assert!(
@@ -819,5 +827,32 @@ mod tests {
                 .all(|span| span.style == style)
         );
         assert!(wrap_lines(vec![Line::from(value)], 0).is_empty());
+    }
+
+    #[test]
+    fn wrapping_breaks_at_words_with_a_hanging_indent() {
+        let dim = Style::default().fg(ratatui::style::Color::DarkGray);
+        let line = Line::from(vec![
+            Span::styled("    check ", dim),
+            Span::raw("GitHub for new releases at startup"),
+        ]);
+        let rows: Vec<String> = wrap_lines(vec![line], 24)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            rows,
+            ["    check GitHub for", "    new releases at", "    startup"]
+        );
+        // Styles survive the move to a continuation row.
+        let wrapped = wrap_lines(vec![Line::styled("  aaa bbb", dim)], 6);
+        assert_eq!(wrapped[1].to_string(), "  bbb");
+        assert!(wrapped[1].spans.iter().skip(2).all(|s| s.style == dim));
+        // A word longer than the width still breaks, keeping the indent.
+        let rows: Vec<String> = wrap_lines(vec![Line::from("  abcdefghij")], 6)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(rows, ["  abcd", "  efgh", "  ij"]);
     }
 }

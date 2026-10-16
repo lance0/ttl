@@ -4,7 +4,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 
 use crate::trace::receiver::SessionMap;
 use crate::tui::theme::Theme;
@@ -89,30 +89,30 @@ impl<'a> TargetListView<'a> {
 impl Widget for TargetListView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let width = 76.min(area.width.saturating_sub(4));
-        let height = (self.target_infos.len().saturating_mul(2) + 4)
+        let height = (self.target_infos.len().saturating_mul(2) + usize::from(super::POPUP_ROWS))
             .min(usize::from(area.height.saturating_sub(4))) as u16;
-        let popup = Rect::new(
-            area.x + (area.width - width) / 2,
-            area.y + (area.height - height) / 2,
-            width,
-            height,
-        );
-        Clear.render(popup, buf);
-        let block = Block::default()
-            .title(format!(
-                " Targets [{}/{}] ",
+        let inner = super::popup(
+            area,
+            buf,
+            (width, height),
+            &format!(
+                "Targets {}/{}",
                 if self.target_infos.is_empty() {
                     0
                 } else {
                     self.selected_index + 1
                 },
                 self.target_infos.len()
-            ))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border));
-        let inner = block.inner(popup);
-        block.render(popup, buf);
-        let body_height = inner.height.saturating_sub(2);
+            ),
+            &[
+                ("Esc", "close"),
+                ("Enter", "select"),
+                ("↑/↓", "move"),
+                ("1-9", "jump"),
+            ],
+            self.theme,
+        );
+        let body_height = inner.height;
         let visible = usize::from(body_height / 2);
         let start = self
             .selected_index
@@ -163,19 +163,5 @@ impl Widget for TargetListView<'_> {
             },
             buf,
         );
-        if inner.height >= 2 {
-            let footer = [
-                "Esc close · Enter select · 1-9 jump",
-                "↑/↓ navigate targets",
-            ];
-            Paragraph::new(
-                footer
-                    .into_iter()
-                    .map(|s| Line::from(super::fit_text(s, inner.width)))
-                    .collect::<Vec<_>>(),
-            )
-            .style(Style::default().fg(self.theme.text_dim))
-            .render(Rect::new(inner.x, inner.bottom() - 2, inner.width, 2), buf);
-        }
     }
 }

@@ -2,7 +2,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 
 use crate::lookup::ix::CacheStatus;
 use crate::prefs::DisplayMode;
@@ -198,25 +198,23 @@ impl<'a> SettingsView<'a> {
 
 impl Widget for SettingsView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Calculate centered popup area (taller if IX is enabled). The extra 4
-        // rows hold the Update Check section (blank + header + toggle + hint).
-        let popup_width = 44.min(area.width.saturating_sub(4));
-        let base_height = if self.ix_enabled { 27 } else { 21 };
-        let popup_height = base_height.min(area.height.saturating_sub(4));
-        let popup_x = (area.width - popup_width) / 2 + area.x;
-        let popup_y = (area.height - popup_height) / 2 + area.y;
-        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
-
-        // Clear the popup area
-        Clear.render(popup_area, buf);
-
-        let block = Block::default()
-            .title(" Settings ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border));
-
-        let inner = block.inner(popup_area);
-        block.render(popup_area, buf);
+        // Taller when the PeeringDB section is shown.
+        let popup_width = 48.min(area.width.saturating_sub(4));
+        let content_height = if self.ix_enabled { 21 } else { 16 };
+        let popup_height = (content_height + super::POPUP_ROWS).min(area.height.saturating_sub(4));
+        let inner = super::popup(
+            area,
+            buf,
+            (popup_width, popup_height),
+            "Settings",
+            &[
+                ("Esc", "close"),
+                ("Tab", "section"),
+                ("↑/↓", "move"),
+                ("Enter", "select"),
+            ],
+            self.theme,
+        );
 
         let mut lines = Vec::new();
         let mut section_starts = vec![0];
@@ -465,7 +463,7 @@ impl Widget for SettingsView<'_> {
         let section = self.state.selected_section.min(section_starts.len() - 2);
         let start = offsets[section_starts[section]];
         let end = offsets[section_starts[section + 1]];
-        let body_height = inner.height.saturating_sub(2);
+        let body_height = inner.height;
         let focus = if section == 0 {
             start
                 + 2
@@ -483,21 +481,7 @@ impl Widget for SettingsView<'_> {
         };
         Paragraph::new(wrapped)
             .scroll((offset.min(usize::from(u16::MAX)) as u16, 0))
-            .render(
-                Rect {
-                    height: body_height,
-                    ..inner
-                },
-                buf,
-            );
-        if inner.height >= 2 {
-            Paragraph::new(vec![
-                Line::from(super::fit_text("Esc close · Tab section", inner.width)),
-                Line::from(super::fit_text("↑/↓ navigate · Enter select", inner.width)),
-            ])
-            .style(Style::default().fg(self.theme.text_dim))
-            .render(Rect::new(inner.x, inner.bottom() - 2, inner.width, 2), buf);
-        }
+            .render(inner, buf);
     }
 }
 

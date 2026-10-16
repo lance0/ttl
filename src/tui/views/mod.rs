@@ -35,6 +35,55 @@ pub(crate) fn fit_text(text: &str, width: u16) -> String {
     result
 }
 
+/// Rows and columns a popup's frame takes from its size: rounded borders,
+/// plus one column of padding on each side.
+pub(crate) const POPUP_ROWS: u16 = 2;
+pub(crate) const POPUP_COLS: u16 = 4;
+
+/// The one popup frame: centered in `area`, cleared, rounded border in the
+/// theme's border color, ` Title ` bold in the header color, and key hints
+/// on the bottom border. Returns the padded content area.
+pub(crate) fn popup(
+    area: ratatui::layout::Rect,
+    buf: &mut ratatui::buffer::Buffer,
+    (width, height): (u16, u16),
+    title: &str,
+    hints: &[(&str, &str)],
+    theme: &crate::tui::theme::Theme,
+) -> ratatui::layout::Rect {
+    use ratatui::{
+        layout::Rect,
+        style::Style,
+        text::{Line, Span},
+        widgets::{Block, BorderType, Clear, Padding, Widget},
+    };
+    let (width, height) = (width.min(area.width), height.min(area.height));
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    Clear.render(rect, buf);
+    let mut footer = hint_line(hints, width.saturating_sub(6), theme);
+    if !footer.spans.is_empty() {
+        footer.spans.insert(0, Span::raw(" "));
+        footer.spans.push(Span::raw(" "));
+    }
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border))
+        .title(Line::styled(
+            format!(" {} ", fit_text(title, width.saturating_sub(4))),
+            Style::default().fg(theme.header).bold(),
+        ))
+        .title_bottom(footer.right_aligned())
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(rect);
+    block.render(rect, buf);
+    inner
+}
+
 /// Key hints in one style everywhere: key in the shortcut color and bold,
 /// label dim, two spaces between pairs. `pairs` are in priority order and
 /// drop from the end until the rest fits `width`; no pair is ever cut.

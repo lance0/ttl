@@ -11,7 +11,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 
 use crate::tui::theme::Theme;
 
@@ -99,25 +99,18 @@ impl<'a> TargetInputView<'a> {
 impl Widget for TargetInputView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let width = 50.min(area.width.saturating_sub(4));
-        let height = 7;
+        let height = 5;
         if width < 20 || area.height < height {
             return;
         }
-        let modal = Rect {
-            x: area.x + (area.width - width) / 2,
-            y: area.y + (area.height.saturating_sub(height)) / 2,
-            width,
-            height,
-        };
-
-        Clear.render(modal, buf);
-
-        let block = Block::default()
-            .title(" Add Target ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border_focused));
-        let inner = block.inner(modal);
-        block.render(modal, buf);
+        let inner = super::popup(
+            area,
+            buf,
+            (width, height),
+            "Add Target",
+            &[("Enter", "add"), ("Esc", "cancel")],
+            self.theme,
+        );
 
         // Keep the cursor in view for long FQDNs and addresses. Input is
         // ASCII, so byte offsets also count terminal cells. Reserve two cells
@@ -162,18 +155,7 @@ impl Widget for TargetInputView<'_> {
             ))
         };
 
-        let hint_line = Line::from(Span::styled(
-            "Enter add \u{00b7} Esc cancel",
-            Style::default().fg(self.theme.text_dim),
-        ));
-
-        let text = vec![
-            Line::default(),
-            input_line,
-            status_line,
-            Line::default(),
-            hint_line,
-        ];
+        let text = vec![Line::default(), input_line, status_line];
         Paragraph::new(text).render(inner, buf);
     }
 }
@@ -217,7 +199,7 @@ mod tests {
             .expect("input prompt");
         let start = (y / usize::from(width)) * usize::from(width);
         let prompt = y % usize::from(width);
-        let inner_width = usize::from(50.min(width.saturating_sub(4)).saturating_sub(2));
+        let inner_width = usize::from(50.min(width.saturating_sub(4)).saturating_sub(4));
         buffer.content[start + prompt..start + prompt + inner_width]
             .iter()
             .map(|cell| cell.symbol().to_string())
