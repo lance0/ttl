@@ -2,6 +2,41 @@
 
 This document tracks known limitations and edge cases that are documented but not yet addressed.
 
+## Limitations
+
+### Privileges Required
+
+- **Linux:** needs the `CAP_NET_RAW` capability or root ([setup](docs/INSTALL.md#permissions)).
+- **macOS, FreeBSD, NetBSD:** needs root (`sudo ttl <target>`). ttl receives ICMP replies through raw sockets on these platforms, and raw sockets require root.
+
+### Protocol Limitations
+
+- **ICMP:** some networks filter ICMP; try `-p udp` or `-p tcp`.
+- **TCP:** probes are SYN only; ttl never completes a connection.
+- **UDP:** high destination ports may be filtered by firewalls; set a port with `--port` (and `--fixed-port`).
+
+### Multi-flow Mode Behind NAT
+
+NAT devices may rewrite source ports, which breaks flow correlation for `--flows`. ttl detects this and shows the `[NAT]` indicator ([NAT Detection](docs/FEATURES.md#nat-detection)).
+
+### PMTUD Requires ICMP Probing
+
+`--pmtud` sends ICMP Echo probes, so it has an effect only when ttl probes with ICMP (`-p icmp`, or `-p auto` when it selects ICMP). With `-p udp` or `-p tcp` no PMTUD probes are sent.
+
+### Interface Binding Unavailable on FreeBSD/NetBSD
+
+`--interface` is rejected on FreeBSD and NetBSD, which lack `SO_BINDTODEVICE`/`IP_BOUND_IF`. Use `--source-ip` instead.
+
+### No Live Tracing on Native Windows
+
+The crate builds on native Windows and `--replay`/`--diff` work there, but probing is not implemented; ttl exits with a pointer to WSL2. There are no pre-built Windows binaries ([Windows setup](docs/INSTALL.md#windows)).
+
+### iTerm2 on macOS Sequoia
+
+The initial display may render incorrectly in iTerm2 on macOS Sequoia. Press `r` to reset, or use Terminal.app.
+
+---
+
 ## Low Priority / Edge Cases
 
 ### macOS DGRAM Identifier Override
@@ -50,7 +85,7 @@ This document tracks known limitations and edge cases that are documented but no
 
 **Impact:** Only affects unusual configurations with very long timeouts relative to probe interval.
 
-**Mitigation:** CLI validation rejects `--timeout` > 256 × `--interval` with a clear error message.
+**Mitigation:** CLI validation rejects `--timeout` ≥ 256 × `--interval` with a clear error message.
 
 ---
 
@@ -58,9 +93,9 @@ This document tracks known limitations and edge cases that are documented but no
 
 **Issue:** GeoIP lookup requires a MaxMind GeoLite2-City.mmdb database file that must be downloaded separately (requires free MaxMind account).
 
-**Impact:** GeoIP enrichment is unavailable without the database. Auto-discovered from `~/.local/share/ttl/`, `/usr/share/GeoIP/`, or specified via `--geoip-db`.
+**Impact:** GeoIP enrichment is unavailable without the database.
 
-**Workaround:** Download from MaxMind and place in one of the auto-discovery paths. Disable with `--no-geo` to suppress warnings.
+**Workaround:** Download it from MaxMind and place it in one of the [auto-discovery paths](docs/FEATURES.md#geoip-location), or pass `--geoip-db`. Disable with `--no-geo` to suppress warnings.
 
 ---
 
@@ -82,25 +117,15 @@ ICMP probes have no source/destination port to vary, so all probes are sent as f
 
 ### macOS Requires Root
 
-macOS DGRAM ICMP sockets cannot receive Time Exceeded messages from intermediate routers, so a RAW receive socket is required. RAW sockets need root privileges on macOS.
-
-Linux users can run without sudo by setting `cap_net_raw` capability or configuring `ping_group_range`.
+On macOS, ttl receives replies through a RAW ICMP socket, and RAW sockets need root privileges. Linux users can run without sudo by granting the binary the `cap_net_raw` capability; Linux's unprivileged ICMP sockets (`ping_group_range`) are not used.
 
 ### Mixed IPv4/IPv6 with --source-ip Not Supported
 
 When `--resolve-all` produces both IPv4 and IPv6 targets, `--source-ip` cannot be used because a source IP is inherently single-family. An error is shown suggesting `-4` or `-6` to constrain the family.
 
-### macOS/FreeBSD/NetBSD Minimum Inter-Probe Delay
-
-A 500µs minimum delay between probes is automatically applied on macOS, FreeBSD, and NetBSD. BSD-derived kernels batch rapid `setsockopt(IP_TTL)` calls, causing packets to be sent with stale TTL values. This delay ensures each TTL change takes effect before the next send.
-
 ### NetBSD UDP Source IP Auto-Detection
 
 NetBSD's kernel returns EHOSTUNREACH when sending from a UDP DGRAM socket bound to `0.0.0.0` (unspecified source). This differs from Linux and macOS which handle source address selection transparently. ttl auto-detects the correct source IP on NetBSD using `connect()` + `getsockname()` before binding UDP sockets. If auto-detection fails, the error is surfaced to the user.
-
-### NetBSD IPv4 PMTUD Unavailable
-
-NetBSD lacks the `IP_DONTFRAG` socket option, so the Don't Fragment flag cannot be set on IPv4 sockets. When `--pmtud` is used, PMTUD terminates immediately on the first DF failure with a single warning message, rather than retrying every probe round. IPv6 PMTUD works normally via `IPV6_DONTFRAG`.
 
 ### Rate Limit Detection Skipped at Destination
 
@@ -113,10 +138,6 @@ Linux delivers ICMPv6 Echo Reply only to the socket that sent the request, not t
 ### Last RTT Not Persisted in JSON
 
 `last_rtt` is intentionally `#[serde(skip)]` — it represents a live-only sample. The `Last` column in TUI and `last_ms` in CSV are sourced from the current primary responder's `last_rtt`, and will show "-"/empty for replayed sessions. All other RTT and jitter stats are persisted and display correctly.
-
-### TCP Bitrate Not Paced
-
-TCP mode ignores the `--rate` flag. TCP should run at the kernel's congestion-controlled rate. Rate limiting is only meaningful for ICMP and UDP probing modes.
 
 ---
 
@@ -132,6 +153,9 @@ The following issues have been fixed and are listed here for reference.
 - **Sent count double-counting** — IPv6 Echo Reply handler incremented sent count on response, duplicating the engine-side count. Fixed by removing receiver-side counting.
 - **DFZ router startup hang** (#16) — Gateway detection shelled out to `ip route` which hung on systems with millions of routes. Fixed with direct kernel API calls (netlink/sysctl).
 - **ICMPv6 checksum computation** — IPv6 traceroute didn't detect destinations due to checksum 0. Fixed with manual ICMPv6 checksum using RFC 8200 pseudo-header.
+- **macOS/FreeBSD/NetBSD minimum inter-probe delay** — A 500µs delay masked BSD kernels sending queued probes with a stale TTL. Retired once IPv4 moved to `IP_HDRINCL` (TTL in the header) and IPv6 to per-probe sockets on BSD-derived platforms; only the `--rate` delay remains.
+- **NetBSD IPv4 PMTUD unavailable** — NetBSD lacks `IP_DONTFRAG`. IPv4 now sets Don't Fragment in the hand-built IP header, so IPv4 PMTUD works on NetBSD.
+- **TCP probes ignored `--rate`** — TCP probing now applies the `--rate` delay like ICMP and UDP.
 - **One-at-a-time sent counting** — Sent counter updated only when responses arrived, not when probes were sent. Fixed by moving sent counting to engine at send time (#17).
 
 ---
