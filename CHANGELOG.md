@@ -8,7 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **IPv6 processing-error diagnostics**: correlate Parameter Problem replies and RFC 8883 header-limit errors; show their reason and pointer in hop details, reports, JSON, and replay. Saved recordings and JSON streams may now contain `icmp_error` events, which older ttl versions may not read. Existing recordings remain readable.
 - **Native Windows build** (#141): the crate now compiles and its test suite runs on Windows, checked by a new `build-windows` CI job. Live tracing still needs WSL2: on native Windows `ttl` exits with a pointer to WSL2 instead of probing, while `--replay` and `--diff` work. No pre-built Windows binaries yet. Contributed by @athallajovian9-cyber.
 
 ### Changed

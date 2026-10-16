@@ -218,29 +218,6 @@ Common DSCP values:
 
 Verify with: `sudo tcpdump -v -n icmp | grep tos`
 
-## IPv6 Header-Processing Errors
-
-ICMPv6 Parameter Problem replies include the router's error code and pointer,
-including RFC 8883 processing limits (codes 5–10). Destination Unreachable code 8
-reports `Headers too long`, with the Extended Information Pointer when present.
-Pointers are displayed as byte offsets; they are never used to index a short quote.
-These diagnostics require enough of the quoted probe to correlate its identifier
-or transport header. They cannot explain silent drops or an unidentifiable quote.
-
-A hop with an observed rejection shows `[ICMP]` beside its host. Press Enter for
-the reason, sender, and pointer, including errors from secondary responders. Text
-reports include the last rejection per responder, and JSON stores it in
-`last_icmp_error`. This is a received control response for hop RTT/loss accounting,
-but it does not mark destination delivery or confirm an MTU. The marker retains
-the last observed error until statistics are reset; it does not imply every probe
-is currently being rejected.
-
-Saved sessions and JSON streams use the new `icmp_error` event type with
-`response_type` and a `late` flag. Replay retains the diagnostic and does not mark
-the destination reached by an error. Late errors preserve timeout accounting.
-Existing recordings still load; older ttl versions may not read recordings that
-contain this new event type.
-
 ## Path MTU Discovery (PMTUD)
 
 ```bash

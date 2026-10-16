@@ -314,34 +314,15 @@ impl Receiver {
                                     let sessions = self.sessions.read();
                                     if let Some(session_lock) = sessions.get(&target) {
                                         let mut state = session_lock.write();
-                                        if let Some(hop) = state.hop_mut(parsed.probe_id.ttl) {
-                                            hop.record_icmp_error(
-                                                parsed.responder,
-                                                parsed.response_type,
-                                            );
-                                        }
                                         let offset_ms = state.offset_ms();
                                         state.record_event(ProbeEvent {
                                             offset_ms,
                                             ttl: parsed.probe_id.ttl,
                                             seq: parsed.probe_id.seq,
                                             flow_id: flow_hint.unwrap_or(0),
-                                            outcome: if parsed
-                                                .response_type
-                                                .processing_error_reason()
-                                                .is_some()
-                                            {
-                                                ProbeOutcome::IcmpError {
-                                                    addr: parsed.responder,
-                                                    rtt_us: 0,
-                                                    response_type: parsed.response_type,
-                                                    late: true,
-                                                }
-                                            } else {
-                                                ProbeOutcome::LateReply {
-                                                    addr: parsed.responder,
-                                                    rtt_us: 0, // RTT unknown for late arrivals
-                                                }
+                                            outcome: ProbeOutcome::LateReply {
+                                                addr: parsed.responder,
+                                                rtt_us: 0, // RTT unknown for late arrivals
                                             },
                                         });
                                     }
@@ -393,17 +374,6 @@ impl Receiver {
                     if let Some(session) = sessions.get(&resp.target) {
                         let mut state = session.write();
                         let is_pmtud_probe = resp.packet_size.is_some();
-                        // A processing rejection cannot confirm MTU delivery.
-                        if is_pmtud_probe && resp.response_type.processing_error_reason().is_some()
-                        {
-                            if let Some(pmtud) = state.pmtud.as_mut()
-                                && pmtud.phase == PmtudPhase::Searching
-                                && resp.packet_size == Some(pmtud.current_size)
-                            {
-                                pmtud.record_failure();
-                            }
-                            continue;
-                        }
 
                         // Only record hop responses for normal probes, not PMTUD probes
                         // PMTUD probes are for MTU discovery, not traceroute measurements
@@ -426,7 +396,6 @@ impl Receiver {
                                         resp.interface_info.clone(),
                                     );
                                 }
-                                hop.record_icmp_error(resp.responder, resp.response_type);
                                 // Record per-flow stats for Paris/Dublin traceroute ECMP detection
                                 hop.record_flow_response(resp.flow_id, resp.responder, resp.rtt);
                                 // Record NAT detection result (compare sent vs returned source port)
@@ -458,18 +427,9 @@ impl Receiver {
                                 ttl: resp.probe_id.ttl,
                                 seq: resp.probe_id.seq,
                                 flow_id: resp.flow_id,
-                                outcome: if resp.response_type.processing_error_reason().is_some() {
-                                    ProbeOutcome::IcmpError {
-                                        addr: resp.responder,
-                                        rtt_us: resp.rtt.as_micros() as u64,
-                                        response_type: resp.response_type,
-                                        late: false,
-                                    }
-                                } else {
-                                    ProbeOutcome::Reply {
-                                        addr: resp.responder,
-                                        rtt_us: resp.rtt.as_micros() as u64,
-                                    }
+                                outcome: ProbeOutcome::Reply {
+                                    addr: resp.responder,
+                                    rtt_us: resp.rtt.as_micros() as u64,
                                 },
                             });
                         }

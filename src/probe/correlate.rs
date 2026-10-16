@@ -16,10 +16,10 @@ const ICMPV6_ECHO_REPLY: u8 = 129;
 const ICMPV6_PACKET_TOO_BIG: u8 = 2;
 const ICMPV6_TIME_EXCEEDED: u8 = 3;
 const ICMPV6_DEST_UNREACHABLE: u8 = 1;
+const ICMPV6_PARAMETER_PROBLEM: u8 = 4;
 
 // ICMPv6 Echo Request type (for error payload validation)
 const ICMPV6_ECHO_REQUEST: u8 = 128;
-const ICMPV6_PARAMETER_PROBLEM: u8 = 4;
 
 /// Parsed ICMP response
 #[derive(Debug, Clone)]
@@ -58,7 +58,6 @@ const MIN_ORIGINAL_DATAGRAM: usize = 128;
 struct ParsedIcmpExtensions {
     mpls_labels: Option<Vec<MplsLabel>>,
     interface_info: Option<Vec<IcmpInterfaceInfo>>,
-    extended_pointer: Option<u32>,
 }
 
 /// Parse ICMP extensions from an error message payload (RFC 4884)
@@ -113,7 +112,6 @@ fn parse_icmp_extensions(
     let mut labels = Vec::new();
     let mut interfaces = Vec::new();
     let mut seen_roles: u8 = 0;
-    let mut extended_pointer = None;
 
     while offset + 4 <= ext_header.len() {
         // Object header: length (16 bits), class (8 bits), type (8 bits)
@@ -139,11 +137,6 @@ fn parse_icmp_extensions(
                     break;
                 }
             }
-        } else if obj_class == 4 && obj_type == 1 && obj_length == 8 {
-            // RFC 8883 Extended Information / Pointer. Legacy router node-name
-            // objects using class 4 with other C-Types are unrelated.
-            extended_pointer
-                .get_or_insert_with(|| u32::from_be_bytes(obj_payload.try_into().unwrap()));
         } else if obj_class == INTERFACE_INFO_CLASS {
             // Interface Information Object (RFC 5837)
             // C-Type bit-fields:
@@ -278,7 +271,6 @@ fn parse_icmp_extensions(
     }
 
     ParsedIcmpExtensions {
-        extended_pointer,
         mpls_labels: if labels.is_empty() {
             None
         } else {
@@ -678,10 +670,7 @@ fn parse_icmp_response_v6(
             icmp_data,
             responder,
             our_identifier,
-            IcmpResponseType::ParameterProblem {
-                code: icmp_code,
-                pointer: u32::from_be_bytes(icmp_data[4..8].try_into().ok()?),
-            },
+            IcmpResponseType::ParameterProblem(icmp_code),
             None,
         ),
         ICMPV6_DEST_UNREACHABLE => parse_icmp_error_payload_v6_with_mtu(
@@ -928,21 +917,12 @@ fn parse_icmp_error_payload_v6_with_mtu(
     let original_payload = &original_ipv6_data[transport_offset..];
     let next_header = final_next_header;
 
-    // Try to parse ICMP extensions using RFC 4884 length field
-    let exts = if matches!(
-        response_type,
-        IcmpResponseType::TimeExceeded(_) | IcmpResponseType::DestUnreachable(_)
-    ) {
-        parse_icmp_extensions(&icmp_data[8..], icmp_length, true)
-    } else {
+    // Try to parse ICMP extensions using RFC 4884 length field. Parameter
+    // Problem has a pointer there instead and carries no extensions (§4.6).
+    let exts = if matches!(response_type, IcmpResponseType::ParameterProblem(_)) {
         ParsedIcmpExtensions::default()
-    };
-    let response_type = if response_type == IcmpResponseType::DestUnreachable(8) {
-        IcmpResponseType::HeadersTooLong {
-            pointer: exts.extended_pointer,
-        }
     } else {
-        response_type
+        parse_icmp_extensions(&icmp_data[8..], icmp_length, true)
     };
 
     // Handle based on original protocol
@@ -972,7 +952,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                     responder,
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type,
-                    is_pmtud: is_pmtud_payload(&original_payload[8..]),
+                    is_pmtud: false,
                     mpls_labels: exts.mpls_labels,
                     interface_info: exts.interface_info,
                     src_port: None,
@@ -996,7 +976,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
                     responder,
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type,
-                    is_pmtud: is_pmtud_payload(&original_payload[8..]),
+                    is_pmtud: false,
                     mpls_labels: exts.mpls_labels,
                     interface_info: exts.interface_info,
                     src_port: None,
@@ -1395,10 +1375,7 @@ fn parse_icmp_response_v6_dgram(
             icmp_data,
             responder,
             our_identifier,
-            IcmpResponseType::ParameterProblem {
-                code: icmp_code,
-                pointer: u32::from_be_bytes(icmp_data[4..8].try_into().ok()?),
-            },
+            IcmpResponseType::ParameterProblem(icmp_code),
             None,
         ),
         ICMPV6_DEST_UNREACHABLE => parse_icmp_error_payload_v6_dgram(
@@ -1467,20 +1444,11 @@ fn parse_icmp_error_payload_v6_dgram(
     let original_payload = &original_ipv6_data[transport_offset..];
     let next_header = final_next_header;
 
-    let exts = if matches!(
-        response_type,
-        IcmpResponseType::TimeExceeded(_) | IcmpResponseType::DestUnreachable(_)
-    ) {
-        parse_icmp_extensions(&icmp_data[8..], icmp_length, true)
-    } else {
+    // Parameter Problem: pointer, not length, and no extensions (RFC 4884 §4.6)
+    let exts = if matches!(response_type, IcmpResponseType::ParameterProblem(_)) {
         ParsedIcmpExtensions::default()
-    };
-    let response_type = if response_type == IcmpResponseType::DestUnreachable(8) {
-        IcmpResponseType::HeadersTooLong {
-            pointer: exts.extended_pointer,
-        }
     } else {
-        response_type
+        parse_icmp_extensions(&icmp_data[8..], icmp_length, true)
     };
 
     match next_header {
@@ -1501,7 +1469,7 @@ fn parse_icmp_error_payload_v6_dgram(
                     responder,
                     probe_id: ProbeId::from_sequence(sequence),
                     response_type,
-                    is_pmtud: is_pmtud_payload(&original_payload[8..]),
+                    is_pmtud: false,
                     mpls_labels: exts.mpls_labels,
                     interface_info: exts.interface_info,
                     src_port: None,
@@ -1520,7 +1488,7 @@ fn parse_icmp_error_payload_v6_dgram(
                     responder,
                     probe_id: ProbeId::from_sequence(payload_seq),
                     response_type,
-                    is_pmtud: is_pmtud_payload(&original_payload[8..]),
+                    is_pmtud: false,
                     mpls_labels: exts.mpls_labels,
                     interface_info: exts.interface_info,
                     src_port: None,
@@ -1602,6 +1570,39 @@ mod tests {
         let checksum = !sum as u16;
         icmp_data[2] = (checksum >> 8) as u8;
         icmp_data[3] = (checksum & 0xFF) as u8;
+    }
+
+    #[test]
+    fn ipv6_parameter_problem_correlates_without_extensions() {
+        let responder: IpAddr = "2001:db8::1".parse().unwrap();
+        let sequence = ProbeId::new(5, 2).to_sequence();
+        // Parameter Problem, code 1; pointer 0x10000000 would read as an
+        // RFC 4884 length of 16 words (128 bytes) if misparsed.
+        let mut packet = vec![4, 1, 0, 0, 0x10, 0, 0, 0];
+        let mut quote = vec![0; 128];
+        quote[0] = 0x60;
+        quote[6] = IPPROTO_ICMPV6;
+        quote[40] = ICMPV6_ECHO_REQUEST;
+        quote[44..46].copy_from_slice(&0x1234u16.to_be_bytes());
+        quote[46..48].copy_from_slice(&sequence.to_be_bytes());
+        packet.extend_from_slice(&quote);
+        packet.extend_from_slice(&[0x20, 0, 0, 0, 0, 8, 1, 1, 0x05, 0xdc, 0x07, 0x3e]);
+        set_icmp_checksum(&mut packet[136..]);
+
+        let mut raw = vec![0; 40];
+        raw[0] = 0x60;
+        raw[6] = IPPROTO_ICMPV6;
+        raw.extend_from_slice(&packet);
+        for parsed in [
+            parse_icmp_response(&packet, responder, 0x1234, true).unwrap(),
+            parse_icmp_response(&packet, responder, 0x1234, false).unwrap(),
+            parse_icmp_response_v6(&raw, responder, 0x1234).unwrap(),
+        ] {
+            assert_eq!(parsed.probe_id, ProbeId::new(5, 2));
+            assert_eq!(parsed.response_type, IcmpResponseType::ParameterProblem(1));
+            assert!(parsed.mpls_labels.is_none());
+        }
+        assert!(parse_icmp_response(&packet, responder, 0x5678, true).is_none());
     }
 
     #[test]
@@ -1690,127 +1691,6 @@ mod tests {
                 .mpls_labels
                 .is_none()
         );
-    }
-
-    fn ipv6_processing_packet(kind: u8, code: u8, protocol: u8) -> Vec<u8> {
-        let mut packet = vec![0; 8 + 40 + if protocol == IPPROTO_UDP { 14 } else { 8 }];
-        packet[0] = kind;
-        packet[1] = code;
-        packet[4..8].copy_from_slice(&u32::MAX.to_be_bytes());
-        packet[8] = 0x60;
-        packet[14] = protocol;
-        packet[15] = 1;
-        packet[32..48].copy_from_slice(&Ipv6Addr::LOCALHOST.octets());
-        let sequence = ProbeId::new(5, 2).to_sequence();
-        match protocol {
-            IPPROTO_ICMPV6 => {
-                packet[48] = 128;
-                packet[52..54].copy_from_slice(&0x1234u16.to_be_bytes());
-                packet[54..56].copy_from_slice(&sequence.to_be_bytes());
-            }
-            IPPROTO_TCP => {
-                packet[48..50].copy_from_slice(&50000u16.to_be_bytes());
-                packet[52..56].copy_from_slice(&((sequence as u32) << 16).to_be_bytes());
-            }
-            IPPROTO_UDP => {
-                packet[48..50].copy_from_slice(&50000u16.to_be_bytes());
-                packet[56..58].copy_from_slice(&sequence.to_be_bytes());
-                packet[58..62].copy_from_slice(b"TTL\0");
-            }
-            _ => unreachable!(),
-        }
-        packet
-    }
-
-    fn parse_processing_envelopes(packet: &[u8]) -> Vec<ParsedResponse> {
-        let responder = "2001:db8::1".parse().unwrap();
-        let mut raw = vec![0; 40];
-        raw[0] = 0x60;
-        raw[6] = IPPROTO_ICMPV6;
-        raw.extend_from_slice(packet);
-        vec![
-            parse_icmp_response(packet, responder, 0x1234, true).unwrap(),
-            parse_icmp_response(packet, responder, 0x1234, false).unwrap(),
-            parse_icmp_response_v6(&raw, responder, 0x1234).unwrap(),
-        ]
-    }
-
-    #[test]
-    fn ipv6_parameter_problem_correlates_all_probe_transports() {
-        for protocol in [IPPROTO_ICMPV6, IPPROTO_TCP, IPPROTO_UDP] {
-            for code in (0..=10).chain([255]) {
-                let packet = ipv6_processing_packet(4, code, protocol);
-                for parsed in parse_processing_envelopes(&packet) {
-                    assert_eq!(parsed.probe_id, ProbeId::new(5, 2));
-                    assert_eq!(parsed.original_dest, Some(IpAddr::V6(Ipv6Addr::LOCALHOST)));
-                    assert_eq!(
-                        parsed.response_type,
-                        IcmpResponseType::ParameterProblem {
-                            code,
-                            pointer: u32::MAX
-                        }
-                    );
-                    assert_eq!(parsed.mtu, None);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn ipv6_processing_error_preserves_quoted_pmtud_marker() {
-        let mut packet = ipv6_processing_packet(4, 6, IPPROTO_ICMPV6);
-        packet.resize(65, 0);
-        for parsed in parse_processing_envelopes(&packet) {
-            assert!(!parsed.is_pmtud);
-        }
-        packet[64] = crate::probe::icmp::PMTUD_MARKER;
-        for parsed in parse_processing_envelopes(&packet) {
-            assert!(parsed.is_pmtud);
-        }
-    }
-
-    #[test]
-    fn ipv6_parameter_problem_checks_quote_and_never_parses_extensions() {
-        let responder = "2001:db8::1".parse().unwrap();
-        let mut packet = ipv6_processing_packet(4, 6, IPPROTO_ICMPV6);
-        for end in 0..packet.len() {
-            assert!(parse_icmp_response(&packet[..end], responder, 0x1234, true).is_none());
-        }
-        assert!(parse_icmp_response(&packet, responder, 0x5678, true).is_none());
-        packet[4..8].copy_from_slice(&0x10000000u32.to_be_bytes());
-        packet.resize(8 + 128, 0);
-        packet.extend_from_slice(&[0x20, 0, 0, 0, 0, 8, 1, 1, 0x05, 0xdc, 0x07, 0x3e]);
-        set_icmp_checksum(&mut packet[136..]);
-        for parsed in parse_processing_envelopes(&packet) {
-            assert!(parsed.mpls_labels.is_none());
-            assert!(parsed.interface_info.is_none());
-        }
-    }
-
-    #[test]
-    fn ipv6_headers_too_long_uses_only_rfc8883_pointer_object() {
-        for c_type in [1, 6] {
-            let mut packet = ipv6_processing_packet(1, 8, IPPROTO_ICMPV6);
-            packet[4..8].copy_from_slice(&[16, 0, 0, 0]);
-            packet.resize(136, 0);
-            packet.extend_from_slice(&[0x20, 0, 0, 0, 0, 8, 4, c_type, 255, 255, 255, 255]);
-            set_icmp_checksum(&mut packet[136..]);
-            for parsed in parse_processing_envelopes(&packet) {
-                assert_eq!(
-                    parsed.response_type,
-                    IcmpResponseType::HeadersTooLong {
-                        pointer: if c_type == 1 { Some(u32::MAX) } else { None },
-                    }
-                );
-            }
-            packet[147] ^= 1;
-            for parsed in parse_processing_envelopes(&packet) {
-                assert_eq!(
-                    parsed.response_type,
-                    IcmpResponseType::HeadersTooLong { pointer: None }
-                );
-            }
-        }
     }
 
     #[test]
