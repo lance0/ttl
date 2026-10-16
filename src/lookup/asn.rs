@@ -105,9 +105,7 @@ impl AsnLookup {
         // Query TXT record at <reversed_ip>.origin.asn.cymru.com
         let txt_records = self.resolver.txt_lookup(&query_name).await.ok()?;
 
-        // Parse the first TXT record
-        // Format: "AS | IP | BGP Prefix | CC | Registry | Allocated"
-        // Example: "15169 | 8.8.8.8 | 8.8.8.0/24 | US | arin | 1992-12-01"
+        // Parse the first TXT record (see `parse_origin_txt` for the format)
         let txt = txt_records
             .answers()
             .iter()
@@ -125,18 +123,7 @@ impl AsnLookup {
             .join("");
         let txt_str = txt_str.trim_matches('"');
 
-        let parts: Vec<&str> = txt_str.split('|').map(|s| s.trim()).collect();
-
-        if parts.is_empty() {
-            return None;
-        }
-
-        // Parse ASN number (may have "AS" prefix or just number)
-        let asn_str = parts[0].trim_start_matches("AS").trim();
-        let asn_number: u32 = asn_str.parse().ok()?;
-
-        // Extract prefix if available (index 2)
-        let prefix = parts.get(2).map(|s| s.to_string());
+        let (asn_number, prefix) = parse_origin_txt(txt_str)?;
 
         // Now lookup the AS name
         let as_name = self.lookup_as_name(asn_number).await;
@@ -220,6 +207,26 @@ impl AsnLookup {
         // AS name is at index 4, sanitize for safe display
         parts.get(4).map(|s| sanitize_display(s))
     }
+}
+
+/// Parse a Team Cymru origin TXT record into (ASN, BGP prefix).
+///
+/// Format: "AS | BGP Prefix | CC | Registry | Allocated"
+/// Example: "15169 | 8.8.8.0/24 | US | arin | 2023-12-28"
+///
+/// Multi-origin prefixes list several ASNs in the first field ("701 1239");
+/// the first one is used.
+fn parse_origin_txt(txt: &str) -> Option<(u32, Option<String>)> {
+    let mut parts = txt.split('|').map(str::trim);
+    let asn = parts
+        .next()?
+        .split_whitespace()
+        .next()?
+        .trim_start_matches("AS")
+        .parse()
+        .ok()?;
+    let prefix = parts.next().filter(|p| !p.is_empty()).map(sanitize_display);
+    Some((asn, prefix))
 }
 
 /// Maximum concurrent ASN lookups
@@ -355,15 +362,22 @@ mod tests {
 
     #[test]
     fn test_parse_cymru_response() {
-        let txt = "15169 | 8.8.8.8 | 8.8.8.0/24 | US | arin | 1992-12-01";
-        let parts: Vec<&str> = txt.split('|').map(|s| s.trim()).collect();
-
-        let asn_str = parts[0].trim_start_matches("AS");
-        let asn_number: u32 = asn_str.parse().unwrap();
-        assert_eq!(asn_number, 15169);
-
-        let prefix = parts.get(2).map(|s| s.to_string());
-        assert_eq!(prefix, Some("8.8.8.0/24".to_string()));
+        // Real origin.asn.cymru.com format: ASN | prefix | CC | registry | date
+        assert_eq!(
+            parse_origin_txt("15169 | 8.8.8.0/24 | US | arin | 2023-12-28"),
+            Some((15169, Some("8.8.8.0/24".to_string())))
+        );
+        assert_eq!(
+            parse_origin_txt("701 | 204.148.0.0/14 | US | arin | 1994-09-16"),
+            Some((701, Some("204.148.0.0/14".to_string())))
+        );
+        // Multi-origin prefix: first ASN wins
+        assert_eq!(
+            parse_origin_txt("701 1239 | 204.148.0.0/14 | US | arin | 1994-09-16"),
+            Some((701, Some("204.148.0.0/14".to_string())))
+        );
+        assert_eq!(parse_origin_txt("15169"), Some((15169, None)));
+        assert_eq!(parse_origin_txt("garbage | 1.0.0.0/8"), None);
     }
 
     #[test]

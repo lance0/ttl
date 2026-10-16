@@ -2,11 +2,12 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 
 use crate::state::{EcmpKind, Hop, ResponderStats};
 use crate::tui::theme::Theme;
-use crate::tui::widgets::sparkline_string;
+use crate::tui::widgets::{sparkline_range, sparkline_spans};
+use std::time::Duration;
 
 /// Expanded hop detail view (modal overlay)
 pub struct HopDetailView<'a> {
@@ -31,660 +32,631 @@ impl<'a> HopDetailView<'a> {
 }
 
 impl HopDetailView<'_> {
+    fn popup_width(area: Rect) -> u16 {
+        area.width.saturating_sub(10).min(80)
+    }
+
     pub fn max_scroll(&self, area: Rect) -> u16 {
-        let width = area.width.saturating_sub(10).min(80).saturating_sub(2);
+        let width = Self::popup_width(area).saturating_sub(super::POPUP_COLS);
         let height = u16::try_from(self.build_lines(width).len()).unwrap_or(u16::MAX);
         height.saturating_sub(Self::visible_rows(area))
     }
 
-    /// Detail rows visible at once: popup margin (4), borders (2) and footer (1).
+    /// Detail rows visible at once: popup margin (4) and the popup frame.
     pub fn visible_rows(area: Rect) -> u16 {
-        area.height.saturating_sub(7)
+        area.height.saturating_sub(4 + super::POPUP_ROWS)
+    }
+
+    /// Popup title: hop number, hostname (or IP), and the short ASN name.
+    fn title(&self) -> String {
+        let Some(stats) = self.hop.primary_stats() else {
+            return format!("Hop {} · * * *", self.hop.ttl);
+        };
+        let mut title = format!(
+            "Hop {} · {}",
+            self.hop.ttl,
+            stats
+                .hostname
+                .clone()
+                .unwrap_or_else(|| stats.ip.to_string())
+        );
+        if let Some(asn) = &stats.asn {
+            title.push_str(&format!(" · AS{}", asn.number));
+            // "KDDI - KDDI CORPORATION, JP" -> "KDDI"
+            if let Some(short) = asn.name.split(" - ").next().filter(|s| !s.is_empty()) {
+                title.push_str(&format!(" {short}"));
+            }
+        }
+        title
     }
 
     /// Build all content lines for the modal
     fn build_lines(&self, inner_width: u16) -> Vec<Line<'static>> {
+        let theme = self.theme;
+        let dim = Style::default().fg(theme.text_dim);
+        let text = Style::default().fg(theme.text);
+        let warn = Style::default().fg(theme.warning);
         let mut lines = Vec::new();
-        let stats = self.hop.primary_stats();
+        let Some(stats) = self.hop.primary_stats() else {
+            lines.push(Line::styled("No responses received at this TTL", dim));
+            return wrap_lines(lines, inner_width);
+        };
 
-        if let Some(stats) = stats {
-            // Hostname
-            if let Some(ref hostname) = stats.hostname {
-                lines.push(Line::from(vec![
-                    Span::styled("  Hostname:  ", Style::default().fg(self.theme.text_dim)),
-                    Span::raw(hostname.clone()),
-                ]));
-            }
-
-            // IP address
+        // Identity
+        let mut field = |label: &str, value: String, style: Style| {
             lines.push(Line::from(vec![
-                Span::styled("  IP:        ", Style::default().fg(self.theme.text_dim)),
-                Span::raw(stats.ip.to_string()),
+                Span::styled(format!("{label:<10}"), dim),
+                Span::styled(value, style),
             ]));
-
-            // ASN (if available)
-            if let Some(ref asn) = stats.asn {
-                lines.push(Line::from(vec![
-                    Span::styled("  ASN:       ", Style::default().fg(self.theme.text_dim)),
-                    Span::raw(format!("AS{} ({})", asn.number, asn.name)),
-                ]));
-                if let Some(ref prefix) = asn.prefix {
-                    lines.push(Line::from(vec![
-                        Span::styled("  Prefix:    ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(prefix.clone()),
-                    ]));
-                }
+        };
+        if let Some(hostname) = &stats.hostname {
+            field("Host", hostname.clone(), text);
+        }
+        field("IP", stats.ip.to_string(), text);
+        if let Some(asn) = &stats.asn {
+            field("ASN", format!("AS{}  {}", asn.number, asn.name), text);
+            if let Some(prefix) = &asn.prefix {
+                field("Prefix", prefix.clone(), text);
             }
-
-            // Geo (if available)
-            if let Some(ref geo) = stats.geo {
-                let location = [
-                    geo.city.as_deref(),
-                    geo.region.as_deref(),
-                    Some(geo.country.as_str()),
-                ]
+        }
+        if let Some(geo) = &stats.geo {
+            let location = [
+                geo.city.as_deref(),
+                geo.region.as_deref(),
+                Some(geo.country.as_str()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", ");
+            field("Location", location, text);
+        }
+        if let Some(ix) = &stats.ix {
+            let location = [ix.city.as_deref(), ix.country.as_deref()]
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>()
                 .join(", ");
-
-                lines.push(Line::from(vec![
-                    Span::styled("  Location:  ", Style::default().fg(self.theme.text_dim)),
-                    Span::raw(location),
-                ]));
-            }
-
-            // IX (if available - PeeringDB)
-            if let Some(ref ix) = stats.ix {
-                let ix_location = [ix.city.as_deref(), ix.country.as_deref()]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join(", ");
-
-                let ix_str = if ix_location.is_empty() {
-                    ix.name.clone()
-                } else {
-                    format!("{} ({})", ix.name, ix_location)
-                };
-
-                lines.push(Line::from(vec![
-                    Span::styled("  IX:        ", Style::default().fg(self.theme.text_dim)),
-                    Span::styled(ix_str, Style::default().fg(self.theme.shortcut)),
-                ]));
-            }
-
-            lines.push(Line::from(""));
-
-            // Sparkline visualization
-            let recent: Vec<_> = stats.recent.iter().cloned().collect();
-            let sparkline = sparkline_string(&recent, inner_width.saturating_sub(4) as usize);
-            if !sparkline.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::styled("  Latency:   ", Style::default().fg(self.theme.text_dim)),
-                    Span::styled(sparkline, Style::default().fg(self.theme.success)),
-                ]));
-            }
-
-            lines.push(Line::from(""));
-
-            // Stats (use hop-level sent/loss since we can't attribute probes to responders before reply)
-            let hop_loss = self.hop.loss_pct();
-            // Label as "Hop totals" when multiple responders exist (ECMP) to avoid confusion
-            let stats_label = if self.hop.responders.len() > 1 {
-                "  Hop totals: "
+            let ix_str = if location.is_empty() {
+                ix.name.clone()
             } else {
-                "  "
+                format!("{} ({})", ix.name, location)
             };
-            lines.push(Line::from(vec![
-                Span::styled(stats_label, Style::default().fg(self.theme.text_dim)),
-                Span::styled("Sent: ", Style::default().fg(self.theme.text_dim)),
-                Span::raw(format!("{:<6}", self.hop.sent)),
-                Span::styled("Recv: ", Style::default().fg(self.theme.text_dim)),
-                Span::raw(format!("{:<6}", self.hop.received)),
-                Span::styled("Loss: ", Style::default().fg(self.theme.text_dim)),
-                Span::styled(
-                    format!("{:.1}%", hop_loss),
-                    if hop_loss > 10.0 {
-                        Style::default().fg(self.theme.error)
-                    } else {
-                        Style::default().fg(self.theme.success)
-                    },
+            field("IX", ix_str, text);
+        }
+
+        // Latency: sparkline, then counts and RTTs on the shared grid.
+        let heading = |title: &str, style: Style| Line::styled(title.to_owned(), style.bold());
+        let section = Style::default().fg(theme.header);
+        lines.push(Line::default());
+        lines.push(heading("Latency", section));
+        let recent: Vec<_> = stats.recent.iter().copied().collect();
+        if let Some(line) = sparkline_row(&recent, usize::from(inner_width), theme) {
+            lines.push(line);
+        }
+        // Hop-level sent/loss: probes cannot be attributed to a responder
+        // before a reply, so with several responders these are hop totals.
+        let hop_loss = self.hop.loss_pct();
+        let mut counts = grid(
+            &[
+                ("Sent", self.hop.sent.to_string(), text),
+                ("Recv", self.hop.received.to_string(), text),
+                (
+                    "Loss",
+                    format!("{hop_loss:.1}%"),
+                    Style::default().fg(theme.loss_color(hop_loss)),
                 ),
-            ]));
-
-            lines.push(Line::from(""));
-
-            // RTT stats
-            if stats.received > 0 {
-                // Basic latency stats
-                lines.push(Line::from(vec![
-                    Span::styled("  Min: ", Style::default().fg(self.theme.text_dim)),
-                    Span::raw(format!("{:.2}ms    ", stats.min_rtt.as_secs_f64() * 1000.0)),
-                    Span::styled("Avg: ", Style::default().fg(self.theme.text_dim)),
-                    Span::raw(format!(
-                        "{:.2}ms    ",
-                        stats.avg_rtt().as_secs_f64() * 1000.0
-                    )),
-                    Span::styled("Max: ", Style::default().fg(self.theme.text_dim)),
-                    Span::raw(format!("{:.2}ms", stats.max_rtt.as_secs_f64() * 1000.0)),
-                ]));
-
-                // Last RTT and StdDev
-                let last_rtt = stats
-                    .last_rtt()
-                    .map(|d| format!("{:.2}ms", d.as_secs_f64() * 1000.0))
-                    .unwrap_or_else(|| "-".to_string());
-                lines.push(Line::from(vec![
-                    Span::styled("  Last: ", Style::default().fg(self.theme.text_dim)),
-                    Span::raw(format!("{:<9}", last_rtt)),
-                    Span::styled("StdDev: ", Style::default().fg(self.theme.text_dim)),
-                    Span::raw(format!("{:.2}ms", stats.stddev().as_secs_f64() * 1000.0)),
-                ]));
-
-                // Percentiles (if we have enough samples)
-                if let (Some(p50), Some(p95), Some(p99)) = (stats.p50(), stats.p95(), stats.p99()) {
-                    lines.push(Line::from(vec![
-                        Span::styled("  p50: ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(format!("{:.2}ms    ", p50.as_secs_f64() * 1000.0)),
-                        Span::styled("p95: ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(format!("{:.2}ms    ", p95.as_secs_f64() * 1000.0)),
-                        Span::styled("p99: ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(format!("{:.2}ms", p99.as_secs_f64() * 1000.0)),
-                    ]));
-                }
-
-                lines.push(Line::from(""));
-
-                // Jitter stats (RTT variance between consecutive probes)
-                // "Smoothed" = RFC 3550 exponential average, "Avg/Max" = raw sample deltas
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        "  Jitter (smoothed): ",
-                        Style::default().fg(self.theme.text_dim),
-                    ),
-                    Span::raw(format!("{:.2}ms  ", stats.jitter().as_secs_f64() * 1000.0)),
-                    Span::styled("Avg: ", Style::default().fg(self.theme.text_dim)),
-                    Span::raw(format!(
-                        "{:.2}ms  ",
-                        stats.jitter_avg().as_secs_f64() * 1000.0
-                    )),
-                    Span::styled("Max: ", Style::default().fg(self.theme.text_dim)),
-                    Span::raw(format!(
-                        "{:.2}ms",
-                        stats.jitter_max().as_secs_f64() * 1000.0
-                    )),
-                ]));
+            ],
+            6,
+            dim,
+        );
+        if self.hop.responders.len() > 1 {
+            counts.spans.push(Span::styled("  hop totals", dim));
+        }
+        lines.push(counts);
+        if stats.received > 0 {
+            let ms = |d: Duration| format!("{:.1} ms", d.as_secs_f64() * 1000.0);
+            lines.push(grid(
+                &[
+                    ("Min", ms(stats.min_rtt), text),
+                    ("Avg", ms(stats.avg_rtt()), text),
+                    ("Max", ms(stats.max_rtt), text),
+                ],
+                6,
+                dim,
+            ));
+            let last = stats.last_rtt().map(ms).unwrap_or_else(|| "–".into());
+            lines.push(grid(
+                &[("Last", last, text), ("StDev", ms(stats.stddev()), text)],
+                6,
+                dim,
+            ));
+            if let (Some(p50), Some(p95), Some(p99)) = (stats.p50(), stats.p95(), stats.p99()) {
+                lines.push(grid(
+                    &[
+                        ("p50", ms(p50), text),
+                        ("p95", ms(p95), text),
+                        ("p99", ms(p99), text),
+                    ],
+                    6,
+                    dim,
+                ));
             }
 
-            append_extensions(&mut lines, stats, self.theme);
+            // Smoothed = RFC 3550 exponential average; Avg/Max = raw deltas.
+            lines.push(Line::default());
+            lines.push(heading("Jitter", section));
+            lines.push(grid(
+                &[
+                    ("Smooth", ms(stats.jitter()), text),
+                    ("Avg", ms(stats.jitter_avg()), text),
+                    ("Max", ms(stats.jitter_max()), text),
+                ],
+                6,
+                dim,
+            ));
+        }
 
-            // NAT detection info (if present)
-            if let Some(ref nat_info) = self.hop.nat_info {
-                lines.push(Line::from(""));
-                if nat_info.has_nat() {
-                    lines.push(Line::from(vec![Span::styled(
-                        "  NAT Detected!",
-                        Style::default().fg(self.theme.warning),
-                    )]));
-                    lines.push(Line::from(vec![
-                        Span::styled("  Port matches: ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(format!("{}", nat_info.port_matched)),
-                        Span::styled("  Rewrites: ", Style::default().fg(self.theme.text_dim)),
-                        Span::styled(
+        append_extensions(&mut lines, stats, theme);
+
+        // NAT detection info (if present)
+        if let Some(nat_info) = &self.hop.nat_info {
+            if nat_info.has_nat() {
+                lines.push(Line::default());
+                lines.push(heading("NAT Detected", warn));
+                lines.push(grid(
+                    &[
+                        ("Matched", nat_info.port_matched.to_string(), text),
+                        (
+                            "Rewritten",
                             format!(
                                 "{} ({:.0}%)",
                                 nat_info.port_rewritten,
                                 nat_info.nat_percentage()
                             ),
-                            Style::default().fg(self.theme.warning),
+                            warn,
                         ),
-                    ]));
-
-                    // Show rewrite samples (original → returned)
-                    if !nat_info.rewrite_samples.is_empty() {
-                        let samples: Vec<String> = nat_info
-                            .rewrite_samples
-                            .iter()
-                            .take(3)
-                            .map(|(orig, ret)| format!("{}->{}", orig, ret))
-                            .collect();
-                        lines.push(Line::from(vec![
-                            Span::styled("  Samples: ", Style::default().fg(self.theme.text_dim)),
-                            Span::raw(samples.join(", ")),
-                        ]));
-                    }
-
-                    // Warning about ECMP accuracy
-                    if self.hop.flow_paths.len() > 1 {
-                        lines.push(Line::from(vec![Span::styled(
-                            "  Warning: ECMP results may be inaccurate due to NAT",
-                            Style::default().fg(self.theme.error),
-                        )]));
-                    }
-                } else if nat_info.total_checks() > 0 {
-                    // Port checks passed - no NAT detected
-                    lines.push(Line::from(vec![
-                        Span::styled("  NAT: ", Style::default().fg(self.theme.text_dim)),
-                        Span::styled("No", Style::default().fg(self.theme.success)),
-                        Span::styled(
-                            format!(" ({} checks)", nat_info.total_checks()),
-                            Style::default().fg(self.theme.text_dim),
-                        ),
-                    ]));
+                    ],
+                    10,
+                    dim,
+                ));
+                // Rewrite samples (original -> returned)
+                if !nat_info.rewrite_samples.is_empty() {
+                    let samples: Vec<String> = nat_info
+                        .rewrite_samples
+                        .iter()
+                        .take(3)
+                        .map(|(orig, ret)| format!("{orig} → {ret}"))
+                        .collect();
+                    lines.push(note("Samples", samples.join(", "), text, dim));
                 }
+                if self.hop.flow_paths.len() > 1 {
+                    lines.push(Line::styled(
+                        "  ECMP results may be inaccurate behind NAT",
+                        warn,
+                    ));
+                }
+            } else if nat_info.total_checks() > 0 {
+                lines.push(Line::default());
+                lines.push(heading("NAT", section));
+                lines.push(note(
+                    "Ports",
+                    format!("unchanged in {} checks", nat_info.total_checks()),
+                    text,
+                    dim,
+                ));
             }
+        }
 
-            // Rate limit detection info (if present)
-            if let Some(ref rl) = self.hop.rate_limit
-                && rl.suspected
-            {
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![Span::styled(
-                    "  Rate Limiting Suspected",
-                    Style::default().fg(self.theme.warning),
-                )]));
-                if let Some(ref reason) = rl.reason {
-                    lines.push(Line::from(vec![
-                        Span::styled("  Reason: ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(reason.clone()),
-                    ]));
-                }
+        // Rate limit detection info (if present)
+        if let Some(rl) = &self.hop.rate_limit
+            && rl.suspected
+        {
+            lines.push(Line::default());
+            lines.push(heading("Rate Limiting Suspected", warn));
+            if let Some(reason) = &rl.reason {
+                lines.push(note("Reason", reason.clone(), text, dim));
+            }
+            lines.push(note(
+                "Confidence",
+                format!("{:.0}%", rl.confidence * 100.0),
+                text,
+                dim,
+            ));
+            lines.push(note(
+                "Tip",
+                "try slower probing with -i 1.0 or -i 2.0".into(),
+                dim,
+                dim,
+            ));
+        }
+
+        // Route changes (flaps) detected at this hop
+        if !self.hop.route_changes.is_empty() {
+            lines.push(Line::default());
+            lines.push(heading(
+                &format!("Route Changes ({})", self.hop.route_changes.len()),
+                warn,
+            ));
+            for change in self.hop.route_changes.iter().rev().take(5) {
                 lines.push(Line::from(vec![
-                    Span::styled("  Confidence: ", Style::default().fg(self.theme.text_dim)),
-                    Span::raw(format!("{:.0}%", rl.confidence * 100.0)),
-                ]));
-                lines.push(Line::from(vec![
-                    Span::styled("  Tip: ", Style::default().fg(self.theme.text_dim)),
-                    Span::raw("Try slower probing with -i 1.0 or -i 2.0"),
+                    Span::styled(format!("  {}", change.from_ip), text),
+                    Span::styled(" → ", dim),
+                    Span::styled(change.to_ip.to_string(), text),
+                    Span::styled(format!("  after {} responses", change.at_seq), dim),
                 ]));
             }
-
-            // Route changes (flaps) detected at this hop
-            if !self.hop.route_changes.is_empty() {
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![Span::styled(
-                    format!("  Route Changes: {} detected", self.hop.route_changes.len()),
-                    Style::default().fg(self.theme.warning),
-                )]));
-
-                // Show last few route changes
-                for change in self.hop.route_changes.iter().rev().take(5) {
-                    lines.push(Line::from(vec![
-                        Span::raw("    "),
-                        Span::raw(format!("{}", change.from_ip)),
-                        Span::styled(" → ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(format!("{}", change.to_ip)),
-                        Span::styled(
-                            format!(" (after {} responses)", change.at_seq),
-                            Style::default().fg(self.theme.text_dim),
-                        ),
-                    ]));
-                }
-
-                if self.hop.route_changes.len() > 5 {
-                    lines.push(Line::from(vec![Span::styled(
-                        format!("    ... and {} more", self.hop.route_changes.len() - 5),
-                        Style::default().fg(self.theme.text_dim),
-                    )]));
-                }
+            if self.hop.route_changes.len() > 5 {
+                lines.push(Line::styled(
+                    format!("  … and {} more", self.hop.route_changes.len() - 5),
+                    dim,
+                ));
             }
+        }
 
-            // Asymmetric routing detection
-            if let Some(ref asym) = self.hop.asymmetry {
-                let total = asym.symmetric_samples + asym.asymmetric_samples;
-                if total >= 5 || asym.suspected {
-                    lines.push(Line::from(""));
-                    if asym.suspected {
-                        lines.push(Line::from(vec![Span::styled(
-                            "  Routing Asymmetry Detected",
-                            Style::default().fg(self.theme.warning),
-                        )]));
-                    } else {
-                        lines.push(Line::from(vec![Span::styled(
-                            "  Routing Symmetry",
-                            Style::default().fg(self.theme.text_dim),
-                        )]));
-                    }
-                    lines.push(Line::from(vec![
-                        Span::styled("  Forward hops: ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(format!("{}", self.hop.ttl)),
-                        Span::styled("  Est. return: ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(
+        // Asymmetric routing detection
+        if let Some(asym) = &self.hop.asymmetry {
+            let total = asym.symmetric_samples + asym.asymmetric_samples;
+            if total >= 5 || asym.suspected {
+                lines.push(Line::default());
+                lines.push(if asym.suspected {
+                    heading("Routing Asymmetry Detected", warn)
+                } else {
+                    heading("Routing Symmetry", section)
+                });
+                let diff_style = if asym.avg_hop_difference.abs() >= 3.0 {
+                    warn
+                } else {
+                    text
+                };
+                lines.push(grid(
+                    &[
+                        ("Forward", self.hop.ttl.to_string(), text),
+                        (
+                            "Return",
                             asym.last_return_hops
                                 .map(|h| h.to_string())
-                                .unwrap_or_else(|| "-".to_string()),
+                                .unwrap_or_else(|| "–".into()),
+                            text,
                         ),
-                        Span::styled("  Diff: ", Style::default().fg(self.theme.text_dim)),
-                        if asym.avg_hop_difference.abs() >= 3.0 {
-                            Span::styled(
-                                format!("{:.1}", asym.avg_hop_difference),
-                                Style::default().fg(self.theme.warning),
-                            )
-                        } else {
-                            Span::raw(format!("{:.1}", asym.avg_hop_difference))
-                        },
-                    ]));
-                    lines.push(Line::from(vec![
-                        Span::styled("  Samples: ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(format!("{}", total)),
-                        Span::styled("  Symmetric: ", Style::default().fg(self.theme.text_dim)),
-                        Span::styled(
-                            format!("{}", asym.symmetric_samples),
-                            Style::default().fg(self.theme.success),
+                        (
+                            "Diff",
+                            format!("{:.0}", asym.avg_hop_difference),
+                            diff_style,
                         ),
-                        Span::styled("  Asymmetric: ", Style::default().fg(self.theme.text_dim)),
-                        if asym.asymmetric_samples > 0 {
-                            Span::styled(
-                                format!("{}", asym.asymmetric_samples),
-                                Style::default().fg(self.theme.warning),
-                            )
-                        } else {
-                            Span::raw("0".to_string())
-                        },
-                    ]));
-                    // High variance indicates return-path ECMP
-                    if asym.variance > 4.0 {
-                        lines.push(Line::from(vec![
-                            Span::styled("  Note: ", Style::default().fg(self.theme.text_dim)),
-                            Span::raw("High variance - possible return-path ECMP"),
-                        ]));
-                    }
+                    ],
+                    10,
+                    dim,
+                ));
+                lines.push(grid(
+                    &[
+                        ("Samples", total.to_string(), text),
+                        ("Symmetric", asym.symmetric_samples.to_string(), text),
+                        (
+                            "Asymmetric",
+                            asym.asymmetric_samples.to_string(),
+                            if asym.asymmetric_samples > 0 {
+                                warn
+                            } else {
+                                text
+                            },
+                        ),
+                    ],
+                    10,
+                    dim,
+                ));
+                // High variance indicates return-path ECMP
+                if asym.variance > 4.0 {
+                    lines.push(note(
+                        "Note",
+                        "high variance, possible return-path ECMP".into(),
+                        text,
+                        dim,
+                    ));
                 }
             }
+        }
 
-            // TTL manipulation detection
-            if let Some(ref ttl_info) = self.hop.ttl_manip {
-                let total = ttl_info.normal_samples + ttl_info.anomalous_samples;
-                if total >= 5 || ttl_info.suspected {
-                    lines.push(Line::from(""));
-                    let header_style = if ttl_info.suspected {
-                        Style::default().fg(self.theme.warning)
-                    } else {
-                        Style::default().fg(self.theme.text_dim)
-                    };
-                    lines.push(Line::from(vec![Span::styled(
-                        if ttl_info.suspected {
-                            "  TTL Manipulation Detected"
-                        } else {
-                            "  TTL Behavior"
-                        },
-                        header_style,
-                    )]));
-
-                    if let Some(ref reason) = ttl_info.reason {
-                        lines.push(Line::from(vec![
-                            Span::styled("  Reason: ", Style::default().fg(self.theme.text_dim)),
-                            Span::styled(reason.clone(), Style::default().fg(self.theme.warning)),
-                        ]));
-                    }
-
-                    lines.push(Line::from(vec![
-                        Span::styled("  Sent TTL: ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(format!("{}", self.hop.ttl)),
-                        Span::styled("  Last Quoted: ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(
+        // TTL manipulation detection
+        if let Some(ttl_info) = &self.hop.ttl_manip {
+            let total = ttl_info.normal_samples + ttl_info.anomalous_samples;
+            if total >= 5 || ttl_info.suspected {
+                lines.push(Line::default());
+                lines.push(if ttl_info.suspected {
+                    heading("TTL Manipulation Detected", warn)
+                } else {
+                    heading("TTL Behavior", section)
+                });
+                if let Some(reason) = &ttl_info.reason {
+                    lines.push(note("Reason", reason.clone(), warn, dim));
+                }
+                lines.push(grid(
+                    &[
+                        ("Sent TTL", self.hop.ttl.to_string(), text),
+                        (
+                            "Quoted",
                             ttl_info
                                 .last_quoted_ttl
                                 .map(|t| t.to_string())
-                                .unwrap_or_else(|| "-".to_string()),
+                                .unwrap_or_else(|| "–".into()),
+                            text,
                         ),
-                    ]));
+                    ],
+                    10,
+                    dim,
+                ));
+                lines.push(grid(
+                    &[
+                        ("Samples", total.to_string(), text),
+                        ("Normal", ttl_info.normal_samples.to_string(), text),
+                        (
+                            "Anomalous",
+                            ttl_info.anomalous_samples.to_string(),
+                            if ttl_info.anomalous_samples > 0 {
+                                warn
+                            } else {
+                                text
+                            },
+                        ),
+                    ],
+                    10,
+                    dim,
+                ));
+            }
+        }
 
+        // ECMP detail
+        match self.hop.ecmp_kind() {
+            EcmpKind::PerFlow => {
+                lines.push(Line::default());
+                lines.push(heading("Per-Flow Paths (ECMP)", warn));
+                let ecmp_paths = self.hop.ecmp_paths();
+                let num_paths = self.hop.path_count();
+                for (flow_id, responder_ip) in &ecmp_paths {
+                    let hostname = self
+                        .hop
+                        .responders
+                        .get(responder_ip)
+                        .and_then(|s| s.hostname.as_ref())
+                        .map(|h| format!(" ({h})"))
+                        .unwrap_or_default();
+                    // Mark a path only one flow takes
+                    let is_unique = ecmp_paths
+                        .iter()
+                        .filter(|(_, ip)| ip == responder_ip)
+                        .count()
+                        == 1;
+                    let marker = if is_unique && num_paths > 1 {
+                        "  alt path"
+                    } else {
+                        ""
+                    };
                     lines.push(Line::from(vec![
-                        Span::styled("  Samples: ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(format!("{}", total)),
-                        Span::styled("  Normal: ", Style::default().fg(self.theme.text_dim)),
+                        Span::styled(format!("  Flow {flow_id:<4}"), dim),
+                        Span::styled(format!("{responder_ip}{hostname}"), text),
+                        Span::styled(marker, warn),
+                    ]));
+                }
+            }
+            EcmpKind::PerPacket => {
+                lines.push(Line::default());
+                lines.push(heading("Per-Packet ECMP", warn));
+                lines.push(grid(
+                    &[
+                        ("Responders", self.hop.responders.len().to_string(), text),
+                        ("Paths", self.hop.path_count().to_string(), text),
+                    ],
+                    10,
+                    dim,
+                ));
+            }
+            EcmpKind::None => {
+                if self.hop.flow_paths.len() > 1 {
+                    // Several flows, all on the same path
+                    lines.push(Line::default());
+                    lines.push(note(
+                        "Flows",
+                        format!("{} (single path)", self.hop.flow_paths.len()),
+                        text,
+                        dim,
+                    ));
+                }
+            }
+        }
+
+        // Other responders (aggregate view)
+        if self.hop.responders.len() > 1 {
+            lines.push(Line::default());
+            lines.push(heading("Other Responders", section));
+            for (ip, other_stats) in &self.hop.responders {
+                if *ip != stats.ip {
+                    let hostname = other_stats
+                        .hostname
+                        .as_ref()
+                        .map(|h| format!(" ({h})"))
+                        .unwrap_or_default();
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  {ip}{hostname}"), text),
                         Span::styled(
-                            format!("{}", ttl_info.normal_samples),
-                            Style::default().fg(self.theme.success),
-                        ),
-                        Span::styled("  Anomalous: ", Style::default().fg(self.theme.text_dim)),
-                        if ttl_info.anomalous_samples > 0 {
-                            Span::styled(
-                                format!("{}", ttl_info.anomalous_samples),
-                                Style::default().fg(self.theme.warning),
-                            )
-                        } else {
-                            Span::raw("0".to_string())
-                        },
-                    ]));
-                }
-            }
-
-            // ECMP detail
-            match self.hop.ecmp_kind() {
-                EcmpKind::PerFlow => {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(vec![Span::styled(
-                        "  Per-Flow Paths (ECMP detected):",
-                        Style::default().fg(self.theme.warning),
-                    )]));
-
-                    let ecmp_paths = self.hop.ecmp_paths();
-                    let num_paths = self.hop.path_count();
-                    for (flow_id, responder_ip) in &ecmp_paths {
-                        // Look up hostname from responders map
-                        let hostname = self
-                            .hop
-                            .responders
-                            .get(responder_ip)
-                            .and_then(|s| s.hostname.as_ref())
-                            .map(|h| format!(" ({})", h))
-                            .unwrap_or_default();
-
-                        // Mark if this is a unique path
-                        let is_unique = ecmp_paths
-                            .iter()
-                            .filter(|(_, ip)| ip == responder_ip)
-                            .count()
-                            == 1;
-                        let marker = if is_unique && num_paths > 1 {
-                            " ← alt path"
-                        } else {
-                            ""
-                        };
-
-                        lines.push(Line::from(vec![
-                            Span::raw(format!("    Flow {}: ", flow_id)),
-                            Span::raw(format!("{}{}", responder_ip, hostname)),
-                            Span::styled(marker, Style::default().fg(self.theme.shortcut)),
-                        ]));
-                    }
-                }
-                EcmpKind::PerPacket => {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(vec![Span::styled(
-                        "  Per-Packet ECMP detected",
-                        Style::default().fg(self.theme.warning),
-                    )]));
-                    lines.push(Line::from(vec![
-                        Span::styled("  Responders: ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(format!("{}", self.hop.responders.len())),
-                        Span::styled("  Paths shown: ", Style::default().fg(self.theme.text_dim)),
-                        Span::raw(format!("{}", self.hop.path_count())),
-                    ]));
-                }
-                EcmpKind::None => {
-                    if !self.hop.flow_paths.is_empty() && self.hop.flow_paths.len() > 1 {
-                        // Show flows even without ECMP (all same path)
-                        lines.push(Line::from(""));
-                        lines.push(Line::from(vec![
-                            Span::styled("  Flows: ", Style::default().fg(self.theme.text_dim)),
-                            Span::raw(format!("{} (single path)", self.hop.flow_paths.len())),
-                        ]));
-                    }
-                }
-            }
-
-            // Other responders (aggregate view)
-            if self.hop.responders.len() > 1 {
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![Span::styled(
-                    "  Other responders at this TTL:",
-                    Style::default().fg(self.theme.warning),
-                )]));
-
-                for (ip, other_stats) in &self.hop.responders {
-                    if *ip != stats.ip {
-                        let hostname = other_stats
-                            .hostname
-                            .as_ref()
-                            .map(|h| format!(" ({})", h))
-                            .unwrap_or_default();
-                        lines.push(Line::from(vec![
-                            Span::raw("    "),
-                            Span::raw(format!("{}{}", ip, hostname)),
-                            Span::styled(
-                                format!(
-                                    " - {} responses, avg {:.1}ms",
-                                    other_stats.received,
-                                    other_stats.avg_rtt().as_secs_f64() * 1000.0
-                                ),
-                                Style::default().fg(self.theme.text_dim),
+                            format!(
+                                "  {} replies, avg {:.1} ms",
+                                other_stats.received,
+                                other_stats.avg_rtt().as_secs_f64() * 1000.0
                             ),
-                        ]));
-                        append_extensions(&mut lines, other_stats, self.theme);
-                    }
+                            dim,
+                        ),
+                    ]));
+                    append_extensions(&mut lines, other_stats, theme);
                 }
             }
-        } else {
-            lines.push(Line::from("  No responses received at this TTL"));
         }
 
         wrap_lines(lines, inner_width)
     }
 }
 
-/// Wrap on grapheme boundaries before measuring height, retaining span styles.
-/// Long interface/hostname values must not hide the MTU at the end of a line.
+/// Grid cell width: a fixed-width label plus its right-aligned value. Every
+/// section uses the same cell width, so values line up down the popup.
+const CELL: usize = 17;
+
+/// One indented grid row: dim labels padded to `label` cells, values
+/// right-aligned in the rest of each cell, three spaces between cells.
+fn grid(cells: &[(&str, String, Style)], label: usize, dim: Style) -> Line<'static> {
+    let mut spans = vec![Span::raw("  ")];
+    for (i, (name, value, style)) in cells.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("   "));
+        }
+        spans.push(Span::styled(format!("{name:<label$}"), dim));
+        spans.push(Span::styled(format!("{value:>0$}", CELL - label), *style));
+    }
+    Line::from(spans)
+}
+
+/// A free-text row under a section: dim label, then the value.
+fn note(label: &str, value: String, style: Style, dim: Style) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {label:<12}"), dim),
+        Span::styled(value, style),
+    ])
+}
+
+/// `164 ▁▂▁█ 485 ms`: the sparkline takes exactly the width left after its
+/// indent and range labels, so the newest samples are never clipped.
+fn sparkline_row(data: &[Option<Duration>], width: usize, theme: &Theme) -> Option<Line<'static>> {
+    let (lo, hi) = sparkline_range(data)?;
+    let (lo, hi) = (format!("{lo:.0} "), format!(" {hi:.0} ms"));
+    let bars = width
+        .checked_sub(2 + lo.len() + hi.len())
+        .filter(|&w| w > 0)?;
+    let dim = Style::default().fg(theme.text_dim);
+    let mut spans = vec![Span::raw("  "), Span::styled(lo, dim)];
+    spans.extend(sparkline_spans(data, bars, theme));
+    spans.push(Span::styled(hi, dim));
+    Some(Line::from(spans))
+}
+
+/// Wrap before measuring height, retaining span styles. Lines break at the
+/// last space that fits and continue under the line's own leading indent
+/// (a hanging indent); a word longer than the width breaks between
+/// graphemes. Long interface/hostname values must not hide the MTU at the
+/// end of a line.
 pub(crate) fn wrap_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    let width = usize::from(width);
     if width == 0 {
         return Vec::new();
     }
+    let is_space = |span: &Span| span.content == " ";
     let mut wrapped = Vec::new();
     for line in lines {
-        let mut spans = Vec::new();
+        let graphemes: Vec<Span<'static>> = line
+            .styled_graphemes(Style::default())
+            .map(|g| Span::styled(g.symbol.to_owned(), g.style))
+            .filter(|span| span.width() <= width)
+            .collect();
+        let indent = graphemes.iter().take_while(|s| is_space(s)).count();
+        // An indent that leaves under half the width is not worth keeping.
+        let indent = if indent * 2 < width { indent } else { 0 };
+        let mut row: Vec<Span<'static>> = Vec::new();
         let mut used = 0;
-        for grapheme in line.styled_graphemes(Style::default()) {
-            let span = Span::styled(grapheme.symbol.to_owned(), grapheme.style);
+        for span in graphemes {
             let cells = span.width();
-            if used + cells > usize::from(width) && !spans.is_empty() {
-                wrapped.push(Line::from(std::mem::take(&mut spans)));
-                used = 0;
+            if used + cells > width && row.iter().any(|s| !is_space(s)) {
+                // Break after the last space past the indent, else hard-break.
+                let split = row
+                    .iter()
+                    .rposition(is_space)
+                    .filter(|&i| i >= indent && row[..i].iter().skip(indent).any(|s| !is_space(s)))
+                    .unwrap_or(row.len());
+                let mut rest = row.split_off(split);
+                while row.last().is_some_and(is_space) {
+                    row.pop();
+                }
+                let start = rest.iter().take_while(|s| is_space(s)).count();
+                rest.drain(..start);
+                wrapped.push(Line::from(std::mem::take(&mut row)));
+                row = vec![Span::raw(" "); indent];
+                row.extend(rest);
+                used = row.iter().map(Span::width).sum();
+                if is_space(&span) && row.len() == indent {
+                    continue; // the break consumed this space
+                }
             }
-            if cells <= usize::from(width) {
-                used += cells;
-                spans.push(span);
-            }
+            used += cells;
+            row.push(span);
         }
-        wrapped.push(Line::from(spans));
+        wrapped.push(Line::from(row));
     }
     wrapped
 }
 
 fn append_extensions(lines: &mut Vec<Line<'static>>, stats: &ResponderStats, theme: &Theme) {
+    let heading = Style::default().fg(theme.header).bold();
+    let dim = Style::default().fg(theme.text_dim);
+    let text = Style::default().fg(theme.text);
     // MPLS labels (if present)
-    if let Some(ref labels) = stats.mpls_labels {
-        lines.push(Line::from(""));
+    if let Some(labels) = &stats.mpls_labels {
+        lines.push(Line::default());
+        lines.push(Line::styled("MPLS", heading));
         let label_str = labels
             .iter()
             .map(|l| format!("{} (TTL {})", l.label, l.ttl))
             .collect::<Vec<_>>()
             .join(" → ");
-        lines.push(Line::from(vec![
-            Span::styled("  MPLS: ", Style::default().fg(theme.text_dim)),
-            Span::styled(label_str, Style::default().fg(theme.shortcut)),
-        ]));
+        lines.push(note("Labels", label_str, text, dim));
     }
 
     // RFC 5837 Interface Information (if present)
     if let Some(ifaces) = &stats.interface_info {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![Span::styled(
-            "  Interface (RFC 5837):",
-            Style::default().fg(theme.text_dim),
-        )]));
+        lines.push(Line::default());
+        lines.push(Line::styled("Interface (RFC 5837)", heading));
         for iface in ifaces {
             let mut parts = Vec::new();
             if let Some(name) = &iface.name {
-                parts.push(format!("\"{}\"", name));
+                parts.push(name.clone());
             }
             if let Some(ip) = iface.ip_addr {
-                parts.push(format!("IP {}", ip));
+                parts.push(format!("IP {ip}"));
             }
             if let Some(if_index) = iface.if_index {
-                parts.push(format!("idx {}", if_index));
+                parts.push(format!("idx {if_index}"));
             }
             if let Some(mtu) = iface.mtu {
-                parts.push(format!("MTU {}", mtu));
+                parts.push(format!("MTU {mtu}"));
             }
-            let detail_str = if parts.is_empty() {
+            let detail = if parts.is_empty() {
                 "(no details)".to_string()
             } else {
                 parts.join(", ")
             };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("    {}: ", iface.role.as_str()),
-                    Style::default().fg(theme.text_dim),
-                ),
-                Span::styled(detail_str, Style::default().fg(theme.shortcut)),
-            ]));
+            lines.push(note(iface.role.as_str(), detail, text, dim));
         }
     }
 }
 
 impl Widget for HopDetailView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Calculate popup width first (needed for sparkline sizing)
-        let popup_width = area.width.saturating_sub(10).min(80);
-        let inner_width = popup_width.saturating_sub(2); // -2 for left/right borders
-
-        // Build content first to calculate required height
-        let lines = self.build_lines(inner_width);
+        let popup_width = Self::popup_width(area);
+        // Build content first: the sparkline and wrapping need the width,
+        // and the popup height follows the content.
+        let lines = self.build_lines(popup_width.saturating_sub(super::POPUP_COLS));
         let content_height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+        let popup_height = content_height
+            .saturating_add(super::POPUP_ROWS)
+            .min(area.height.saturating_sub(4));
 
-        // Calculate centered popup area with dynamic height
-        // Borders plus a fixed navigation footer.
-        let needed_height = content_height.saturating_add(3);
-        let max_height = area.height.saturating_sub(4);
-        let popup_height = needed_height.min(max_height);
-        let popup_x = (area.width - popup_width) / 2 + area.x;
-        let popup_y = (area.height - popup_height) / 2 + area.y;
-        let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
-
-        // Clear the popup area
-        Clear.render(popup_area, buf);
-
-        let stats = self.hop.primary_stats();
-        let ip = stats
-            .map(|s| s.ip.to_string())
-            .unwrap_or_else(|| "* * *".to_string());
-        let title = format!(" Hop {}: {} ", self.hop.ttl, ip);
-
-        let block = Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border));
-
-        let inner = block.inner(popup_area);
-        block.render(popup_area, buf);
-
-        let content = Rect {
-            height: inner.height.saturating_sub(1),
-            ..inner
-        };
+        let content = super::popup(
+            area,
+            buf,
+            (popup_width, popup_height),
+            &self.title(),
+            &[("↑/↓", "hop"), ("PgUp/PgDn", "scroll"), ("Esc", "back")],
+            self.theme,
+        );
         let max_scroll = content_height.saturating_sub(content.height);
         Paragraph::new(lines)
             .scroll((self.scroll.min(max_scroll), 0))
             .render(content, buf);
-        if inner.height > 0 {
-            let footer = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
-            Paragraph::new(" ↑/↓ hop  PgUp/PgDn scroll  Esc back")
-                .style(Style::default().fg(self.theme.text_dim))
-                .render(footer, buf);
-        }
     }
 }
 
@@ -752,7 +724,7 @@ mod tests {
                     .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>()),
             );
         }
-        for line in view.build_lines(58) {
+        for line in view.build_lines(70 - 10 - super::super::POPUP_COLS) {
             let line = line.to_string();
             let line = line.trim();
             assert!(
@@ -819,5 +791,121 @@ mod tests {
                 .all(|span| span.style == style)
         );
         assert!(wrap_lines(vec![Line::from(value)], 0).is_empty());
+    }
+
+    fn latency_hop(samples: &[u64]) -> Hop {
+        let mut hop = Hop::new(10);
+        let ip = "203.0.113.5".parse().unwrap();
+        for &ms in samples {
+            hop.record_sent();
+            hop.record_response(ip, Duration::from_millis(ms));
+        }
+        hop
+    }
+
+    #[test]
+    fn sparkline_fits_beside_its_labels_and_keeps_the_newest_sample() {
+        // A flat route with one final spike: the spike is the newest sample.
+        let mut samples = vec![164; 59];
+        samples.push(485);
+        let hop = latency_hop(&samples);
+        let theme = Theme::default();
+        for width in [30u16, 46, 56, 76] {
+            let lines = HopDetailView::new(&hop, &theme).build_lines(width);
+            let row = lines
+                .iter()
+                .map(ToString::to_string)
+                .find(|l| l.ends_with(" ms") && l.contains('▁'))
+                .expect("sparkline row");
+            assert!(row.chars().count() <= usize::from(width), "{width}: {row}");
+            // Newest sample sits right before the range label, never clipped.
+            assert!(row.contains("█ "), "{width}: {row}");
+            assert!(row.starts_with("  164 ▁"), "{row}");
+        }
+    }
+
+    #[test]
+    fn sparkline_scale_ignores_a_single_outlier() {
+        let mut data: Vec<_> = (0..40)
+            .map(|i| Some(Duration::from_millis(10 + i % 8)))
+            .collect();
+        data.push(Some(Duration::from_millis(900)));
+        let (lo, hi) = sparkline_range(&data).unwrap();
+        assert!(lo >= 10.0 && hi <= 17.0, "{lo} {hi}");
+        let bars: String = sparkline_spans(&data, 41, &Theme::default())
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        // Normal variation still spans several block heights.
+        let distinct: std::collections::HashSet<char> = bars.chars().collect();
+        assert!(distinct.len() >= 5, "{bars}");
+        assert!(sparkline_range(&[None, None]).is_none());
+    }
+
+    #[test]
+    fn detail_values_line_up_in_one_grid() {
+        let hop = latency_hop(&[164, 170, 180, 485, 166]);
+        let theme = Theme::dracula();
+        let lines: Vec<String> = HopDetailView::new(&hop, &theme)
+            .build_lines(76)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let row = |label: &str| {
+            lines
+                .iter()
+                .find(|l| l.trim_start().starts_with(label))
+                .unwrap_or_else(|| panic!("{label} missing: {lines:#?}"))
+                .clone()
+        };
+        let (min, last) = (row("Min"), row("Last"));
+        // One decimal, the unit once per value, right edges aligned.
+        assert!(
+            min.contains("164.0 ms") && min.contains("485.0 ms"),
+            "{min}"
+        );
+        assert_eq!(min.find(" ms").unwrap(), last.find(" ms").unwrap());
+        assert_eq!(row("Sent").find('5'), Some(min.find(" ms").unwrap() + 2));
+        assert_eq!(
+            HopDetailView::new(&hop, &theme).title(),
+            "Hop 10 · 203.0.113.5"
+        );
+        // Section headings stand out; normal counts are not painted green.
+        let built = HopDetailView::new(&hop, &theme).build_lines(76);
+        let latency = built.iter().find(|l| l.to_string() == "Latency").unwrap();
+        assert_eq!(latency.spans[0].style.fg, Some(theme.header));
+        assert!(
+            built
+                .iter()
+                .flat_map(|l| &l.spans)
+                .all(|s| s.style.fg != Some(theme.success))
+        );
+    }
+
+    #[test]
+    fn wrapping_breaks_at_words_with_a_hanging_indent() {
+        let dim = Style::default().fg(ratatui::style::Color::DarkGray);
+        let line = Line::from(vec![
+            Span::styled("    check ", dim),
+            Span::raw("GitHub for new releases at startup"),
+        ]);
+        let rows: Vec<String> = wrap_lines(vec![line], 24)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            rows,
+            ["    check GitHub for", "    new releases at", "    startup"]
+        );
+        // Styles survive the move to a continuation row.
+        let wrapped = wrap_lines(vec![Line::styled("  aaa bbb", dim)], 6);
+        assert_eq!(wrapped[1].to_string(), "  bbb");
+        assert!(wrapped[1].spans.iter().skip(2).all(|s| s.style == dim));
+        // A word longer than the width still breaks, keeping the indent.
+        let rows: Vec<String> = wrap_lines(vec![Line::from("  abcdefghij")], 6)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(rows, ["  abcd", "  efgh", "  ij"]);
     }
 }

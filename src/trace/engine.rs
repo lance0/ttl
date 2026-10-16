@@ -1421,6 +1421,11 @@ impl ProbeEngine {
                     if !matches!(parsed.response_type, IcmpResponseType::EchoReply) {
                         continue;
                     }
+                    // An Echo Reply only answers our probe if it comes from our
+                    // target; anything else is another engine's or process's.
+                    if parsed.responder != self.target {
+                        continue;
+                    }
 
                     // Look up pending probe
                     let flow_id = 0u8; // ICMP uses single flow

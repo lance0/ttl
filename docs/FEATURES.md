@@ -98,21 +98,27 @@ ttl implements Paris-style ECMP detection using source port variation.
 
 ## Detection Indicators
 
-ttl flags what it detects in two places: the title bar (for the whole trace)
-and beside each hop's host name.
+ttl flags what it detects in three places: badges in the title bar (for the
+whole trace), a tag after a hop's loss value, and markers beside the host
+name. Press `?` in the TUI for the same legend; `ttl --help` lists it too.
 
-| Title bar | Meaning |
-|-----------|---------|
-| `[NAT]` | A device rewrote probe source ports ([NAT Detection](#nat-detection)); multi-flow results may be inaccurate |
-| `[RL?]` | Loss at some hop looks like ICMP rate limiting rather than real loss |
-| `[ASYM]` | The return path of some hop appears to differ from the forward path |
-| `[TTL!]` | A middlebox (for example a transparent proxy) appears to modify TTL values |
-| `[MTU: 1400-1500]` / `[MTU: 1400]` / `[MTU: unconfirmed]` | PMTUD search range, result, or no confirmed size ([Path MTU Discovery](#path-mtu-discovery-pmtud)) |
-| `[max_ttl=30]` | The destination was not reached within the default 30 hops; raise `-m` |
-| `[PAUSED]` | Probing is paused (`p` or Space) |
+| Title flag | Meaning |
+|------------|---------|
+| `PAUSED` | Probing is paused (`p` or Space) |
+| `RL?` | Rate limiting is suspected at some hop on the path |
+| `ASYM` | The return path of some hop appears to differ from the forward path |
+| `NAT` | A device rewrote probe source ports ([NAT Detection](#nat-detection)); multi-flow results may be inaccurate |
+| `TTL!` | A middlebox (for example a transparent proxy) appears to modify TTL values |
+| `MTU 1400-1500` / `MTU 1400` / `MTU unconfirmed` | PMTUD search range, result, or no confirmed size ([Path MTU Discovery](#path-mtu-discovery-pmtud)) |
+| `max_ttl=30` | The destination has not been reached within the default 30 hops; raise `-m` if the path is longer |
 
-| Beside a hop | Meaning |
-|--------------|---------|
+| Loss column | Meaning |
+|-------------|---------|
+| `–` | No probe to this hop has completed yet |
+| `50.0% RL` | Loss at this hop is likely ICMP rate limiting, not forwarding loss |
+
+| Host marker | Meaning |
+|-------------|---------|
 | `E` | ECMP: several responders answer at this hop ([ECMP Classification](#ecmp-classification)) |
 | `!` | Route flap: the primary responder changed ([Route Flap Detection](#route-flap-detection)) |
 | `~` | Asymmetric routing suspected at this hop |
@@ -120,14 +126,16 @@ and beside each hop's host name.
 | `+` | Interface or MPLS details are available ([ICMP Extension Details](#icmp-extension-details)) |
 
 `E`, `!` and `~` appear only in single-flow mode; with `--flows > 1` the
-**Paths** and **NAT** columns carry that information instead. A loss value
-such as `50%RL` marks a hop where rate limiting is suspected: routers often
-deprioritize the ICMP replies traceroute depends on, so loss that does not
-continue to later hops is usually not real packet loss. The check needs a
-later hop to compare against, so it is skipped at the destination.
+**Paths** and **NAT** columns carry that information instead.
 
-The hop detail view (Enter) shows the NAT, rate-limit, route-change and
-asymmetry evidence for the selected hop.
+Routers often deprioritize the ICMP replies traceroute depends on, so loss at
+one hop that does not continue to later hops is usually not real packet loss.
+The `RL` check needs a later hop to compare against, so it is skipped at the
+destination, and it only applies to hops that have replied at least once: a
+hop that never answers (`* * *`) is shown dimmed rather than flagged.
+
+The hop detail view (Enter) shows the NAT, rate-limit, route-change, routing
+symmetry and TTL behavior evidence for the selected hop.
 
 ## ICMP Extension Details
 
@@ -142,7 +150,7 @@ start/end, while Up/Down continue to select adjacent hops.
 ttl detects NAT devices that rewrite source ports of UDP and TCP probes:
 
 - Compares the source port sent with the one quoted back in ICMP error payloads
-- Shows `[NAT]` in the title bar, `NAT Detected!` with port-match counts and rewrite samples in the hop detail view, and a `!` in the NAT column in multi-flow mode
+- Shows `NAT` in the title bar, a **NAT Detected** section with port-match counts and rewrite samples in the hop detail view, and a `!` in the NAT column in multi-flow mode
 - Useful for diagnosing carrier-grade NAT (CGNAT) or enterprise NAT, which breaks flow correlation for `--flows`
 
 ```bash
@@ -157,13 +165,17 @@ ttl              # Start with an empty session
 
 Run `ttl` with no arguments to open an empty interactive session, then press
 `o` to add targets. The input modal resolves hostnames in the background
-(showing a "Resolving..." state) and starts probing immediately on success —
+(showing a "Resolving…" state) and starts probing immediately on success —
 no restart needed. Targets can also be added mid-session in any live TUI run;
 entering a host that's already being traced switches to it.
 
 Probe infrastructure scales at runtime: each added target gets its own probe
 engine, and a packet receiver is started for an IP family the first time a
 target of that family is added.
+
+With several targets (`ttl 8.8.8.8 1.1.1.1`), `Tab`/`Shift-Tab` switch between
+them and `l` opens the target list: one row per target with its address, name,
+hop count, loss, and RTT at the destination.
 
 ## Multi-IP Resolution
 
@@ -240,11 +252,13 @@ Interface binding is not available on FreeBSD or NetBSD; use `--source-ip` there
 
 ### Title Bar Routing Display
 
-When binding to an interface or when the source can be determined, the TUI title bar shows routing information:
+When binding to an interface or when the source can be determined, the right side of the TUI title bar shows routing information next to the interval, probe count, and RTT unit:
 
 ```
-ttl ── 8.8.8.8 eth0 (192.168.1.100 → 192.168.1.1) ── 100 probes ── 1000ms interval ── RTT ms
+eth0 192.168.1.100 → 192.168.1.1 · 1000ms interval · 100 probes · RTT ms
 ```
+
+On narrow terminals these details give way first (routing, then interval, then probe count) so the target and [title flags](#detection-indicators) stay whole.
 
 - **Interface name** (eth0, wlan0) - shown when `--interface` is used
 - **Source IP** (192.168.1.100) - the local address used for probes
@@ -291,8 +305,8 @@ for example in VPN tunnels where large packets are silently dropped and
 connections hang.
 
 PMTUD probes are ICMP Echo Requests, so they are sent only when ttl probes
-with ICMP (`-p icmp`, or the default `-p auto` when it selects ICMP). With
-`-p udp` or `-p tcp`, `--pmtud` has no effect.
+with ICMP (`-p icmp`, or the default `-p auto` when it selects ICMP).
+`--pmtud` with `-p udp` or `-p tcp` is rejected.
 
 1. Sends probes with Don't Fragment (DF) flag set
 2. Binary searches between min (68 for IPv4, 1280 for IPv6) and max (1500 or 9216)
@@ -531,11 +545,17 @@ The display mode sets preferred Host and ASN widths:
 | **Compact** | Compact preferences | 20 cells | 12 cells |
 | **Wide** | Generous widths, plus JAvg/JMax | 45 cells | 36 cells |
 
-Press `w` in the main view (or `Enter` in the Display Mode settings section) to cycle through modes. All modes adapt to the available terminal width: secondary columns disappear before numeric cells are squeezed, and Enter opens all statistics for the selected hop. Large counters or RTTs use scientific notation when needed. Latency values are in milliseconds.
+Press `w` in the main view (or `Enter` in the Display Mode settings section) to cycle through modes.
 
-Hop and target selections scroll into view automatically, and settings keeps the active section visible.
+The main table columns are `#`, Host, ASN, Loss, Sent, Last, Avg, Min, Max, StDev, Jitter, plus JAvg/JMax in wide mode, NAT and Paths with `--flows > 1`, and Recent. Numbers are right-aligned; RTTs are in milliseconds with one decimal (the unit appears once, as `RTT ms` in the title bar), and loss is shown as a percentage with one decimal. Large counters or RTTs use scientific notation when needed. The ASN column is omitted with `--no-asn`, and a static replay hides Last and Recent.
 
-The **Recent** column shows the latest ten probe outcomes for the hop, oldest to newest: `·` is a reply and `×` is a timeout.
+All modes adapt to the available terminal width by dropping whole columns rather than truncating numbers. Columns go in this order: JMax and JAvg, Jitter, StDev, Min, Max, ASN (before Host shrinks below a readable width), Recent, Paths and NAT, Sent, Last, Avg, Loss. Enter opens all statistics for the selected hop, including omitted ones.
+
+Hop and target selections scroll into view automatically, and settings keeps the active section visible. The status bar shows the keys that act in the current view; a static replay omits live-only keys such as pause and add target.
+
+The **Recent** column shows the latest ten probe outcomes for the hop, oldest to newest: `·` is a reply and `×` is a timeout. Hops that have never replied are dimmed.
+
+When the update check is disabled for the run by `--no-update-check`, `DO_NOT_TRACK` or `TTL_NO_UPDATE_CHECK`, the **Update Check** row reads `[off]` with the reason (for example `set by --no-update-check`), cannot be toggled, and the saved preference is left unchanged.
 
 ### PeeringDB Section
 
@@ -548,7 +568,7 @@ Settings are saved to the [config file](#config-file) when the TUI exits.
 
 ## Themes
 
-11 built-in themes available via `--theme` or `t` key:
+11 built-in themes available via `--theme` or `t` key. The default theme uses the terminal's own colors, so it works on light and dark terminals; the others are designed for dark terminals, with text and dim text at a contrast ratio of at least 4.5:1 against the theme background.
 
 | Theme | Description |
 |-------|-------------|
@@ -564,7 +584,7 @@ Settings are saved to the [config file](#config-file) when the TUI exits.
 | `tokyo_night` | City lights inspired |
 | `solarized` | Precision readability |
 
-Theme selection is saved to the [config file](#config-file) when the TUI exits. `--theme <name>` overrides the saved theme for that run (and is saved on exit); `--theme default` does not override a saved theme.
+Theme selection is saved to the [config file](#config-file) when the TUI exits. `--theme <name>` (including `--theme default`) overrides the saved theme and is saved on exit; without `--theme` the saved theme is used.
 
 ## Config File
 
@@ -797,7 +817,7 @@ session ([Interactive Target Selection](#interactive-target-selection)).
       --rate <N>             Max probes per second, 0-10000 (0 = unlimited)
       --size <N>             Packet size in bytes, 36-9216 (conflicts with --pmtud)
       --dscp <N>             DSCP value, 0-63
-      --pmtud                Path MTU discovery, up to 1500 bytes (ICMP only)
+      --pmtud                Path MTU discovery, up to 1500 bytes (ICMP only; rejected with -p udp/tcp)
       --jumbo                Search up to 9216 bytes (requires --pmtud)
   -4, --ipv4                 Force IPv4
   -6, --ipv6                 Force IPv6
@@ -837,7 +857,7 @@ session ([Interactive Target Selection](#interactive-target-selection)).
 **Interface and misc**
 
 ```
-      --theme <NAME>         Color theme (see Themes)
+      --theme <NAME>         Color theme; overrides the saved theme (see Themes)
       --wide                 Start in wide display mode
       --no-update-check      Skip the startup release check
       --completions <SHELL>  Print completions for bash, zsh, fish, or powershell

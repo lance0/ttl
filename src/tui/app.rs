@@ -7,10 +7,10 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Span;
 use ratatui::widgets::{LineGauge, Paragraph};
 use scopeguard::defer;
-use std::borrow::Cow;
 use std::io::stdout;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use crate::trace::receiver::SessionMap;
 use crate::tui::theme::Theme;
 use crate::tui::views::{
     AddTargetRequest, HelpView, HopDetailView, MainView, SettingsState, SettingsView, TargetInfo,
-    TargetInputState, TargetInputView, TargetListView, extract_target_infos,
+    TargetInputState, TargetInputView, TargetListView, extract_target_infos, fit_text, hint_line,
 };
 
 /// State for animated replay playback
@@ -46,6 +46,9 @@ pub struct ReplayState {
     pub finished: bool,
     /// Adjusted elapsed ms at time of pause (for accurate resume)
     pub paused_at_elapsed_ms: u64,
+    /// The loaded session, source of the per-responder enrichment (hostname,
+    /// ASN, geo, IX, ICMP extensions) that events don't carry
+    pub source: Option<Session>,
 }
 
 impl ReplayState {
@@ -60,6 +63,18 @@ impl ReplayState {
             paused: false,
             finished: false,
             paused_at_elapsed_ms: 0,
+            source: None,
+        }
+    }
+
+    /// Apply `events[range]` to `session`, then fill in enrichment for the
+    /// responders they introduced from the loaded session.
+    fn apply_events(&self, session: &mut Session, range: std::ops::Range<usize>) {
+        for event in &self.events[range] {
+            session.apply_replay_event(event);
+        }
+        if let Some(source) = &self.source {
+            session.copy_enrichment_from(source);
         }
     }
 }
@@ -116,6 +131,9 @@ pub struct UiState {
     pub show_target_input: bool,
     /// Target input modal state
     pub target_input: TargetInputState,
+    /// Update check is off for this run via --no-update-check or env opt-out,
+    /// so the settings toggle shows off and can't be flipped.
+    pub update_check_locked: bool,
 }
 
 impl UiState {
@@ -131,6 +149,9 @@ impl UiState {
         }
     }
 }
+
+/// Address, name, hops, loss and RTT of one target-list row.
+type TargetRow = (IpAddr, String, String, String, String);
 
 /// Post-poll render fingerprint (LAN-1222). Built after status expiry,
 /// add-target, update check, IX cache status, and target-list refresh so
@@ -166,7 +187,7 @@ struct RenderFingerprint {
         bool,
     ),
     ix_cache: Option<(bool, usize, Option<u64>, bool, bool)>,
-    target_list_rows: Option<Vec<(IpAddr, String, String, String)>>,
+    target_list_rows: Option<Vec<TargetRow>>,
 }
 
 fn render_fingerprint(
@@ -201,6 +222,7 @@ fn render_fingerprint(
         target_list_tick: _,
         show_target_input,
         target_input,
+        update_check_locked: _, // fixed for the whole run; settings.update_check is hashed
     } = ui_state;
     let SettingsState {
         selected_section,
@@ -227,6 +249,7 @@ fn render_fingerprint(
             paused: replay_paused,
             finished,
             paused_at_elapsed_ms: _,
+            source: _, // fixed after load
         } = r;
         (
             *replay_paused,
@@ -283,8 +306,15 @@ fn render_fingerprint(
                         hostname,
                         hops_str,
                         loss_str,
+                        rtt_str,
                     } = t;
-                    (*ip, hostname.clone(), hops_str.clone(), loss_str.clone())
+                    (
+                        *ip,
+                        hostname.clone(),
+                        hops_str.clone(),
+                        loss_str.clone(),
+                        rtt_str.clone(),
+                    )
                 })
                 .collect()
         }),
@@ -324,6 +354,7 @@ fn handle_help_key(ui_state: &mut UiState, code: KeyCode, area: Rect, theme: &Th
     let page = HelpView::visible_rows(area).max(1);
     let max_scroll = HelpView::new(theme)
         .with_replay(ui_state.replay_state.is_some())
+        .with_update(ui_state.update_available.is_some())
         .max_scroll(area);
     let scroll = ui_state.help_scroll.min(max_scroll);
     ui_state.help_scroll = match code {
@@ -350,6 +381,7 @@ pub async fn run_tui(
     update_rx: Option<std::sync::mpsc::Receiver<Option<String>>>,
     replay_state: Option<ReplayState>,
     add_target_tx: Option<tokio::sync::mpsc::UnboundedSender<AddTargetRequest>>,
+    update_check_locked: bool,
 ) -> Result<Prefs> {
     // Setup terminal
     enable_raw_mode()?;
@@ -377,7 +409,8 @@ pub async fn run_tui(
 
     let mut settings = SettingsState::new(initial_index, display_mode, api_key);
     // Toggle shows "enabled"; the pref stores the negated "disabled" form.
-    settings.update_check = !initial_prefs.no_update_check.unwrap_or(false);
+    let saved_no_update_check = initial_prefs.no_update_check;
+    settings.update_check = !update_check_locked && !saved_no_update_check.unwrap_or(false);
 
     let mut ui_state = UiState {
         theme_index: initial_index,
@@ -385,6 +418,7 @@ pub async fn run_tui(
         settings,
         update_rx,
         replay_state,
+        update_check_locked,
         ..Default::default()
     };
     let tick_rate = Duration::from_millis(16); // ~60fps for responsive per-probe updates
@@ -432,9 +466,26 @@ pub async fn run_tui(
         theme: Some(theme_names[ui_state.theme_index].to_string()),
         display_mode: Some(ui_state.display_mode),
         peeringdb_api_key: final_api_key,
-        // Toggle holds "enabled"; persist the negated "disabled" form.
-        no_update_check: Some(!ui_state.settings.update_check),
+        // Toggle holds "enabled"; persist the negated "disabled" form. A
+        // flag/env lock is per-run, so leave the saved choice alone.
+        no_update_check: if update_check_locked {
+            saved_no_update_check
+        } else {
+            Some(!ui_state.settings.update_check)
+        },
     })
+}
+
+/// Flip the settings update-check toggle unless --no-update-check / env
+/// opt-out has it locked off for this run.
+fn toggle_update_check(ui_state: &mut UiState) {
+    if ui_state.update_check_locked {
+        ui_state.set_status(
+            "Update check disabled by --no-update-check or DO_NOT_TRACK/TTL_NO_UPDATE_CHECK",
+        );
+    } else {
+        ui_state.settings.update_check = !ui_state.settings.update_check;
+    }
 }
 
 /// Toggle pause/resume for replay animation
@@ -588,9 +639,7 @@ fn seek_replay_to(
             let target = session.target.clone();
             let config = session.config.clone();
             *session = Session::new(target, config);
-            for event in &replay.events[..target_index] {
-                session.apply_replay_event(event);
-            }
+            replay.apply_events(&mut session, 0..target_index);
         }
     } else {
         // Forward seek: apply events incrementally
@@ -598,9 +647,7 @@ fn seek_replay_to(
         let sessions_read = sessions.read();
         if let Some(session_lock) = sessions_read.get(&target_ip) {
             let mut session = session_lock.write();
-            for event in &replay.events[current_index..target_index] {
-                session.apply_replay_event(event);
-            }
+            replay.apply_events(&mut session, current_index..target_index);
         }
     }
 
@@ -636,9 +683,7 @@ fn seek_replay_to_end(ui_state: &mut UiState, sessions: &SessionMap, target_ip: 
         let sessions_read = sessions.read();
         if let Some(session_lock) = sessions_read.get(&target_ip) {
             let mut session = session_lock.write();
-            for event in &replay.events[current_index..target_index] {
-                session.apply_replay_event(event);
-            }
+            replay.apply_events(&mut session, current_index..target_index);
         }
     }
 
@@ -791,9 +836,7 @@ where
                     let sessions_read = sessions.read();
                     if let Some(session_lock) = sessions_read.get(&target_ip) {
                         let mut session = session_lock.write();
-                        for event in &replay.events[start..end] {
-                            session.apply_replay_event(event);
-                        }
+                        replay.apply_events(&mut session, start..end);
                     }
                     replay.current_index = end;
                 }
@@ -999,7 +1042,7 @@ where
                         if ui_state.settings.selected_section
                             == SettingsState::update_check_section(ix_enabled)
                         {
-                            ui_state.settings.update_check = !ui_state.settings.update_check;
+                            toggle_update_check(ui_state);
                         } else {
                             ui_state.settings.select();
                             // Live preview display mode changes
@@ -1447,6 +1490,68 @@ fn handle_target_input_key(
     }
 }
 
+/// Replay position label: `▶ 0:45 / 4:23 · 5× `.
+fn replay_label(replay: &ReplayState, current_ms: u64, total_ms: u64) -> String {
+    let icon = if replay.finished {
+        "■"
+    } else if replay.paused {
+        "‖"
+    } else {
+        "▶"
+    };
+    let speed = replay.speed_multiplier;
+    let speed = if speed.fract() == 0.0 {
+        format!("{speed:.0}×")
+    } else {
+        format!("{speed:.1}×")
+    };
+    let clock = |ms: u64| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60);
+    let time = if total_ms == 0 && !replay.events.is_empty() {
+        "instant".to_string()
+    } else {
+        format!("{} / {}", clock(current_ms), clock(total_ms))
+    };
+    format!("{icon} {time} · {speed} ")
+}
+
+/// Bottom row: key hints on the left. A transient status message sits
+/// right-aligned on the same row, so it never hides the hints entirely.
+fn draw_status_bar(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    hints: &[(&str, &str)],
+    ui_state: &UiState,
+    theme: &Theme,
+) {
+    // Inset to line up with the table content inside its border.
+    let area = Rect {
+        x: area.x.saturating_add(1),
+        width: area.width.saturating_sub(2),
+        ..area
+    };
+    let mut hint_width = area.width;
+    if let Some((ref message, _)) = ui_state.status_message {
+        let message = fit_text(message, area.width);
+        let width = Span::raw(&message).width() as u16;
+        hint_width = area.width.saturating_sub(width + 2);
+        f.render_widget(
+            Paragraph::new(message).style(Style::default().fg(theme.text)),
+            Rect {
+                x: area.right() - width,
+                width,
+                ..area
+            },
+        );
+    }
+    f.render_widget(
+        Paragraph::new(hint_line(hints, hint_width, theme)),
+        Rect {
+            width: hint_width,
+            ..area
+        },
+    );
+}
+
 /// Draw the empty state shown when no targets are being traced yet
 fn draw_empty_state(
     f: &mut ratatui::Frame,
@@ -1475,21 +1580,18 @@ fn draw_empty_state(
     let empty = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
     f.render_widget(empty, chunks[0]);
 
-    let (status_text, status_style): (Cow<'_, str>, Style) =
-        if let Some((ref msg, _)) = ui_state.status_message {
-            (
-                Cow::Borrowed(msg.as_str()),
-                Style::default().fg(theme.text_dim),
-            )
-        } else {
-            (
-                Cow::Borrowed("q quit | o add target | t theme | s settings"),
-                Style::default().fg(theme.text_dim),
-            )
-        };
-    f.render_widget(
-        Paragraph::new(format!("? help · {}", status_text)).style(status_style),
+    draw_status_bar(
+        f,
         chunks[1],
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("o", "add target"),
+            ("t", "theme"),
+            ("s", "settings"),
+        ],
+        ui_state,
+        theme,
     );
 
     // Overlays available in empty mode
@@ -1497,6 +1599,7 @@ fn draw_empty_state(
         f.render_widget(
             HelpView::new(theme)
                 .with_replay(false)
+                .with_update(ui_state.update_available.is_some())
                 .with_scroll(ui_state.help_scroll),
             area,
         );
@@ -1510,7 +1613,8 @@ fn draw_empty_state(
                 theme_names,
                 cache_status,
                 ix_enabled,
-            ),
+            )
+            .with_update_locked(ui_state.update_check_locked),
             area,
         );
     }
@@ -1555,14 +1659,27 @@ fn draw_ui(
     // Update notification banner (if available)
     if has_update {
         if let Some(ref version) = ui_state.update_available {
-            let update_text = format!(
-                " Update available: v{} -> {} | Press 'u' to dismiss ",
-                env!("CARGO_PKG_VERSION"),
-                version
-            );
-            let update_bar = Paragraph::new(update_text)
-                .style(Style::default().fg(Color::Black).bg(Color::Yellow));
-            f.render_widget(update_bar, chunks[idx]);
+            let chunk = Rect {
+                x: chunks[idx].x.saturating_add(1),
+                width: chunks[idx].width.saturating_sub(2),
+                ..chunks[idx]
+            };
+            let mut line = ratatui::text::Line::from(vec![
+                Span::styled(
+                    " UPDATE ",
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                ),
+                Span::styled(
+                    format!(" v{} → {}  ", env!("CARGO_PKG_VERSION"), version),
+                    Style::default().fg(theme.text),
+                ),
+            ]);
+            let room = chunk.width.saturating_sub(line.width() as u16);
+            line.spans
+                .extend(hint_line(&[("u", "dismiss"), ("?", "update command")], room, theme).spans);
+            f.render_widget(Paragraph::new(line), chunk);
         }
         idx += 1;
     }
@@ -1590,110 +1707,90 @@ fn draw_ui(
     if let (Some(chunk), Some(replay)) = (progress_chunk, &ui_state.replay_state) {
         let current_ms = replay_current_ms(replay);
         let total_ms = replay.events.last().map_or(0, |e| e.offset_ms);
-        let icon = if replay.finished {
-            "--"
-        } else if replay.paused {
-            "||"
-        } else {
-            ">>"
-        };
-        let instant_suffix = if total_ms == 0 && !replay.events.is_empty() {
-            " instant"
-        } else {
-            ""
-        };
-        let label = format!(
-            " {} {}/{} {} / {} {:.1}x{} ",
-            icon,
-            replay.current_index,
-            replay.events.len(),
-            format_replay_time(current_ms),
-            format_replay_time(total_ms),
-            replay.speed_multiplier,
-            instant_suffix,
-        );
+        let label = replay_label(replay, current_ms, total_ms);
         let ratio = if total_ms > 0 {
             (current_ms as f64 / total_ms as f64).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let selected_theme = theme.for_selection();
         let gauge = LineGauge::default()
-            .filled_style(
-                Style::default()
-                    .fg(selected_theme.success)
-                    .bg(theme.highlight_bg),
-            )
-            .label(label)
+            .filled_style(Style::default().fg(theme.header))
+            .unfilled_style(Style::default().fg(theme.text_dim))
+            .label(Span::styled(label, Style::default().fg(theme.text)))
             .ratio(ratio);
-        f.render_widget(gauge, chunk);
+        // Inset to line up with the table content.
+        f.render_widget(
+            gauge,
+            Rect {
+                x: chunk.x.saturating_add(1),
+                width: chunk.width.saturating_sub(2),
+                ..chunk
+            },
+        );
     }
 
-    // Status bar (use Cow to avoid allocation for static strings)
-    // Update notification takes priority over normal status
-    let (status_text, status_style): (Cow<'_, str>, Style) = if let Some(ref version) =
-        ui_state.update_available
-    {
-        (
-            Cow::Owned(format!(
-                "UPDATE: v{} -> {} available | Press 'u' to dismiss | ? for update command",
-                env!("CARGO_PKG_VERSION"),
-                version
-            )),
-            Style::default().fg(Color::Yellow),
-        )
-    } else if let Some((ref msg, _)) = ui_state.status_message {
-        (
-            Cow::Borrowed(msg.as_str()),
-            Style::default().fg(theme.text_dim),
-        )
-    } else if status_chunk.width < 110 {
-        let hints = if ui_state.replay_state.is_some() {
-            "q quit · p pause · ←/→ seek · +/- speed · Home/End"
-        } else if num_targets > 1 {
-            "q quit · p pause · o add · l targets · s settings · Enter details"
-        } else {
-            "q quit · p pause · o add · s settings · Enter details"
-        };
-        // Fall back to the shortest hints rather than clip after "? help · ".
-        let hints = if usize::from(status_chunk.width) < hints.chars().count() + 9 {
-            "q quit · p pause · Enter details"
-        } else {
-            hints
-        };
-        (Cow::Borrowed(hints), Style::default().fg(theme.text_dim))
-    } else if ui_state.replay_state.is_some() {
-        (
-            Cow::Borrowed(
-                "q quit | p pause | Left/Right seek | [/] seek 5s | +/- speed | Home/End",
-            ),
-            Style::default().fg(theme.text_dim),
-        )
+    // Hints in priority order; the lowest-priority pairs drop first.
+    let hints: &[(&str, &str)] = if ui_state.replay_state.is_some() {
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("p", "pause"),
+            ("←/→", "seek"),
+            ("[/]", "seek 5s"),
+            ("+/-", "speed"),
+            ("Home/End", "jump"),
+            ("Enter", "details"),
+        ]
     } else if num_targets > 1 {
-        (
-            Cow::Borrowed(
-                "q quit | Tab next | l list | o add | p pause | r reset | t theme | w display | s settings | e export",
-            ),
-            Style::default().fg(theme.text_dim),
-        )
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("Enter", "details"),
+            ("p", "pause"),
+            ("Tab", "next"),
+            ("l", "list"),
+            ("o", "add"),
+            ("s", "settings"),
+            ("t", "theme"),
+            ("w", "display"),
+            ("r", "reset"),
+            ("e", "export"),
+        ]
+    } else if session.started_instant.is_none() {
+        // Static replay of a loaded file: nothing probes, so pausing and
+        // adding targets do nothing.
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("Enter", "details"),
+            ("s", "settings"),
+            ("t", "theme"),
+            ("w", "display"),
+            ("r", "reset"),
+            ("e", "export"),
+        ]
     } else {
-        (
-            Cow::Borrowed(
-                "q quit | o add | p pause | r reset | t theme | w display | s settings | e export",
-            ),
-            Style::default().fg(theme.text_dim),
-        )
+        &[
+            ("?", "help"),
+            ("q", "quit"),
+            ("Enter", "details"),
+            ("p", "pause"),
+            ("o", "add"),
+            ("s", "settings"),
+            ("t", "theme"),
+            ("w", "display"),
+            ("r", "reset"),
+            ("e", "export"),
+        ]
     };
-
-    let status_text = format!("? help · {}", status_text);
-    let status_bar = Paragraph::new(status_text).style(status_style);
-    f.render_widget(status_bar, status_chunk);
+    draw_status_bar(f, status_chunk, hints, ui_state, theme);
 
     // Overlays
     if ui_state.show_help {
         f.render_widget(
             HelpView::new(theme)
                 .with_replay(ui_state.replay_state.is_some())
+                .with_update(ui_state.update_available.is_some())
                 .with_scroll(ui_state.help_scroll),
             area,
         );
@@ -1708,7 +1805,8 @@ fn draw_ui(
                 theme_names,
                 cache_status,
                 ix_enabled,
-            ),
+            )
+            .with_update_locked(ui_state.update_check_locked),
             area,
         );
     }
@@ -1900,6 +1998,18 @@ mod tests {
     }
 
     #[test]
+    fn replay_label_shows_clock_and_speed_without_event_counts() {
+        let mut replay = ReplayState::new(vec![make_timeout_event(263_000, 1, 0)], 5.0);
+        assert_eq!(
+            replay_label(&replay, 45_000, 263_000),
+            "▶ 0:45 / 4:23 · 5× "
+        );
+        replay.paused = true;
+        replay.speed_multiplier = 2.5;
+        assert_eq!(replay_label(&replay, 0, 263_000), "‖ 0:00 / 4:23 · 2.5× ");
+    }
+
+    #[test]
     fn test_replay_event_index_for_time_home_is_empty() {
         let events = vec![make_timeout_event(0, 1, 0), make_timeout_event(100, 1, 1)];
         assert_eq!(replay_event_index_for_time(&events, 0), 0);
@@ -1961,6 +2071,7 @@ mod tests {
                 paused: false,
                 finished: false,
                 paused_at_elapsed_ms: 0,
+                source: None,
             }),
             ..UiState::default()
         };
@@ -1979,6 +2090,54 @@ mod tests {
     }
 
     #[test]
+    fn animated_replay_carries_enrichment_from_loaded_session() {
+        use crate::state::session::AsnInfo;
+        let target = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+        let router = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let fresh = || Session::new(Target::new("t".to_string(), target), Config::default());
+
+        // Loaded session: hop 1 responder enriched by the original run
+        let mut loaded = fresh();
+        let hop = loaded.hop_mut(1).unwrap();
+        hop.record_response(router, Duration::from_millis(1));
+        let stats = hop.responders.get_mut(&router).unwrap();
+        stats.hostname = Some("gw.example".into());
+        stats.asn = Some(AsnInfo {
+            number: 64500,
+            name: "EXAMPLE".into(),
+            prefix: Some("10.0.0.0/8".into()),
+        });
+
+        let sessions = make_single_session_map(target, fresh());
+        let mut replay = ReplayState::new(
+            vec![ProbeEvent {
+                offset_ms: 0,
+                ttl: 1,
+                seq: 0,
+                flow_id: 0,
+                outcome: ProbeOutcome::Reply {
+                    addr: router,
+                    rtt_us: 1000,
+                },
+            }],
+            1.0,
+        );
+        replay.source = Some(loaded);
+        let mut ui_state = UiState {
+            replay_state: Some(replay),
+            ..UiState::default()
+        };
+
+        seek_replay_to_end(&mut ui_state, &sessions, target);
+
+        let session_lock = sessions.read().get(&target).cloned().unwrap();
+        let session = session_lock.read();
+        let stats = &session.hop(1).unwrap().responders[&router];
+        assert_eq!(stats.hostname.as_deref(), Some("gw.example"));
+        assert_eq!(stats.asn.as_ref().map(|a| a.number), Some(64500));
+    }
+
+    #[test]
     fn test_seek_replay_to_same_position_is_noop_for_session_state() {
         let target = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
         let session = Session::new(Target::new("t".to_string(), target), Config::default());
@@ -1994,6 +2153,7 @@ mod tests {
                 paused: false,
                 finished: false,
                 paused_at_elapsed_ms: 0,
+                source: None,
             }),
             ..UiState::default()
         };
@@ -2055,6 +2215,23 @@ mod tests {
         assert!(!ui_state.show_target_input);
         assert!(ui_state.status_message.is_some());
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn update_check_toggle_respects_flag_or_env_lock() {
+        let mut ui_state = UiState::default();
+        ui_state.settings.update_check = true;
+        toggle_update_check(&mut ui_state);
+        assert!(!ui_state.settings.update_check);
+
+        let mut locked = UiState {
+            update_check_locked: true,
+            ..UiState::default()
+        };
+        locked.settings.update_check = false;
+        toggle_update_check(&mut locked);
+        assert!(!locked.settings.update_check, "locked toggle must stay off");
+        assert!(locked.status_message.is_some());
     }
 
     #[test]
@@ -2123,32 +2300,81 @@ mod tests {
     }
 
     #[test]
+    fn static_replay_hints_omit_live_only_keys() {
+        use ratatui::backend::TestBackend;
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let mut session = Session::new(Target::new("example.net".into(), ip), Config::default());
+        let status = |session: &Session| {
+            let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
+            terminal
+                .draw(|f| {
+                    draw_ui(
+                        f,
+                        session,
+                        &UiState::default(),
+                        &Theme::default(),
+                        1,
+                        None,
+                        false,
+                    )
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer();
+            (0..140).map(|x| buf[(x, 11)].symbol()).collect::<String>()
+        };
+        let live = status(&session);
+        assert!(live.contains("p pause") && live.contains("o add"), "{live}");
+        session.started_instant = None; // loaded from a file
+        let replay = status(&session);
+        assert!(
+            !replay.contains("p pause") && !replay.contains("o add"),
+            "{replay}"
+        );
+        assert!(replay.contains("e export"), "{replay}");
+    }
+
+    #[test]
     fn status_hints_are_never_clipped() {
         use ratatui::backend::TestBackend;
         let ip: IpAddr = "192.0.2.1".parse().unwrap();
         let session = Session::new(Target::new("example.net".into(), ip), Config::default());
-        for width in 41..110 {
+        let labels = [
+            "help", "quit", "details", "pause", "next", "list", "add", "settings", "theme",
+            "display", "reset", "export",
+        ];
+        for width in 20..140 {
             for targets in [1, 2] {
-                let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
-                terminal
-                    .draw(|f| {
-                        draw_ui(
-                            f,
-                            &session,
-                            &UiState::default(),
-                            &Theme::default(),
-                            targets,
-                            None,
-                            false,
-                        )
-                    })
-                    .unwrap();
-                let buf = terminal.backend().buffer();
-                let status: String = (0..width).map(|x| buf[(x, 11)].symbol()).collect();
-                assert!(
-                    status.trim_end().ends_with("Enter details"),
-                    "{width}: {status}"
-                );
+                for message in [None, Some("Exported to ttl-192.0.2.1-20261016.json")] {
+                    let mut state = UiState::default();
+                    if let Some(message) = message {
+                        state.set_status(message);
+                    }
+                    let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+                    terminal
+                        .draw(|f| {
+                            draw_ui(f, &session, &state, &Theme::default(), targets, None, false)
+                        })
+                        .unwrap();
+                    let buf = terminal.backend().buffer();
+                    let status: String = (0..width).map(|x| buf[(x, 11)].symbol()).collect();
+                    let hints = match message {
+                        // The message keeps its row slot at the right edge.
+                        Some(message) if usize::from(width) > message.len() + 2 => {
+                            assert!(status.trim_end().ends_with(message), "{width}: {status}");
+                            &status[..status.len() - message.len() - 1]
+                        }
+                        Some(_) => continue,
+                        None => &status,
+                    };
+                    let hints = hints.trim_end();
+                    assert!(
+                        hints.is_empty() || labels.iter().any(|l| hints.ends_with(l)),
+                        "{width}: clipped {status}"
+                    );
+                    if width >= 40 && message.is_none() {
+                        assert!(hints.contains("? help  q quit  Enter details"), "{status}");
+                    }
+                }
             }
         }
     }

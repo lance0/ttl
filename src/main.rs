@@ -508,7 +508,9 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
                 // Create fresh session with same config but no data
                 let events = session.events.clone();
                 let fresh_session = Session::new(session.target.clone(), session.config.clone());
-                let replay = ReplayState::new(events, args.speed);
+                let mut replay = ReplayState::new(events, args.speed);
+                // Events carry no enrichment; replay copies it from the loaded session
+                replay.source = Some(session);
                 (fresh_session, Some(replay))
             }
         } else {
@@ -529,8 +531,8 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
         let mut prefs = Prefs::load();
 
         // Apply CLI overrides
-        if args.theme != "default" {
-            prefs.theme = Some(args.theme.clone());
+        if let Some(theme) = &args.theme {
+            prefs.theme = Some(theme.clone());
         }
         if args.wide {
             prefs.display_mode = Some(DisplayMode::Wide);
@@ -549,6 +551,7 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
             None,
             replay_state,
             None, // add_target_tx (replay mode has no live probing)
+            update::check_disabled(update::env_opt_out(), args.no_update_check, None),
         )
         .await?;
 
@@ -892,8 +895,8 @@ async fn run_interactive_mode(
     let mut prefs = Prefs::load();
 
     // Apply CLI overrides
-    if args.theme != "default" {
-        prefs.theme = Some(args.theme.clone());
+    if let Some(theme) = &args.theme {
+        prefs.theme = Some(theme.clone());
     }
     if args.wide {
         prefs.display_mode = Some(DisplayMode::Wide);
@@ -967,6 +970,7 @@ async fn run_interactive_mode(
         update_rx,
         None, // replay_state (live mode)
         Some(add_target_tx),
+        update::check_disabled(update::env_opt_out(), args.no_update_check, None),
     )
     .await?;
 

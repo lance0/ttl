@@ -48,13 +48,13 @@ Run `ttl` with no target to open an empty session and add targets with `o`.
   packet that reaches the destination. [Path MTU Discovery](docs/FEATURES.md#path-mtu-discovery-pmtud)
 - **Load-balanced paths**: `-p udp --flows N` enumerates ECMP paths and tells
   per-flow from per-packet balancing. [Multi-flow ECMP](docs/FEATURES.md#multi-flow-ecmp-detection-parisdublin-traceroute)
-- **NAT rewriting your flows**, including carrier-grade NAT, shown as `[NAT]`.
+- **NAT rewriting your flows**, including carrier-grade NAT, shown as `NAT`.
   [NAT Detection](docs/FEATURES.md#nat-detection)
-- **Rate limiting vs real loss**: `[RL?]` and `%RL` mark routers that throttle
+- **Rate limiting vs real loss**: the `RL?` title flag and `RL` loss tag mark routers that throttle
   ICMP replies rather than drop traffic. [Detection Indicators](docs/FEATURES.md#detection-indicators)
 - **Flapping routes**: `!` marks a hop whose responder changed, kept apart
   from expected ECMP (`E`). [Route Flap Detection](docs/FEATURES.md#route-flap-detection)
-- **Transparent proxies and asymmetric paths**: `[TTL!]` and `[ASYM]`.
+- **Transparent proxies and asymmetric paths**: `TTL!` and `ASYM`.
   [Detection Indicators](docs/FEATURES.md#detection-indicators)
 - **Who runs each hop**: ASN, reverse DNS, GeoIP, and Internet Exchange
   points from PeeringDB. [Enrichment Lookups](docs/FEATURES.md#enrichment-lookups)

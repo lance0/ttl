@@ -3,6 +3,18 @@ use std::io::Write;
 use crate::lookup::sanitize_display;
 use crate::state::{ResponderStats, Session};
 
+/// Width of the Host column; longer hostnames are cut with an ellipsis.
+const HOST_WIDTH: usize = 46;
+
+/// Cut `s` to at most `width` chars, ending in '…' when shortened.
+fn fit(s: &str, width: usize) -> String {
+    if s.chars().count() <= width {
+        s.to_string()
+    } else {
+        s.chars().take(width - 1).chain(['…']).collect()
+    }
+}
+
 /// Generate a text report similar to mtr --report
 pub fn generate_report<W: Write>(session: &Session, mut writer: W) -> std::io::Result<()> {
     // Sanitize user-supplied strings to prevent terminal output injection
@@ -27,7 +39,7 @@ pub fn generate_report<W: Write>(session: &Session, mut writer: W) -> std::io::R
     // Header
     writeln!(
         writer,
-        "{:>3}  {:<46} {:>6} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "{:>3}  {:<HOST_WIDTH$} {:>6} {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
         "#", "Host", "Loss%", "Sent", "Avg", "Min", "Max", "StdDev", "Jitter"
     )?;
     writeln!(writer, "{}", "-".repeat(116))?;
@@ -41,7 +53,9 @@ pub fn generate_report<W: Write>(session: &Session, mut writer: W) -> std::io::R
 
         let host = if let Some(stats) = hop.primary_stats() {
             if let Some(ref hostname) = stats.hostname {
-                format!("{} ({})", hostname, stats.ip)
+                // Shorten the hostname, never the IP (at most 39 chars)
+                let ip = stats.ip.to_string();
+                format!("{} ({})", fit(hostname, HOST_WIDTH - ip.len() - 3), ip)
             } else {
                 stats.ip.to_string()
             }
@@ -69,7 +83,7 @@ pub fn generate_report<W: Write>(session: &Session, mut writer: W) -> std::io::R
 
         writeln!(
             writer,
-            "{:>3}  {:<46} {:>5.1}% {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
+            "{:>3}  {:<HOST_WIDTH$} {:>5.1}% {:>6} {:>8} {:>8} {:>8} {:>8} {:>8}",
             hop.ttl,
             host,
             hop.loss_pct(),
@@ -166,6 +180,35 @@ mod tests {
             Target::new("example.test".into(), "192.0.2.10".parse().unwrap()),
             Config::default(),
         )
+    }
+
+    #[test]
+    fn long_hostnames_keep_columns_aligned() {
+        let mut session = session();
+        for (ttl, ip, name) in [
+            (1, "192.0.2.1", "gw.example"),
+            (
+                2,
+                "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff",
+                "a-very-long-reverse-dns-name.core.region.example.net",
+            ),
+        ] {
+            let hop = session.hop_mut(ttl).unwrap();
+            hop.record_sent();
+            hop.record_response(ip.parse().unwrap(), Duration::from_millis(5));
+            hop.responders.values_mut().next().unwrap().hostname = Some(name.into());
+        }
+        let report = generate_report_string(&session);
+        let rows: Vec<&str> = report.lines().filter(|l| l.contains("0.0%")).collect();
+        assert_eq!(rows.len(), 2);
+        let col = |l: &str| l.chars().position(|c| c == '%');
+        assert_eq!(
+            col(rows[0]),
+            col(rows[1]),
+            "Loss% column misaligned:\n{report}"
+        );
+        assert!(rows[1].contains("…"));
+        assert!(rows[1].contains("(2001:db8:ffff:ffff:ffff:ffff:ffff:ffff)"));
     }
 
     #[test]
