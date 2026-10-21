@@ -23,5 +23,5 @@ Only the latest release is supported with security updates.
 
 | Version | Supported |
 |---------|-----------|
-| 0.24.x  | Yes       |
-| < 0.24  | No        |
+| 0.25.x  | Yes       |
+| < 0.25  | No        |

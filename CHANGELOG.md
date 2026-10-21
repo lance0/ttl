@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-10-21
+
+### Security
+- **`webpki-roots` and `webpki-root-certs` 1.0.7 → 1.0.10** clear RUSTSEC-2026-0381 and RUSTSEC-2026-0383: the bundled Mozilla root set still trusted intermediates issued by the breached emSign CA. `webpki-roots` backs the update check (`ureq`); `webpki-root-certs` reaches ttl via `reqwest`'s platform verifier (PeeringDB).
+- **`rustls-webpki` 0.103.15 → 0.103.16** clears RUSTSEC-2026-0382 (certificate verification could accept distrusted intermediates). Reaches ttl via `rustls` in `reqwest` and `ureq`.
+
 ## [0.24.0] - 2026-10-16
 
 ### Added

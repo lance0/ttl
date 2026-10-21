@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-Current release: **v0.24.0**. Changes since then are listed under [Unreleased](CHANGELOG.md#unreleased) in the changelog.
+Current release: **v0.25.0**. Changes since then are listed under [Unreleased](CHANGELOG.md#unreleased) in the changelog.
 
 ## Market Context
 
@@ -120,6 +120,12 @@ Current release: **v0.24.0**. Changes since then are listed under [Unreleased](C
 - [x] RFC 5837 interface and next-hop identification (#134, #137): Interface Information Objects in ICMP Time Exceeded / Destination Unreachable messages — ifIndex, IP, interface name, MTU for the incoming/outgoing/sub-IP/next-hop roles — parsed alongside RFC 4950 MPLS labels, shown in the hop detail view and JSON export. Validated against Arista EOS captures. Fixed the ICMPv6 RFC 4884 length field, which had blocked all ICMPv6 extensions.
 - [x] `scripts/fakertr`: a containerised fake RFC 5837 router for end-to-end smoke tests of the ICMP extension path with real packets
 - [x] Security: rustls 0.23.45 (RUSTSEC-2026-0285), maxminddb 0.31 (MMDB decode DoS hardening)
+
+---
+
+## Completed (v0.25.0)
+
+- [x] Security: drop trust in the breached emSign CA's intermediates — webpki-roots / webpki-root-certs 1.0.10 (RUSTSEC-2026-0381, RUSTSEC-2026-0383), rustls-webpki 0.103.16 (RUSTSEC-2026-0382)
 
 ---
 
