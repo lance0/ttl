@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-Current release: **v0.25.0**. Changes since then are listed under [Unreleased](CHANGELOG.md#unreleased) in the changelog.
+Current release: **v0.24.1**. Changes since then are listed under [Unreleased](CHANGELOG.md#unreleased) in the changelog.
 
 ## Market Context
 
@@ -123,13 +123,7 @@ Current release: **v0.25.0**. Changes since then are listed under [Unreleased](C
 
 ---
 
-## Completed (v0.25.0)
-
-- [x] Security: drop trust in the breached emSign CA's intermediates — webpki-roots / webpki-root-certs 1.0.10 (RUSTSEC-2026-0381, RUSTSEC-2026-0383), rustls-webpki 0.103.16 (RUSTSEC-2026-0382)
-
----
-
-## Completed (v0.24.0)
+## Completed (v0.24.0, v0.24.1)
 
 - [x] Native Windows build (#141): the crate compiles and its tests run on Windows in CI; live tracing points to WSL2, `--replay`/`--diff` work natively
 - [x] One visual language across the TUI (#164): right-aligned stats, badge title flags, one popup and hint style, reworked hop detail, help legend, default theme readable on light terminals, ≥4.5:1 contrast enforced for every theme
@@ -138,6 +132,7 @@ Current release: **v0.25.0**. Changes since then are listed under [Unreleased](C
 - [x] MPLS/interface details in text reports (#146); `--replay-size-limit` for large trusted recordings (#157)
 - [x] Docs reorganized around a short README front door, `docs/INSTALL.md` and a docs index (#162); demo re-recorded to show only the TUI (#165)
 - [x] Security: rustls 0.23.46 (RUSTSEC-2026-0346..0349), quinn-proto 0.11.19 (RUSTSEC-2026-0338..0342)
+- [x] Security (v0.24.1): drop trust in the breached emSign CA's intermediates — webpki-roots / webpki-root-certs 1.0.10 (RUSTSEC-2026-0381, RUSTSEC-2026-0383), rustls-webpki 0.103.16 (RUSTSEC-2026-0382)
 
 ---
 
