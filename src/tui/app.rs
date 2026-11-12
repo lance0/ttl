@@ -1472,10 +1472,14 @@ fn poll_add_target_result(
             }
             // A target that joins while monitoring is paused must not start
             // probing: the title badge and the engine would otherwise disagree.
-            if ui_state.paused
-                && let Some(state) = sessions.read().get(&added.ip)
-            {
-                state.write().paused = true;
+            // Re-adding a target that already exists only selects it, so the
+            // badge follows that session instead of pausing it.
+            if let Some(state) = sessions.read().get(&added.ip) {
+                if added.existed {
+                    ui_state.paused = state.read().paused;
+                } else if ui_state.paused {
+                    state.write().paused = true;
+                }
             }
             if added.existed {
                 ui_state.set_status(format!("Already tracing {} ({})", added.name, added.ip));
@@ -2304,6 +2308,27 @@ mod tests {
             );
             assert_eq!(ui_state.paused, paused);
         }
+
+        // Re-adding a running target while another one is paused selects it
+        // without pausing it, and the badge follows the selected session.
+        let session = Session::new(Target::new("dns.google".into(), added), Config::default());
+        let sessions = make_single_session_map(added, session);
+        let mut targets = vec![added];
+        let mut ui_state = UiState {
+            paused: true,
+            ..UiState::default()
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        ui_state.target_input.pending = Some(rx);
+        tx.send(Ok(crate::tui::views::AddedTarget {
+            ip: added,
+            name: "dns.google".to_string(),
+            existed: true,
+        }))
+        .unwrap();
+        poll_add_target_result(&mut ui_state, &mut targets, &sessions);
+        assert!(!sessions.read().get(&added).unwrap().read().paused);
+        assert!(!ui_state.paused);
     }
 
     #[test]
