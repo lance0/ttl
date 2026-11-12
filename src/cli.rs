@@ -149,7 +149,7 @@ pub struct Args {
     pub report: bool,
 
     /// Replay a saved session
-    #[arg(long = "replay")]
+    #[arg(long = "replay", conflicts_with = "targets")]
     pub replay: Option<String>,
 
     /// Maximum saved-session size in MiB for replay/diff (default: 10; raise for trusted large recordings)
@@ -490,6 +490,36 @@ impl Args {
             if self.jumbo {
                 return Err("--jumbo cannot be used with --replay or --diff".into());
             }
+            // Replay and diff load a saved session and never send a probe, so
+            // every remaining probe flag would be accepted and then ignored.
+            // Values that equal the default are indistinguishable from "not
+            // given" here, and are no-ops either way, so only deviations fail.
+            let mode = if self.diff.is_some() {
+                "--diff"
+            } else {
+                "--replay"
+            };
+            let ignored = [
+                (self.count != 0, "-c/--count"),
+                (self.interval != 1.0, "-i/--interval"),
+                (self.max_ttl != 30, "-m/--max-ttl"),
+                (self.timeout != 3.0, "--timeout"),
+                (self.protocol != "auto", "-p/--protocol"),
+                (self.port.is_some(), "--port"),
+                (self.port_fixed, "--fixed-port"),
+                (self.flows != 1, "--flows"),
+                (self.src_port != 50000, "--src-port"),
+                (self.rate.is_some(), "--rate"),
+                (self.size.is_some(), "--size"),
+                (self.dscp.is_some(), "--dscp"),
+                (self.interface.is_some(), "--interface"),
+                (self.source_ip.is_some(), "--source-ip"),
+            ];
+            if let Some((_, flag)) = ignored.iter().find(|(given, _)| *given) {
+                return Err(format!(
+                    "{flag} cannot be used with {mode}: it loads a saved session and never probes"
+                ));
+            }
         }
 
         Ok(())
@@ -579,6 +609,73 @@ mod tests {
             let mut args = Args::try_parse_from(["ttl", "--theme", alias, "192.0.2.1"]).unwrap();
             assert!(args.validate().is_ok(), "rejected documented alias {alias}");
         }
+    }
+
+    #[test]
+    fn test_replay_rejects_probe_only_flags() {
+        assert!(
+            Args::try_parse_from(["ttl", "--replay", "trace.json", "192.0.2.1"]).is_err(),
+            "a positional target must not be accepted with --replay"
+        );
+        for flags in [
+            vec!["-c", "5"],
+            vec!["-i", "0.5"],
+            vec!["-m", "8"],
+            vec!["--timeout", "1"],
+            vec!["-p", "udp"],
+            vec!["--port", "33434"],
+            vec!["--fixed-port"],
+            vec!["--flows", "4"],
+            vec!["--src-port", "40000"],
+            vec!["--rate", "10"],
+            vec!["--size", "1200"],
+            vec!["--dscp", "46"],
+            vec!["--interface", "eth0"],
+            vec!["--source-ip", "192.0.2.10"],
+        ] {
+            let mut argv = vec!["ttl", "--replay", "trace.json"];
+            argv.extend(flags.iter().copied());
+            let mut args = Args::try_parse_from(&argv).unwrap();
+            let error = args.validate().unwrap_err();
+            assert!(
+                error.contains(flags[0]) || error.contains(flags.last().unwrap()),
+                "{flags:?} was not named in: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_diff_rejects_probe_only_flags() {
+        let mut args =
+            Args::try_parse_from(["ttl", "--diff", "before.json", "after.json", "--flows", "4"])
+                .unwrap();
+        let error = args.validate().unwrap_err();
+        assert!(error.contains("--flows"), "{error}");
+        assert!(error.contains("--diff"), "{error}");
+    }
+
+    #[test]
+    fn test_replay_accepts_output_and_presentation_flags() {
+        for flags in [
+            vec!["--report"],
+            vec!["--json"],
+            vec!["--csv"],
+            vec!["--theme", "nord"],
+            vec!["--wide"],
+            vec!["--animate", "--speed", "2"],
+            vec!["--no-update-check"],
+            vec!["--replay-size-limit", "64"],
+        ] {
+            let mut argv = vec!["ttl", "--replay", "trace.json"];
+            argv.extend(flags.iter().copied());
+            let mut args = Args::try_parse_from(&argv).unwrap();
+            assert!(args.validate().is_ok(), "--replay rejected {flags:?}");
+        }
+        // Defaults may be spelled out; they are no-ops rather than ignored work.
+        let mut args =
+            Args::try_parse_from(["ttl", "--replay", "trace.json", "-i", "1.0", "-c", "0"])
+                .unwrap();
+        assert!(args.validate().is_ok());
     }
 
     #[test]
