@@ -89,12 +89,26 @@ pub fn export_csv<W: Write>(session: &Session, mut writer: W) -> Result<()> {
     Ok(())
 }
 
-/// Escape a string for CSV (quote if contains comma, quote, newline, or carriage return)
+/// Escape a string for CSV: quote if it contains a comma, quote, newline, or
+/// carriage return, and neutralize a leading formula character so a
+/// spreadsheet does not evaluate the cell.
+///
+/// Hostnames come from PTR records, so a hop operator controls them. Unprefixed,
+/// `=cmd|' /C calc'!A0.example` is a formula to Excel/LibreOffice (CWE-1236);
+/// a leading apostrophe keeps the cell literal.
 fn escape_csv(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
-        format!("\"{}\"", s.replace('"', "\"\""))
+    let neutralized = match s.chars().next() {
+        Some('=' | '+' | '-' | '@' | '\t' | '\r') => format!("'{s}"),
+        _ => s.to_string(),
+    };
+    if neutralized.contains(',')
+        || neutralized.contains('"')
+        || neutralized.contains('\n')
+        || neutralized.contains('\r')
+    {
+        format!("\"{}\"", neutralized.replace('"', "\"\""))
     } else {
-        s.to_string()
+        neutralized
     }
 }
 
@@ -146,6 +160,52 @@ mod tests {
         assert_eq!(escape_csv("simple"), "simple");
         assert_eq!(escape_csv("with,comma"), "\"with,comma\"");
         assert_eq!(escape_csv("with\"quote"), "\"with\"\"quote\"");
+    }
+
+    #[test]
+    fn test_escape_csv_neutralizes_formula_prefixes() {
+        // A PTR record is attacker-controlled: a leading formula character must
+        // not reach a spreadsheet as a live formula.
+        assert_eq!(escape_csv("=1+1"), "'=1+1");
+        assert_eq!(escape_csv("@SUM(A1)"), "'@SUM(A1)");
+        assert_eq!(escape_csv("+cmd"), "'+cmd");
+        assert_eq!(escape_csv("-1+1"), "'-1+1");
+        assert_eq!(escape_csv("\tcmd"), "'\tcmd");
+        // A formula that also needs quoting keeps both transformations.
+        assert_eq!(
+            escape_csv("=HYPERLINK(\"x\",\"y\")"),
+            "\"'=HYPERLINK(\"\"x\"\",\"\"y\"\")\""
+        );
+        // Ordinary names are untouched.
+        assert_eq!(
+            escape_csv("1.1.1.1.static.example.net"),
+            "1.1.1.1.static.example.net"
+        );
+    }
+
+    #[test]
+    fn test_csv_hostname_formula_stays_one_field() {
+        let target = Target::new("test.com".into(), IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)));
+        let mut session = Session::new(target, Config::default());
+        let hop = session.hop_mut(1).unwrap();
+        hop.record_sent();
+        hop.record_response(
+            IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)),
+            Duration::from_millis(5),
+        );
+        hop.responders
+            .get_mut(&IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)))
+            .unwrap()
+            .hostname = Some("=1+1.example".to_string());
+        let mut buf = Vec::new();
+        export_csv(&session, &mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        let header = output.lines().next().unwrap();
+        let row = output.lines().nth(1).unwrap();
+        let fields = parse_csv_row(row);
+        assert_eq!(fields.len(), parse_csv_row(header).len(), "{row}");
+        let name = &fields[col_index(header, "hostname")];
+        assert_eq!(name, "'=1+1.example", "{row}");
     }
 
     #[test]

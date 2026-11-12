@@ -48,8 +48,16 @@ jobs:
           echo "lib test binary: $BIN"
           sudo "$BIN" runtime_hdrincl --ignored --nocapture
 
+      # Packagers build without the update check (docs/INSTALL.md,
+      # docs/FEATURES.md), which is its own feature/cfg surface: keep it compiling.
+      - name: Check without default features
+        run: cargo check --all-targets --no-default-features --locked
+
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+
+      - name: Clippy without default features
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
 
       - name: Format check
         run: cargo fmt -- --check

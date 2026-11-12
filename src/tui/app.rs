@@ -804,7 +804,7 @@ where
         ui_state.clear_old_status();
 
         // Poll for a pending add-target result (non-blocking)
-        poll_add_target_result(ui_state, &mut targets);
+        poll_add_target_result(ui_state, &mut targets, &sessions);
 
         // Targets can grow at runtime via the add-target modal.
         // Compute count AFTER polling so newly added targets are reflected this tick.
@@ -1237,23 +1237,23 @@ where
                         toggle_replay_pause(ui_state);
                     } else {
                         // In live mode, 'p' toggles probe engine pause
-                        ui_state.paused = !ui_state.paused;
-                        let sessions_read = sessions.read();
-                        if let Some(state) = sessions_read.get(&current_target) {
-                            let mut session = state.write();
-                            session.paused = ui_state.paused;
+                        match toggle_live_pause(&mut *ui_state, &sessions, current_target) {
+                            Some(true) => ui_state.set_status("Paused"),
+                            Some(false) => ui_state.set_status("Resumed"),
+                            None => ui_state.set_status(READ_ONLY_STATUS),
                         }
-                        ui_state.set_status(if ui_state.paused { "Paused" } else { "Resumed" });
                     }
                 }
                 KeyCode::Char('r') => {
-                    // Reset current target's statistics
-                    let sessions_read = sessions.read();
-                    if let Some(state) = sessions_read.get(&current_target) {
-                        let mut session = state.write();
-                        session.reset_stats();
-                    }
-                    ui_state.set_status("Stats reset");
+                    // Reset the selected target's statistics. A session loaded
+                    // from a file has no live epoch, so resetting it would only
+                    // blank a read-only view and poison a later `e` export.
+                    let reset = reset_stats_if_live(ui_state, &sessions, current_target);
+                    ui_state.set_status(if reset {
+                        "Stats reset"
+                    } else {
+                        READ_ONLY_STATUS
+                    });
                 }
                 KeyCode::Char('t') => {
                     // Cycle through themes
@@ -1327,13 +1327,11 @@ where
                     if ui_state.replay_state.is_some() {
                         toggle_replay_pause(ui_state);
                     } else {
-                        ui_state.paused = !ui_state.paused;
-                        let sessions_read = sessions.read();
-                        if let Some(state) = sessions_read.get(&current_target) {
-                            let mut session = state.write();
-                            session.paused = ui_state.paused;
+                        match toggle_live_pause(&mut *ui_state, &sessions, current_target) {
+                            Some(true) => ui_state.set_status("Paused"),
+                            Some(false) => ui_state.set_status("Resumed"),
+                            None => ui_state.set_status(READ_ONLY_STATUS),
                         }
-                        ui_state.set_status(if ui_state.paused { "Paused" } else { "Resumed" });
                     }
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -1409,9 +1407,55 @@ where
     Ok(())
 }
 
+/// Status shown when a read-only (replay) session is asked to change state.
+const READ_ONLY_STATUS: &str = "Replay is read-only";
+
+/// Toggle the probe-engine pause for a live session, returning the new state.
+/// `None` for a session loaded from a file: it has no engine to pause, so
+/// toggling it would only mislabel the title badge.
+fn toggle_live_pause(
+    ui_state: &mut UiState,
+    sessions: &SessionMap,
+    target: IpAddr,
+) -> Option<bool> {
+    let sessions_read = sessions.read();
+    let state = sessions_read.get(&target)?;
+    let mut session = state.write();
+    // A session loaded from a file has no live epoch and no engine to pause.
+    session.started_instant?;
+    session.paused = !session.paused;
+    ui_state.paused = session.paused;
+    Some(session.paused)
+}
+
+/// Reset a live session's statistics. Returns false when the session came from
+/// a file, where resetting would erase the recording from the view and from a
+/// later `e` export. An animated replay draws into a fresh session that does
+/// have a live epoch, so it is checked separately: a reset there would blank
+/// the hops mid-playback and later events would rebuild only part of them.
+fn reset_stats_if_live(ui_state: &UiState, sessions: &SessionMap, target: IpAddr) -> bool {
+    if ui_state.replay_state.is_some() {
+        return false;
+    }
+    let sessions_read = sessions.read();
+    let Some(state) = sessions_read.get(&target) else {
+        return false;
+    };
+    let mut session = state.write();
+    if session.started_instant.is_none() {
+        return false;
+    }
+    session.reset_stats();
+    true
+}
+
 /// Poll the pending add-target reply; on success the new target joins the
 /// rotation and becomes selected.
-fn poll_add_target_result(ui_state: &mut UiState, targets: &mut Vec<IpAddr>) {
+fn poll_add_target_result(
+    ui_state: &mut UiState,
+    targets: &mut Vec<IpAddr>,
+    sessions: &SessionMap,
+) {
     let Some(rx) = ui_state.target_input.pending.as_mut() else {
         return;
     };
@@ -1425,6 +1469,17 @@ fn poll_add_target_result(ui_state: &mut UiState, targets: &mut Vec<IpAddr>) {
             if let Some(idx) = targets.iter().position(|t| *t == added.ip) {
                 ui_state.selected_target = idx;
                 ui_state.selected = None;
+            }
+            // A target that joins while monitoring is paused must not start
+            // probing: the title badge and the engine would otherwise disagree.
+            // Re-adding a target that already exists only selects it, so the
+            // badge follows that session instead of pausing it.
+            if let Some(state) = sessions.read().get(&added.ip) {
+                if added.existed {
+                    ui_state.paused = state.read().paused;
+                } else if ui_state.paused {
+                    state.write().paused = true;
+                }
             }
             if added.existed {
                 ui_state.set_status(format!("Already tracing {} ({})", added.name, added.ip));
@@ -1530,8 +1585,12 @@ fn draw_status_bar(
         ..area
     };
     let mut hint_width = area.width;
-    if let Some((ref message, _)) = ui_state.status_message {
-        let message = fit_text(message, area.width);
+    if let Some((message, _)) = &ui_state.status_message {
+        // Keep room for the highest-priority hint: a message that spans the
+        // whole bar would otherwise blank every key hint on the row.
+        let reserved =
+            hint_line(&hints[..hints.len().min(1)], area.width, theme).width() as u16 + 2;
+        let message = fit_text(message, area.width.saturating_sub(reserved));
         let width = Span::raw(&message).width() as u16;
         hint_width = area.width.saturating_sub(width + 2);
         f.render_widget(
@@ -1757,8 +1816,8 @@ fn draw_ui(
             ("e", "export"),
         ]
     } else if session.started_instant.is_none() {
-        // Static replay of a loaded file: nothing probes, so pausing and
-        // adding targets do nothing.
+        // Static replay of a loaded file: nothing probes, so pausing, resetting
+        // and adding targets do nothing.
         &[
             ("?", "help"),
             ("q", "quit"),
@@ -1766,7 +1825,6 @@ fn draw_ui(
             ("s", "settings"),
             ("t", "theme"),
             ("w", "display"),
-            ("r", "reset"),
             ("e", "export"),
         ]
     } else {
@@ -2201,6 +2259,12 @@ mod tests {
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
         ui_state.target_input.pending = Some(rx);
+        let sessions: SessionMap = make_single_session_map(existing, {
+            Session::new(
+                Target::new("one.one.one.one".into(), existing),
+                Config::default(),
+            )
+        });
         let before = render_fingerprint(&ui_state, targets.len(), Some(0), None);
         tx.send(Ok(crate::tui::views::AddedTarget {
             ip: added,
@@ -2208,13 +2272,63 @@ mod tests {
             existed: false,
         }))
         .unwrap();
-        poll_add_target_result(&mut ui_state, &mut targets);
+        poll_add_target_result(&mut ui_state, &mut targets, &sessions);
         let after = render_fingerprint(&ui_state, targets.len(), Some(0), None);
         assert_eq!(targets, vec![existing, added]);
         assert_eq!(ui_state.selected_target, 1);
         assert!(!ui_state.show_target_input);
         assert!(ui_state.status_message.is_some());
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn target_added_while_paused_does_not_start_probing() {
+        let added = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+        for paused in [true, false] {
+            let session = Session::new(Target::new("dns.google".into(), added), Config::default());
+            let sessions = make_single_session_map(added, session);
+            let mut targets = Vec::new();
+            let mut ui_state = UiState {
+                paused,
+                ..UiState::default()
+            };
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            ui_state.target_input.pending = Some(rx);
+            tx.send(Ok(crate::tui::views::AddedTarget {
+                ip: added,
+                name: "dns.google".to_string(),
+                existed: false,
+            }))
+            .unwrap();
+            poll_add_target_result(&mut ui_state, &mut targets, &sessions);
+            let observed = sessions.read().get(&added).unwrap().read().paused;
+            assert_eq!(
+                observed, paused,
+                "a target added while paused={paused} ended up paused={observed}"
+            );
+            assert_eq!(ui_state.paused, paused);
+        }
+
+        // Re-adding a running target while another one is paused selects it
+        // without pausing it, and the badge follows the selected session.
+        let session = Session::new(Target::new("dns.google".into(), added), Config::default());
+        let sessions = make_single_session_map(added, session);
+        let mut targets = vec![added];
+        let mut ui_state = UiState {
+            paused: true,
+            ..UiState::default()
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        ui_state.target_input.pending = Some(rx);
+        tx.send(Ok(crate::tui::views::AddedTarget {
+            ip: added,
+            name: "dns.google".to_string(),
+            existed: true,
+        }))
+        .unwrap();
+        poll_add_target_result(&mut ui_state, &mut targets, &sessions);
+        assert!(!sessions.read().get(&added).unwrap().read().paused);
+        assert!(!ui_state.paused);
     }
 
     #[test]
@@ -2300,6 +2414,53 @@ mod tests {
     }
 
     #[test]
+    fn loaded_sessions_ignore_pause_and_reset() {
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let mut session = Session::new(Target::new("example.net".into(), ip), Config::default());
+        {
+            let hop = session.hop_mut(1).unwrap();
+            hop.record_sent();
+            hop.record_timeout();
+        }
+        session.started_instant = None; // as loaded by --replay
+        let sessions = make_single_session_map(ip, session);
+        let mut ui_state = UiState::default();
+
+        assert!(!reset_stats_if_live(&ui_state, &sessions, ip));
+        assert_eq!(toggle_live_pause(&mut ui_state, &sessions, ip), None);
+        assert!(!ui_state.paused, "a loaded session must not show PAUSED");
+        {
+            let sessions_read = sessions.read();
+            let state = sessions_read.get(&ip).unwrap().read();
+            assert!(!state.paused);
+            assert_eq!(state.hops[0].sent, 1, "a loaded session must not be reset");
+            assert_eq!(state.hops[0].timeouts, 1);
+        }
+
+        // The same session, once live, resets and pauses normally.
+        sessions.read().get(&ip).unwrap().write().started_instant = Some(std::time::Instant::now());
+
+        // An animated replay draws into a fresh session with a live epoch, but
+        // it is still a recording: `r` must not blank it mid-playback.
+        let animated = UiState {
+            replay_state: Some(ReplayState::new(Vec::new(), 1.0)),
+            ..UiState::default()
+        };
+        assert!(!reset_stats_if_live(&animated, &sessions, ip));
+        assert_eq!(sessions.read().get(&ip).unwrap().read().hops[0].sent, 1);
+
+        assert!(reset_stats_if_live(&ui_state, &sessions, ip));
+        assert_eq!(toggle_live_pause(&mut ui_state, &sessions, ip), Some(true));
+        assert!(ui_state.paused);
+        {
+            let sessions_read = sessions.read();
+            let state = sessions_read.get(&ip).unwrap().read();
+            assert!(state.paused);
+            assert_eq!(state.hops[0].sent, 0);
+        }
+    }
+
+    #[test]
     fn static_replay_hints_omit_live_only_keys() {
         use ratatui::backend::TestBackend;
         let ip: IpAddr = "192.0.2.1".parse().unwrap();
@@ -2330,6 +2491,10 @@ mod tests {
             !replay.contains("p pause") && !replay.contains("o add"),
             "{replay}"
         );
+        assert!(
+            !replay.contains("r reset"),
+            "a loaded session cannot be reset: {replay}"
+        );
         assert!(replay.contains("e export"), "{replay}");
     }
 
@@ -2359,18 +2524,22 @@ mod tests {
                     let status: String = (0..width).map(|x| buf[(x, 11)].symbol()).collect();
                     let hints = match message {
                         // The message keeps its row slot at the right edge.
-                        Some(message) if usize::from(width) > message.len() + 2 => {
-                            assert!(status.trim_end().ends_with(message), "{width}: {status}");
+                        Some(message) if status.trim_end().ends_with(message) => {
                             &status[..status.len() - message.len() - 1]
                         }
-                        Some(_) => continue,
-                        None => &status,
+                        _ => &status[..],
                     };
                     let hints = hints.trim_end();
-                    assert!(
-                        hints.is_empty() || labels.iter().any(|l| hints.ends_with(l)),
-                        "{width}: clipped {status}"
-                    );
+                    if message.is_some() {
+                        // A transient message must never remove the first hint,
+                        // however long it is for the width.
+                        assert!(hints.contains("? help"), "{width}: {status}");
+                    } else {
+                        assert!(
+                            hints.is_empty() || labels.iter().any(|l| hints.ends_with(l)),
+                            "{width}: clipped {status}"
+                        );
+                    }
                     if width >= 40 && message.is_none() {
                         assert!(hints.contains("? help  q quit  Enter details"), "{status}");
                     }

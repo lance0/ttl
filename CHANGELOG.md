@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`--no-default-features` is now compiled by CI.** Docs/INSTALL.md and docs/FEATURES.md advertise a build without the update check; the build job now checks and lints it so that configuration cannot rot silently.
+
+### Changed
+- **Unknown `--theme` values are rejected** with the offending name and the valid list, instead of starting in the default theme and then persisting that default over the theme you had saved. Documented aliases (`mono`, `futuristic`, `hacker`, `mocha`, `tokyo`, `tokyonight`) still work.
+- **`--replay` and `--diff` reject probe-only flags.** A positional target, `-c`, `-i`, `-m`, `--timeout`, `-p`, `--port`, `--fixed-port`, `--flows`, `--src-port`, `--rate`, `--size`, `--dscp`, `--interface` and `--source-ip` were previously accepted and silently ignored, because those modes never probe. Output and presentation flags are unaffected.
+- **Replay is read-only.** `r` and `p` no longer reset or "pause" a session loaded from a file, and `r` no longer blanks an `--animate` replay mid-playback; they report `Replay is read-only`, and the static-replay status bar no longer advertises reset.
+- **A target added while monitoring is paused stays paused**, so the title badge and the engine agree.
+- **Settings opens with the active theme on screen** rather than always at the top of the five-row theme list.
+
+### Fixed
+- **`--src-port` at the top of the range no longer breaks flow correlation.** `--src-port 65520 --flows 16` (and `--src-port 65535`) is accepted by validation but computed the flow-port window in `u16`, overflowing to an empty window: a debug-build panic in the receiver, and 100% loss in release. The last usable source port now correlates.
+- **Exports refuse a symlinked destination.** Export names are predictable and target-derived, so a planted link in the working directory could redirect the replacement onto any file the user can write; preferences still follow dotfile symlinks deliberately.
+- **CSV hostnames cannot inject spreadsheet formulas.** A PTR record starting with `=`, `+`, `-`, `@`, tab or CR is prefixed with an apostrophe, closing CWE-1236 on exported traces.
+- **A long status message no longer hides every key hint**, and the Settings footer shows `Enter select` (it never fit before), and target rows with double-width hostnames keep their loss and RTT columns.
+- **Failed preference saves are reported** instead of discarded, `--resolve-all` names the host that failed to resolve, and `-c 0` with a batch output mode says a positive count is required instead of claiming `-c` was not set.
+- **`--json`/`--csv`/`--report`/`--stream-json`/`--daemon` use the saved PeeringDB API key.** Previously only the TUI applied it, so cache refreshes in headless runs were rate limited and `ix` stayed null.
+
+### Removed
+- **`is-terminal`**: the two call sites use `std::io::IsTerminal` (std since 1.70; this crate's MSRV is 1.88), dropping the dependency.
+- **Dead public helpers**: `Session::discovered_hops`, `Session::last_responding_hop`, `Session::first_nat_hop`, `probe::interface::get_interface_source_ip` and `ResponderStats::loss_pct` had no caller and were kept alive by `#[allow(dead_code)]`.
+
+### Documentation
+- The 0.24.0 notes no longer refer to a `--dns` flag that does not exist, the replay progress bar is described as showing position and speed (there is no event count), route-change history is described as carrying the response count rather than a timestamp, and the probe/interface module header no longer claims FreeBSD interface binding is implemented.
+
 ## [0.24.1] - 2026-10-21
 
 ### Security
@@ -38,7 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Add Target dialog** (#149): the cursor and typed text stay visible when a hostname is longer than the input field.
 - **TUI input responsiveness** (#152): queued keystrokes are processed without waiting a frame each, so pause or quit no longer lags behind a burst of navigation keys. Ctrl-C now quits from any dialog, including Settings.
 - **Unbounded memory in headless runs** (#155): `--daemon`, `--prometheus` and plain `--no-tui` runs no longer record replay events that nothing reads, so memory stays flat over long runs. `--stream-json`, TUI and batch JSON sessions keep their replay history.
-- **Enrichment starvation** (#156): rDNS, ASN, GeoIP and IX lookups skip recently failed addresses before filling each batch, so later hops get enriched even when the first batch's worth of hops have no result. Shutdown cancels in-flight lookup batches instead of waiting for their network timeouts (for example with an unreachable `--dns` server).
+- **Enrichment starvation** (#156): rDNS, ASN, GeoIP and IX lookups skip recently failed addresses before filling each batch, so later hops get enriched even when the first batch's worth of hops have no result. Shutdown cancels in-flight lookup batches instead of waiting for their network timeouts (for example with an unreachable system resolver).
 - **Metrics endpoint request handling** (#150): `--prometheus` reads the full HTTP request head across TCP reads, so requests split over several packets no longer get 404/405. Headers are capped at 8 KiB (431 above that), and reading the request and writing the response each have a 5-second deadline. Requests must now be complete: a bare `echo "GET /metrics" | nc` without an HTTP version and blank line gets 400; use `curl`.
 - **Atomic saves** (#157): preferences and TUI JSON exports are written to a temporary file and renamed into place, so a failed write keeps the previous file. A symlinked preferences file keeps its link (the target is replaced), and exports made under sudo keep normal permissions instead of 0600.
 - **Concurrent instances no longer cross-talk** (#163): the ICMP identifier was the process ID, so ttl instances in separate containers (all PID 1) shared it and picked up each other's replies. Each process now uses a random identifier, and replies are matched only against the destination they quote instead of falling back to any target with the same sequence. With a single target, replies quoting a DNAT-translated destination are still accepted; with several targets they are dropped.

@@ -2,7 +2,9 @@
 //!
 //! Provides cross-platform interface validation and socket binding.
 //! - Linux: Uses SO_BINDTODEVICE via socket2::bind_device()
-//! - macOS/FreeBSD: Uses IP_BOUND_IF via socket2::bind_device_by_index()
+//! - macOS: Uses IP_BOUND_IF via socket2::bind_device_by_index()
+//! - FreeBSD/NetBSD: unsupported; `--interface` is rejected at startup and
+//!   only `--source-ip` exists there
 
 use anyhow::{Result, anyhow};
 #[cfg(unix)]
@@ -308,28 +310,6 @@ pub fn bind_socket_to_interface(socket: &Socket, info: &InterfaceInfo, ipv6: boo
             "Interface binding is not supported on this platform. \
              It is only available on Linux and macOS."
         ))
-    }
-}
-
-/// Get the source IP address from an interface for a given IP family
-///
-/// Returns the first address of the requested family, or an error if none exists.
-#[allow(dead_code)]
-pub fn get_interface_source_ip(info: &InterfaceInfo, ipv6: bool) -> Result<IpAddr> {
-    if ipv6 {
-        info.ipv6.map(IpAddr::V6).ok_or_else(|| {
-            anyhow!(
-                "Interface '{}' has no IPv6 address. Use -4 to force IPv4.",
-                info.name
-            )
-        })
-    } else {
-        info.ipv4.map(IpAddr::V4).ok_or_else(|| {
-            anyhow!(
-                "Interface '{}' has no IPv4 address. Use -6 to force IPv6.",
-                info.name
-            )
-        })
     }
 }
 

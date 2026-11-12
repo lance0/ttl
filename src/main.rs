@@ -3,7 +3,7 @@ use clap::Parser;
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, IsTerminal, Read};
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -378,7 +378,7 @@ async fn main() -> Result<()> {
     // Check for update notification (only for non-interactive mode)
     // Use short timeout so we don't delay exit if check is slow
     if let Some(update_rx) = update_rx
-        && is_terminal::is_terminal(std::io::stderr())
+        && std::io::stderr().is_terminal()
         && let Ok(Some(new_version)) = update_rx.recv_timeout(Duration::from_millis(100))
     {
         update::print_update_notice(&new_version);
@@ -479,7 +479,7 @@ fn run_diff_mode(before_path: &str, after_path: &str, json: bool, max_bytes: u64
         write_diff_json(&diff, stdout.lock())?;
         println!();
     } else {
-        let color = is_terminal::is_terminal(std::io::stdout());
+        let color = std::io::stdout().is_terminal();
         write_diff_text(&diff, stdout.lock(), color)?;
     }
     Ok(())
@@ -555,8 +555,11 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
         )
         .await?;
 
-        // Save preferences (best effort, don't fail on save error)
-        let _ = final_prefs.save();
+        // Saving preferences must not abort a run, but a silent failure would
+        // lose the theme, display mode, API key and update-check changes.
+        if let Err(error) = final_prefs.save() {
+            eprintln!("Warning: could not save preferences: {error:#}");
+        }
     }
 
     Ok(())
@@ -604,7 +607,10 @@ fn resolve_targets(
 
     for target_str in target_strs {
         let ips = if resolve_all {
-            resolve_all_ips(target_str)?
+            // Name the host that failed: with several targets a bare resolver
+            // error leaves the user unable to tell which name to fix.
+            resolve_all_ips(target_str)
+                .with_context(|| format!("Failed to resolve target: {target_str}"))?
         } else {
             vec![resolve_target(target_str, force_ipv4, force_ipv6)?]
         };
@@ -801,6 +807,29 @@ fn join_receivers(handles: Vec<std::thread::JoinHandle<Result<()>>>) -> Result<(
     Ok(())
 }
 
+/// Build the IX lookup with the saved PeeringDB key applied.
+///
+/// The key raises PeeringDB's anonymous rate limit, so every mode that can
+/// enrich hops must use it — not just the TUI. `PEERINGDB_API_KEY` still wins;
+/// `IxLookup::get_effective_api_key` checks the environment first.
+fn build_ix_lookup(config: &Config, prefs: &Prefs) -> Option<Arc<IxLookup>> {
+    if !config.ix_enabled {
+        return None;
+    }
+    match IxLookup::new() {
+        Ok(ix) => {
+            if let Some(key) = &prefs.peeringdb_api_key {
+                ix.set_api_key(Some(key.clone()));
+            }
+            Some(Arc::new(ix))
+        }
+        Err(error) => {
+            eprintln!("Warning: Failed to initialize IX lookup: {error}");
+            None
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_interactive_mode(
     args: Args,
@@ -903,23 +932,7 @@ async fn run_interactive_mode(
     }
 
     // Spawn IX worker (if enabled) - keep Arc for TUI access
-    let ix_lookup: Option<Arc<IxLookup>> = if config.ix_enabled {
-        match IxLookup::new() {
-            Ok(ix) => {
-                // Set API key from preferences (env var takes precedence in get_effective_api_key)
-                if let Some(ref key) = prefs.peeringdb_api_key {
-                    ix.set_api_key(Some(key.clone()));
-                }
-                Some(Arc::new(ix))
-            }
-            Err(e) => {
-                eprintln!("Warning: Failed to initialize IX lookup: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let ix_lookup = build_ix_lookup(&config, &prefs);
 
     let ix_handle = ix_lookup.as_ref().map(|ix| {
         tokio::spawn(run_ix_worker(
@@ -974,8 +987,11 @@ async fn run_interactive_mode(
     )
     .await?;
 
-    // Save preferences (best effort, don't fail on save error)
-    let _ = final_prefs.save();
+    // Saving preferences must not abort a run, but a silent failure would lose
+    // the theme, display mode, API key and update-check changes.
+    if let Err(error) = final_prefs.save() {
+        eprintln!("Warning: could not save preferences: {error:#}");
+    }
 
     // Cleanup
     shutdown_log("interactive cleanup start");
@@ -1302,21 +1318,8 @@ async fn run_batch_mode(
     };
 
     // Spawn IX worker (if enabled)
-    let ix_handle = if config.ix_enabled {
-        match IxLookup::new() {
-            Ok(ix) => Some(tokio::spawn(run_ix_worker(
-                Arc::new(ix),
-                sessions.clone(),
-                cancel.clone(),
-            ))),
-            Err(e) => {
-                eprintln!("Warning: Failed to initialize IX lookup: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let ix_handle = build_ix_lookup(&config, &Prefs::load())
+        .map(|ix| tokio::spawn(run_ix_worker(ix, sessions.clone(), cancel.clone())));
 
     // Spawn rate limit detection worker (always enabled, lightweight analysis)
     let ratelimit_handle = tokio::spawn(run_ratelimit_worker(sessions.clone(), cancel.clone()));
@@ -1518,21 +1521,8 @@ async fn run_streaming_mode(
     };
 
     // Spawn IX worker (if enabled)
-    let ix_handle = if config.ix_enabled {
-        match IxLookup::new() {
-            Ok(ix) => Some(tokio::spawn(run_ix_worker(
-                Arc::new(ix),
-                sessions.clone(),
-                cancel.clone(),
-            ))),
-            Err(e) => {
-                eprintln!("Warning: Failed to initialize IX lookup: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let ix_handle = build_ix_lookup(&config, &Prefs::load())
+        .map(|ix| tokio::spawn(run_ix_worker(ix, sessions.clone(), cancel.clone())));
 
     // Spawn rate limit detection worker (always enabled, lightweight analysis)
     let ratelimit_handle = tokio::spawn(run_ratelimit_worker(sessions.clone(), cancel.clone()));

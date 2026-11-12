@@ -72,9 +72,6 @@ tempfile = "3.27"
 # Update notifications
 update-informer = { version = "1", default-features = false, features = ["github", "ureq", "rustls-tls"], optional = true }
 
-# TTY detection
-is-terminal = "0.4"
-
 # Gateway detection - Linux (netlink) and macOS (sysctl) only
 # FreeBSD excluded: getifs uses macOS-specific APIs (NET_RT_IFLIST2, rt_msghdr)
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]

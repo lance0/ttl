@@ -98,7 +98,7 @@ impl Widget for TargetListView<'_> {
         let name_max = self
             .target_infos
             .iter()
-            .map(|t| t.hostname.chars().count())
+            .map(|t| Span::raw(&t.hostname).width())
             .max()
             .unwrap_or(0)
             .min(32);
@@ -158,7 +158,11 @@ impl Widget for TargetListView<'_> {
                 ];
                 if name_width >= 4 {
                     let name = super::fit_text(&info.hostname, name_width as u16);
-                    spans.push(Span::styled(format!("  {name:<name_width$}"), dim));
+                    // Pad by terminal cells: `{:<width$}` pads by chars, so a
+                    // name with double-width characters would overflow the row
+                    // and the stats columns would be cut off.
+                    let pad = name_width.saturating_sub(Span::raw(&name).width());
+                    spans.push(Span::styled(format!("  {name}{}", " ".repeat(pad)), dim));
                 }
                 spans.push(Span::styled(
                     format!(
@@ -185,5 +189,55 @@ impl Widget for TargetListView<'_> {
             })
             .collect();
         Paragraph::new(lines).render(inner, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{buffer::Buffer, layout::Rect};
+
+    fn info(hostname: &str) -> TargetInfo {
+        TargetInfo {
+            ip: "192.0.2.1".parse().unwrap(),
+            hostname: hostname.to_string(),
+            hops_str: "12 hops".to_string(),
+            loss_str: "0.0%".to_string(),
+            rtt_str: "18 ms".to_string(),
+        }
+    }
+
+    fn render(infos: &[TargetInfo], width: u16) -> String {
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, width, 12);
+        let mut buf = Buffer::empty(area);
+        TargetListView::new(&theme, infos, 0).render(area, &mut buf);
+        (0..12)
+            .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn wide_hostnames_keep_the_statistics_columns() {
+        // 10 double-width characters are 20 cells but only 10 chars: padding by
+        // chars overflowed the row, and the whole line was truncated, losing
+        // loss and RTT.
+        let wide = "ネットワークテスト.example";
+        let ascii = "a".repeat(20);
+        let wide_infos = [info(wide)];
+        let ascii_infos = [info(&ascii)];
+        let wide_row = render(&wide_infos, 100);
+        let ascii_row = render(&ascii_infos, 100);
+        for expected in ["12 hops", "0.0%", "18 ms"] {
+            assert!(
+                wide_row.contains(expected),
+                "wide name lost {expected}:\n{wide_row}"
+            );
+            assert!(
+                ascii_row.contains(expected),
+                "ascii name lost {expected}:\n{ascii_row}"
+            );
+        }
     }
 }

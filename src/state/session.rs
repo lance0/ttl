@@ -321,17 +321,6 @@ impl ResponderStats {
         }
     }
 
-    /// Loss percentage (per-responder, not accurate since sent is always 0)
-    /// Use Hop::loss_pct() for accurate hop-level loss calculation.
-    #[allow(dead_code)]
-    pub fn loss_pct(&self) -> f64 {
-        if self.sent == 0 {
-            0.0
-        } else {
-            (1.0 - (self.received as f64 / self.sent as f64)) * 100.0
-        }
-    }
-
     /// Average RTT
     pub fn avg_rtt(&self) -> Duration {
         Duration::from_micros(self.mean_rtt as u64)
@@ -1625,18 +1614,6 @@ impl Session {
         }
     }
 
-    /// Get discovered hops (those that have received at least one response)
-    #[allow(dead_code)]
-    pub fn discovered_hops(&self) -> impl Iterator<Item = &Hop> {
-        self.hops.iter().filter(|h| h.received > 0 || h.sent > 0)
-    }
-
-    /// Get the last hop that responded
-    #[allow(dead_code)]
-    pub fn last_responding_hop(&self) -> Option<&Hop> {
-        self.hops.iter().rev().find(|h| h.received > 0)
-    }
-
     /// Reset all statistics while keeping the session structure
     pub fn reset_stats(&mut self) {
         self.total_sent = 0;
@@ -1676,12 +1653,6 @@ impl Session {
     /// Check if NAT is detected at any hop
     pub fn has_nat(&self) -> bool {
         self.hops.iter().any(|h| h.has_nat())
-    }
-
-    /// Get the first hop where NAT is detected (likely the local NAT device)
-    #[allow(dead_code)]
-    pub fn first_nat_hop(&self) -> Option<u8> {
-        self.hops.iter().find(|h| h.has_nat()).map(|h| h.ttl)
     }
 
     /// Clone session data for TUI rendering, excluding events (which can be large).
@@ -1831,7 +1802,6 @@ mod tests {
         assert_eq!(stats.mean_rtt, 0.0);
         assert_eq!(stats.jitter_avg, 0.0);
         assert_eq!(stats.jitter_max, 0.0);
-        assert_eq!(stats.loss_pct(), 0.0);
     }
 
     #[test]
