@@ -1237,23 +1237,23 @@ where
                         toggle_replay_pause(ui_state);
                     } else {
                         // In live mode, 'p' toggles probe engine pause
-                        ui_state.paused = !ui_state.paused;
-                        let sessions_read = sessions.read();
-                        if let Some(state) = sessions_read.get(&current_target) {
-                            let mut session = state.write();
-                            session.paused = ui_state.paused;
+                        match toggle_live_pause(&mut *ui_state, &sessions, current_target) {
+                            Some(true) => ui_state.set_status("Paused"),
+                            Some(false) => ui_state.set_status("Resumed"),
+                            None => ui_state.set_status(READ_ONLY_STATUS),
                         }
-                        ui_state.set_status(if ui_state.paused { "Paused" } else { "Resumed" });
                     }
                 }
                 KeyCode::Char('r') => {
-                    // Reset current target's statistics
-                    let sessions_read = sessions.read();
-                    if let Some(state) = sessions_read.get(&current_target) {
-                        let mut session = state.write();
-                        session.reset_stats();
-                    }
-                    ui_state.set_status("Stats reset");
+                    // Reset the selected target's statistics. A session loaded
+                    // from a file has no live epoch, so resetting it would only
+                    // blank a read-only view and poison a later `e` export.
+                    let reset = reset_stats_if_live(&sessions, current_target);
+                    ui_state.set_status(if reset {
+                        "Stats reset"
+                    } else {
+                        READ_ONLY_STATUS
+                    });
                 }
                 KeyCode::Char('t') => {
                     // Cycle through themes
@@ -1327,13 +1327,11 @@ where
                     if ui_state.replay_state.is_some() {
                         toggle_replay_pause(ui_state);
                     } else {
-                        ui_state.paused = !ui_state.paused;
-                        let sessions_read = sessions.read();
-                        if let Some(state) = sessions_read.get(&current_target) {
-                            let mut session = state.write();
-                            session.paused = ui_state.paused;
+                        match toggle_live_pause(&mut *ui_state, &sessions, current_target) {
+                            Some(true) => ui_state.set_status("Paused"),
+                            Some(false) => ui_state.set_status("Resumed"),
+                            None => ui_state.set_status(READ_ONLY_STATUS),
                         }
-                        ui_state.set_status(if ui_state.paused { "Paused" } else { "Resumed" });
                     }
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -1407,6 +1405,43 @@ where
     }
 
     Ok(())
+}
+
+/// Status shown when a read-only (replay) session is asked to change state.
+const READ_ONLY_STATUS: &str = "Replay is read-only";
+
+/// Toggle the probe-engine pause for a live session, returning the new state.
+/// `None` for a session loaded from a file: it has no engine to pause, so
+/// toggling it would only mislabel the title badge.
+fn toggle_live_pause(
+    ui_state: &mut UiState,
+    sessions: &SessionMap,
+    target: IpAddr,
+) -> Option<bool> {
+    let sessions_read = sessions.read();
+    let state = sessions_read.get(&target)?;
+    let mut session = state.write();
+    // A session loaded from a file has no live epoch and no engine to pause.
+    session.started_instant?;
+    session.paused = !session.paused;
+    ui_state.paused = session.paused;
+    Some(session.paused)
+}
+
+/// Reset a live session's statistics. Returns false when the session came from
+/// a file, where resetting would erase the recording from the view and from a
+/// later `e` export.
+fn reset_stats_if_live(sessions: &SessionMap, target: IpAddr) -> bool {
+    let sessions_read = sessions.read();
+    let Some(state) = sessions_read.get(&target) else {
+        return false;
+    };
+    let mut session = state.write();
+    if session.started_instant.is_none() {
+        return false;
+    }
+    session.reset_stats();
+    true
 }
 
 /// Poll the pending add-target reply; on success the new target joins the
@@ -1757,8 +1792,8 @@ fn draw_ui(
             ("e", "export"),
         ]
     } else if session.started_instant.is_none() {
-        // Static replay of a loaded file: nothing probes, so pausing and
-        // adding targets do nothing.
+        // Static replay of a loaded file: nothing probes, so pausing, resetting
+        // and adding targets do nothing.
         &[
             ("?", "help"),
             ("q", "quit"),
@@ -1766,7 +1801,6 @@ fn draw_ui(
             ("s", "settings"),
             ("t", "theme"),
             ("w", "display"),
-            ("r", "reset"),
             ("e", "export"),
         ]
     } else {
@@ -2300,6 +2334,43 @@ mod tests {
     }
 
     #[test]
+    fn loaded_sessions_ignore_pause_and_reset() {
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let mut session = Session::new(Target::new("example.net".into(), ip), Config::default());
+        {
+            let hop = session.hop_mut(1).unwrap();
+            hop.record_sent();
+            hop.record_timeout();
+        }
+        session.started_instant = None; // as loaded by --replay
+        let sessions = make_single_session_map(ip, session);
+        let mut ui_state = UiState::default();
+
+        assert!(!reset_stats_if_live(&sessions, ip));
+        assert_eq!(toggle_live_pause(&mut ui_state, &sessions, ip), None);
+        assert!(!ui_state.paused, "a loaded session must not show PAUSED");
+        {
+            let sessions_read = sessions.read();
+            let state = sessions_read.get(&ip).unwrap().read();
+            assert!(!state.paused);
+            assert_eq!(state.hops[0].sent, 1, "a loaded session must not be reset");
+            assert_eq!(state.hops[0].timeouts, 1);
+        }
+
+        // The same session, once live, resets and pauses normally.
+        sessions.read().get(&ip).unwrap().write().started_instant = Some(std::time::Instant::now());
+        assert!(reset_stats_if_live(&sessions, ip));
+        assert_eq!(toggle_live_pause(&mut ui_state, &sessions, ip), Some(true));
+        assert!(ui_state.paused);
+        {
+            let sessions_read = sessions.read();
+            let state = sessions_read.get(&ip).unwrap().read();
+            assert!(state.paused);
+            assert_eq!(state.hops[0].sent, 0);
+        }
+    }
+
+    #[test]
     fn static_replay_hints_omit_live_only_keys() {
         use ratatui::backend::TestBackend;
         let ip: IpAddr = "192.0.2.1".parse().unwrap();
@@ -2329,6 +2400,10 @@ mod tests {
         assert!(
             !replay.contains("p pause") && !replay.contains("o add"),
             "{replay}"
+        );
+        assert!(
+            !replay.contains("r reset"),
+            "a loaded session cannot be reset: {replay}"
         );
         assert!(replay.contains("e export"), "{replay}");
     }
