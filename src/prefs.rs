@@ -2,6 +2,7 @@
 //!
 //! Saves user preferences (like theme) to ~/.config/ttl/config.toml
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -102,7 +103,8 @@ impl Prefs {
 
     fn save_to_path(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create {}", parent.display()))?;
         }
         let data = toml::to_string_pretty(self)?;
         crate::persistence::atomic_write(
@@ -116,6 +118,19 @@ impl Prefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn save_error_names_the_path_and_the_cause() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-directory");
+        fs::write(&blocker, "").unwrap();
+        let path = blocker.join("ttl/config.toml");
+        let error = Prefs::default().save_to_path(&path).unwrap_err();
+        // `{:#}` is how main prints it: the path and the OS reason, not just one.
+        let message = format!("{error:#}");
+        assert!(message.contains("not-a-directory"), "{message}");
+        assert!(message.contains(": "), "{message}");
+    }
 
     #[test]
     fn saving_to_an_isolated_path_roundtrips_and_restricts_existing_permissions() {

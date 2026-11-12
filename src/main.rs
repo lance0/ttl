@@ -558,7 +558,7 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
         // Saving preferences must not abort a run, but a silent failure would
         // lose the theme, display mode, API key and update-check changes.
         if let Err(error) = final_prefs.save() {
-            eprintln!("Warning: could not save preferences: {error}");
+            eprintln!("Warning: could not save preferences: {error:#}");
         }
     }
 
@@ -990,7 +990,7 @@ async fn run_interactive_mode(
     // Saving preferences must not abort a run, but a silent failure would lose
     // the theme, display mode, API key and update-check changes.
     if let Err(error) = final_prefs.save() {
-        eprintln!("Warning: could not save preferences: {error}");
+        eprintln!("Warning: could not save preferences: {error:#}");
     }
 
     // Cleanup
