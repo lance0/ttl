@@ -513,7 +513,7 @@ impl Args {
                 (self.interval != 1.0, "-i/--interval"),
                 (self.max_ttl != 30, "-m/--max-ttl"),
                 (self.timeout != 3.0, "--timeout"),
-                (self.protocol != "auto", "-p/--protocol"),
+                (protocol != "auto", "-p/--protocol"),
                 (self.port.is_some(), "--port"),
                 (self.port_fixed, "--fixed-port"),
                 (self.flows != 1, "--flows"),
@@ -684,6 +684,10 @@ mod tests {
         let mut args =
             Args::try_parse_from(["ttl", "--replay", "trace.json", "-i", "1.0", "-c", "0"])
                 .unwrap();
+        assert!(args.validate().is_ok());
+        // Protocol names are case-insensitive in live mode, so the default is too.
+        let mut args =
+            Args::try_parse_from(["ttl", "--replay", "trace.json", "-p", "AUTO"]).unwrap();
         assert!(args.validate().is_ok());
     }
 
