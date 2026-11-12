@@ -804,7 +804,7 @@ where
         ui_state.clear_old_status();
 
         // Poll for a pending add-target result (non-blocking)
-        poll_add_target_result(ui_state, &mut targets);
+        poll_add_target_result(ui_state, &mut targets, &sessions);
 
         // Targets can grow at runtime via the add-target modal.
         // Compute count AFTER polling so newly added targets are reflected this tick.
@@ -1446,7 +1446,11 @@ fn reset_stats_if_live(sessions: &SessionMap, target: IpAddr) -> bool {
 
 /// Poll the pending add-target reply; on success the new target joins the
 /// rotation and becomes selected.
-fn poll_add_target_result(ui_state: &mut UiState, targets: &mut Vec<IpAddr>) {
+fn poll_add_target_result(
+    ui_state: &mut UiState,
+    targets: &mut Vec<IpAddr>,
+    sessions: &SessionMap,
+) {
     let Some(rx) = ui_state.target_input.pending.as_mut() else {
         return;
     };
@@ -1460,6 +1464,13 @@ fn poll_add_target_result(ui_state: &mut UiState, targets: &mut Vec<IpAddr>) {
             if let Some(idx) = targets.iter().position(|t| *t == added.ip) {
                 ui_state.selected_target = idx;
                 ui_state.selected = None;
+            }
+            // A target that joins while monitoring is paused must not start
+            // probing: the title badge and the engine would otherwise disagree.
+            if ui_state.paused
+                && let Some(state) = sessions.read().get(&added.ip)
+            {
+                state.write().paused = true;
             }
             if added.existed {
                 ui_state.set_status(format!("Already tracing {} ({})", added.name, added.ip));
@@ -2239,6 +2250,12 @@ mod tests {
         };
         let (tx, rx) = tokio::sync::oneshot::channel();
         ui_state.target_input.pending = Some(rx);
+        let sessions: SessionMap = make_single_session_map(existing, {
+            Session::new(
+                Target::new("one.one.one.one".into(), existing),
+                Config::default(),
+            )
+        });
         let before = render_fingerprint(&ui_state, targets.len(), Some(0), None);
         tx.send(Ok(crate::tui::views::AddedTarget {
             ip: added,
@@ -2246,13 +2263,42 @@ mod tests {
             existed: false,
         }))
         .unwrap();
-        poll_add_target_result(&mut ui_state, &mut targets);
+        poll_add_target_result(&mut ui_state, &mut targets, &sessions);
         let after = render_fingerprint(&ui_state, targets.len(), Some(0), None);
         assert_eq!(targets, vec![existing, added]);
         assert_eq!(ui_state.selected_target, 1);
         assert!(!ui_state.show_target_input);
         assert!(ui_state.status_message.is_some());
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn target_added_while_paused_does_not_start_probing() {
+        let added = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+        for paused in [true, false] {
+            let session = Session::new(Target::new("dns.google".into(), added), Config::default());
+            let sessions = make_single_session_map(added, session);
+            let mut targets = Vec::new();
+            let mut ui_state = UiState {
+                paused,
+                ..UiState::default()
+            };
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            ui_state.target_input.pending = Some(rx);
+            tx.send(Ok(crate::tui::views::AddedTarget {
+                ip: added,
+                name: "dns.google".to_string(),
+                existed: false,
+            }))
+            .unwrap();
+            poll_add_target_result(&mut ui_state, &mut targets, &sessions);
+            let observed = sessions.read().get(&added).unwrap().read().paused;
+            assert_eq!(
+                observed, paused,
+                "a target added while paused={paused} ended up paused={observed}"
+            );
+            assert_eq!(ui_state.paused, paused);
+        }
     }
 
     #[test]

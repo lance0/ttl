@@ -27,13 +27,21 @@ pub struct SettingsState {
     pub update_check: bool,
 }
 
+/// Theme rows the settings list shows at once.
+const VISIBLE_THEMES: usize = 5;
+
 impl SettingsState {
     pub fn new(theme_index: usize, display_mode: DisplayMode, api_key: Option<String>) -> Self {
         let api_key = api_key.unwrap_or_default();
         let cursor = api_key.len();
         Self {
             selected_section: 0,
-            theme_scroll: 0,
+            // Open with the active theme on screen instead of always at the
+            // top: the list only shows VISIBLE_THEMES rows, so an index picked
+            // with `t` before opening Settings used to be invisible.
+            theme_scroll: theme_index
+                .saturating_sub(VISIBLE_THEMES - 1)
+                .min(Theme::list().len().saturating_sub(VISIBLE_THEMES)),
             theme_index,
             display_mode,
             api_key,
@@ -123,10 +131,9 @@ impl SettingsState {
             // Theme section
             if theme_count > 0 && self.theme_index + 1 < theme_count {
                 self.theme_index += 1;
-                // Adjust scroll if needed (show 5 themes at once)
-                let visible_themes = 5;
-                if self.theme_index >= self.theme_scroll + visible_themes {
-                    self.theme_scroll = self.theme_index - visible_themes + 1;
+                // Adjust scroll if needed (show VISIBLE_THEMES at once)
+                if self.theme_index >= self.theme_scroll + VISIBLE_THEMES {
+                    self.theme_scroll = self.theme_index + 1 - VISIBLE_THEMES;
                 }
             }
         }
@@ -250,7 +257,7 @@ impl Widget for SettingsView<'_> {
         lines.push(Line::from(vec![Span::styled("Theme", theme_header_style)]));
 
         // Show visible themes (5 at a time)
-        let visible_themes = 5.min(self.theme_names.len());
+        let visible_themes = VISIBLE_THEMES.min(self.theme_names.len());
         let start = self.state.theme_scroll;
         let end = (start + visible_themes).min(self.theme_names.len());
 
@@ -536,6 +543,18 @@ mod tests {
             "{row}"
         );
         assert!(!locked.iter().any(|r| r.contains("Enter to toggle")));
+    }
+
+    #[test]
+    fn theme_scroll_reveals_the_active_theme() {
+        for index in 0..Theme::list().len() {
+            let state = SettingsState::new(index, DisplayMode::Auto, None);
+            assert!(
+                index >= state.theme_scroll && index < state.theme_scroll + VISIBLE_THEMES,
+                "theme {index} opens off screen at scroll {}",
+                state.theme_scroll
+            );
+        }
     }
 
     #[test]
