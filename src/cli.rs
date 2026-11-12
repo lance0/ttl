@@ -402,6 +402,19 @@ impl Args {
             ));
         }
 
+        // Reject an unknown theme up front. Without this the name falls back to
+        // the default theme with no message, and quitting then persists that
+        // default over the theme the user had saved.
+        if let Some(theme) = &self.theme
+            && !crate::tui::theme::Theme::is_known_name(theme)
+        {
+            return Err(format!(
+                "Unknown theme: {}. Use one of: {}",
+                theme,
+                crate::tui::theme::Theme::list().join(", ")
+            ));
+        }
+
         // Validate interface name
         if let Some(iface) = &self.interface {
             if iface.is_empty() {
@@ -535,6 +548,37 @@ mod tests {
         };
         overrides(&mut args);
         args
+    }
+
+    #[test]
+    fn test_unknown_theme_is_rejected() {
+        let mut args = Args::try_parse_from(["ttl", "--theme", "dracul", "192.0.2.1"]).unwrap();
+        let error = args.validate().unwrap_err();
+        assert!(error.contains("dracul"), "{error}");
+        assert!(
+            error.contains("dracula"),
+            "error should list valid names: {error}"
+        );
+    }
+
+    #[test]
+    fn test_theme_names_and_aliases_are_accepted() {
+        for theme in crate::tui::theme::Theme::list() {
+            let mut args = Args::try_parse_from(["ttl", "--theme", theme, "192.0.2.1"]).unwrap();
+            assert!(args.validate().is_ok(), "rejected canonical theme {theme}");
+        }
+        for alias in [
+            "mono",
+            "futuristic",
+            "hacker",
+            "mocha",
+            "tokyo",
+            "tokyonight",
+            "DEFAULT",
+        ] {
+            let mut args = Args::try_parse_from(["ttl", "--theme", alias, "192.0.2.1"]).unwrap();
+            assert!(args.validate().is_ok(), "rejected documented alias {alias}");
+        }
     }
 
     #[test]

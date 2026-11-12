@@ -295,9 +295,12 @@ impl Theme {
         }
     }
 
-    /// Get a theme by name
-    pub fn by_name(name: &str) -> Self {
-        match name.to_lowercase().as_str() {
+    /// Resolve a theme by name, its canonical name or a documented alias.
+    /// `None` when no theme matches, so callers can distinguish "unknown"
+    /// from "the default theme".
+    fn resolve(name: &str) -> Option<Self> {
+        Some(match name.to_lowercase().as_str() {
+            "default" => Self::default_theme(),
             "kawaii" => Self::kawaii(),
             "cyber" | "futuristic" => Self::cyber(),
             "monochrome" | "mono" => Self::monochrome(),
@@ -308,8 +311,19 @@ impl Theme {
             "catppuccin" | "mocha" => Self::catppuccin(),
             "tokyo_night" | "tokyo" | "tokyonight" => Self::tokyo_night(),
             "solarized" => Self::solarized(),
-            _ => Self::default_theme(),
-        }
+            _ => return None,
+        })
+    }
+
+    /// Whether `name` selects a theme. Accepts the names in [`Theme::list`]
+    /// and the documented aliases, which is what `--theme` validates against.
+    pub fn is_known_name(name: &str) -> bool {
+        Self::resolve(name).is_some()
+    }
+
+    /// Get a theme by name, falling back to the default theme.
+    pub fn by_name(name: &str) -> Self {
+        Self::resolve(name).unwrap_or_else(Self::default_theme)
     }
 
     /// Get the theme name
