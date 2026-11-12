@@ -807,6 +807,29 @@ fn join_receivers(handles: Vec<std::thread::JoinHandle<Result<()>>>) -> Result<(
     Ok(())
 }
 
+/// Build the IX lookup with the saved PeeringDB key applied.
+///
+/// The key raises PeeringDB's anonymous rate limit, so every mode that can
+/// enrich hops must use it — not just the TUI. `PEERINGDB_API_KEY` still wins;
+/// `IxLookup::get_effective_api_key` checks the environment first.
+fn build_ix_lookup(config: &Config, prefs: &Prefs) -> Option<Arc<IxLookup>> {
+    if !config.ix_enabled {
+        return None;
+    }
+    match IxLookup::new() {
+        Ok(ix) => {
+            if let Some(key) = &prefs.peeringdb_api_key {
+                ix.set_api_key(Some(key.clone()));
+            }
+            Some(Arc::new(ix))
+        }
+        Err(error) => {
+            eprintln!("Warning: Failed to initialize IX lookup: {error}");
+            None
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_interactive_mode(
     args: Args,
@@ -909,23 +932,7 @@ async fn run_interactive_mode(
     }
 
     // Spawn IX worker (if enabled) - keep Arc for TUI access
-    let ix_lookup: Option<Arc<IxLookup>> = if config.ix_enabled {
-        match IxLookup::new() {
-            Ok(ix) => {
-                // Set API key from preferences (env var takes precedence in get_effective_api_key)
-                if let Some(ref key) = prefs.peeringdb_api_key {
-                    ix.set_api_key(Some(key.clone()));
-                }
-                Some(Arc::new(ix))
-            }
-            Err(e) => {
-                eprintln!("Warning: Failed to initialize IX lookup: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let ix_lookup = build_ix_lookup(&config, &prefs);
 
     let ix_handle = ix_lookup.as_ref().map(|ix| {
         tokio::spawn(run_ix_worker(
@@ -1311,21 +1318,8 @@ async fn run_batch_mode(
     };
 
     // Spawn IX worker (if enabled)
-    let ix_handle = if config.ix_enabled {
-        match IxLookup::new() {
-            Ok(ix) => Some(tokio::spawn(run_ix_worker(
-                Arc::new(ix),
-                sessions.clone(),
-                cancel.clone(),
-            ))),
-            Err(e) => {
-                eprintln!("Warning: Failed to initialize IX lookup: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let ix_handle = build_ix_lookup(&config, &Prefs::load())
+        .map(|ix| tokio::spawn(run_ix_worker(ix, sessions.clone(), cancel.clone())));
 
     // Spawn rate limit detection worker (always enabled, lightweight analysis)
     let ratelimit_handle = tokio::spawn(run_ratelimit_worker(sessions.clone(), cancel.clone()));
@@ -1527,21 +1521,8 @@ async fn run_streaming_mode(
     };
 
     // Spawn IX worker (if enabled)
-    let ix_handle = if config.ix_enabled {
-        match IxLookup::new() {
-            Ok(ix) => Some(tokio::spawn(run_ix_worker(
-                Arc::new(ix),
-                sessions.clone(),
-                cancel.clone(),
-            ))),
-            Err(e) => {
-                eprintln!("Warning: Failed to initialize IX lookup: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let ix_handle = build_ix_lookup(&config, &Prefs::load())
+        .map(|ix| tokio::spawn(run_ix_worker(ix, sessions.clone(), cancel.clone())));
 
     // Spawn rate limit detection worker (always enabled, lightweight analysis)
     let ratelimit_handle = tokio::spawn(run_ratelimit_worker(sessions.clone(), cancel.clone()));
