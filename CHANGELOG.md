@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Unknown `--theme` values are rejected** with the offending name and the valid list, instead of starting in the default theme and then persisting that default over the theme you had saved. Documented aliases (`mono`, `futuristic`, `hacker`, `mocha`, `tokyo`, `tokyonight`) still work.
 - **`--replay` and `--diff` reject probe-only flags.** A positional target, `-c`, `-i`, `-m`, `--timeout`, `-p`, `--port`, `--fixed-port`, `--flows`, `--src-port`, `--rate`, `--size`, `--dscp`, `--interface` and `--source-ip` were previously accepted and silently ignored, because those modes never probe. Output and presentation flags are unaffected.
-- **Replay is read-only.** `r` and `p` no longer reset or "pause" a session loaded from a file; they report `Replay is read-only`, and the static-replay status bar no longer advertises reset.
+- **Replay is read-only.** `r` and `p` no longer reset or "pause" a session loaded from a file, and `r` no longer blanks an `--animate` replay mid-playback; they report `Replay is read-only`, and the static-replay status bar no longer advertises reset.
 - **A target added while monitoring is paused stays paused**, so the title badge and the engine agree.
 - **Settings opens with the active theme on screen** rather than always at the top of the five-row theme list.
 

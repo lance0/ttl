@@ -1248,7 +1248,7 @@ where
                     // Reset the selected target's statistics. A session loaded
                     // from a file has no live epoch, so resetting it would only
                     // blank a read-only view and poison a later `e` export.
-                    let reset = reset_stats_if_live(&sessions, current_target);
+                    let reset = reset_stats_if_live(ui_state, &sessions, current_target);
                     ui_state.set_status(if reset {
                         "Stats reset"
                     } else {
@@ -1430,8 +1430,13 @@ fn toggle_live_pause(
 
 /// Reset a live session's statistics. Returns false when the session came from
 /// a file, where resetting would erase the recording from the view and from a
-/// later `e` export.
-fn reset_stats_if_live(sessions: &SessionMap, target: IpAddr) -> bool {
+/// later `e` export. An animated replay draws into a fresh session that does
+/// have a live epoch, so it is checked separately: a reset there would blank
+/// the hops mid-playback and later events would rebuild only part of them.
+fn reset_stats_if_live(ui_state: &UiState, sessions: &SessionMap, target: IpAddr) -> bool {
+    if ui_state.replay_state.is_some() {
+        return false;
+    }
     let sessions_read = sessions.read();
     let Some(state) = sessions_read.get(&target) else {
         return false;
@@ -2396,7 +2401,7 @@ mod tests {
         let sessions = make_single_session_map(ip, session);
         let mut ui_state = UiState::default();
 
-        assert!(!reset_stats_if_live(&sessions, ip));
+        assert!(!reset_stats_if_live(&ui_state, &sessions, ip));
         assert_eq!(toggle_live_pause(&mut ui_state, &sessions, ip), None);
         assert!(!ui_state.paused, "a loaded session must not show PAUSED");
         {
@@ -2409,7 +2414,17 @@ mod tests {
 
         // The same session, once live, resets and pauses normally.
         sessions.read().get(&ip).unwrap().write().started_instant = Some(std::time::Instant::now());
-        assert!(reset_stats_if_live(&sessions, ip));
+
+        // An animated replay draws into a fresh session with a live epoch, but
+        // it is still a recording: `r` must not blank it mid-playback.
+        let animated = UiState {
+            replay_state: Some(ReplayState::new(Vec::new(), 1.0)),
+            ..UiState::default()
+        };
+        assert!(!reset_stats_if_live(&animated, &sessions, ip));
+        assert_eq!(sessions.read().get(&ip).unwrap().read().hops[0].sent, 1);
+
+        assert!(reset_stats_if_live(&ui_state, &sessions, ip));
         assert_eq!(toggle_live_pause(&mut ui_state, &sessions, ip), Some(true));
         assert!(ui_state.paused);
         {
