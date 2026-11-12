@@ -153,7 +153,7 @@ impl UiState {
 /// Address, name, hops, loss and RTT of one target-list row.
 type TargetRow = (IpAddr, String, String, String, String);
 
-/// Post-poll render fingerprint (LAN-1222). Built after status expiry,
+/// Post-poll render fingerprint. Built after status expiry,
 /// add-target, update check, IX cache status, and target-list refresh so
 /// idle skip cannot leave those chrome surfaces stale.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -869,7 +869,7 @@ where
         }
 
         // Fingerprint after polls so status expiry, add-target, update
-        // check, IX cache, and target-list rows participate (LAN-1222).
+        // check, IX cache, and target-list rows participate.
         let session_generation = {
             let sessions_read = sessions.read();
             sessions_read

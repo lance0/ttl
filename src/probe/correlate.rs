@@ -905,7 +905,7 @@ fn parse_icmp_error_payload_v6_with_mtu(
         u16::from_be_bytes([original_ipv6_data[36], original_ipv6_data[37]]),
         u16::from_be_bytes([original_ipv6_data[38], original_ipv6_data[39]]),
     )));
-    // Walk extension headers to find the transport offset (LAN-144)
+    // Walk extension headers to find the transport offset
     let (transport_offset, final_next_header) =
         match skip_ipv6_ext_headers_quoted(original_ipv6_data) {
             Some((off, nh)) => (off, nh),
@@ -1427,7 +1427,7 @@ fn parse_icmp_error_payload_v6_dgram(
         u16::from_be_bytes([original_ipv6_data[38], original_ipv6_data[39]]),
     )));
     // Walk extension headers in the quoted IPv6 packet to find the actual
-    // transport header offset (LAN-144). Without this, extension headers shift
+    // transport header offset. Without this, extension headers shift
     // the transport header past byte 40 and we mis-correlate.
     let (transport_offset, final_next_header) =
         match skip_ipv6_ext_headers_quoted(original_ipv6_data) {
@@ -1951,7 +1951,7 @@ mod tests {
         assert_eq!(parsed.response_type, IcmpResponseType::TimeExceeded(0));
     }
 
-    // Test: ICMPv6 error with quoted IPv6 packet containing extension headers (LAN-144).
+    // Test: ICMPv6 error with quoted IPv6 packet containing extension headers.
     // Without extension header parsing, the transport header would be mis-aligned.
     #[test]
     fn test_parse_time_exceeded_v6_with_ext_headers() {

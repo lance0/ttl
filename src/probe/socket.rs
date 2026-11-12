@@ -300,7 +300,7 @@ pub fn set_dscp(socket: &Socket, dscp: u8, ipv6: bool) -> Result<()> {
 ///
 /// Call this after interface binding (if any) to force a specific source address.
 /// For IPv6 link-local addresses, `scope_id` identifies the interface and must be
-/// provided for the bind to succeed (LAN-143).
+/// provided for the bind to succeed.
 pub fn bind_to_source_ip(socket: &Socket, ip: IpAddr, scope_id: Option<u32>) -> Result<()> {
     let addr = match (ip, scope_id) {
         (IpAddr::V6(v6), Some(scope)) => SocketAddr::V6(SocketAddrV6::new(v6, 0, 0, scope)),
@@ -707,7 +707,7 @@ fn extract_ttl_from_cmsg(msg: &libc::msghdr, ipv6: bool) -> Option<u8> {
 ///
 /// For link-local IPv6 responders, `sin6_scope_id` identifies the interface the
 /// response arrived on. Dropping it makes the address ambiguous when multiple
-/// interfaces have link-local routers (LAN-143).
+/// interfaces have link-local routers.
 #[cfg(unix)]
 fn parse_sockaddr_storage(storage: &libc::sockaddr_storage) -> Result<(IpAddr, Option<u32>)> {
     match storage.ss_family as libc::c_int {
