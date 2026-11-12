@@ -14,8 +14,42 @@ pub(crate) fn atomic_write(
     private: bool,
     write: impl FnOnce(&mut dyn Write) -> Result<()>,
 ) -> Result<()> {
-    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let path = resolved.as_path();
+    write_atomic(path, private, true, write)
+}
+
+/// Like [`atomic_write`], but never follows a symlink at the destination.
+///
+/// Exports land under a predictable, target-derived name in the working
+/// directory. Following a symlink there would let anyone who can write to that
+/// directory redirect the replacement onto an arbitrary file the user can
+/// write (a planted `ttl-<target>-<timestamp>.json -> ~/.bashrc`). Preferences
+/// keep the following behaviour: dotfile config links are deliberate.
+pub(crate) fn atomic_write_no_follow(
+    path: &Path,
+    write: impl FnOnce(&mut dyn Write) -> Result<()>,
+) -> Result<()> {
+    write_atomic(path, false, false, write)
+}
+
+fn write_atomic(
+    path: &Path,
+    private: bool,
+    follow_symlinks: bool,
+    write: impl FnOnce(&mut dyn Write) -> Result<()>,
+) -> Result<()> {
+    let resolved;
+    let path = if follow_symlinks {
+        resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        resolved.as_path()
+    } else {
+        if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            anyhow::bail!(
+                "Refusing to replace the symlink {}; remove it or export to another directory",
+                path.display()
+            );
+        }
+        path
+    };
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -127,5 +161,31 @@ mod tests {
             export.metadata().unwrap().permissions().mode(),
             plain.metadata().unwrap().permissions().mode()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_follow_refuses_a_symlinked_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim.txt");
+        let link = dir.path().join("ttl-192.0.2.1-20261112-120000.json");
+        std::fs::write(&victim, b"precious").unwrap();
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        let error = atomic_write_no_follow(&link, |w| Ok(w.write_all(b"{}")?))
+            .expect_err("a symlinked destination must be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("Refusing to replace the symlink")
+        );
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+
+        // A plain destination still works, including one that does not exist.
+        let fresh = dir.path().join("fresh.json");
+        atomic_write_no_follow(&fresh, |w| Ok(w.write_all(b"{}")?)).unwrap();
+        assert_eq!(std::fs::read(&fresh).unwrap(), b"{}");
     }
 }

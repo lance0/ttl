@@ -28,7 +28,7 @@ pub fn export_json_file(session: &Session) -> Result<String> {
 }
 
 fn export_json_to_path(session: &Session, path: &std::path::Path) -> Result<()> {
-    crate::persistence::atomic_write(path, false, |writer| export_json(session, writer))
+    crate::persistence::atomic_write_no_follow(path, |writer| export_json(session, writer))
 }
 
 /// Sanitize a string for safe use as a filename component.
@@ -120,6 +120,27 @@ mod tests {
         assert_eq!(loaded.target.original, session.target.original);
         assert!(loaded.target.hostname.is_none());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_refuses_a_symlinked_destination() {
+        use crate::{config::Config, state::Target};
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim.txt");
+        let link = dir.path().join("ttl-192.0.2.1-20261112-120000.json");
+        std::fs::write(&victim, b"precious").unwrap();
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        let session = Session::new(
+            Target::new("192.0.2.1".into(), "192.0.2.1".parse().unwrap()),
+            Config::default(),
+        );
+
+        let error = export_json_to_path(&session, &link)
+            .expect_err("an export must not follow a planted symlink");
+        assert!(error.to_string().contains("symlink"), "{error}");
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
     }
 
     #[test]
