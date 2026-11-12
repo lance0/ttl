@@ -221,7 +221,7 @@ ttl detects route instability when the primary responder IP changes at a hop:
 
 - Main table shows `!` indicator after hostname when route changes detected
 - `!` is suppressed when ECMP is detected at the hop (`E` shown instead) — per-packet load balancing is expected multi-path behavior, not instability
-- Hop detail view (Enter key) shows route change history with timestamps
+- Hop detail view (Enter key) shows route change history with the response count at which each change was detected
 - Uses hysteresis (margin of 2 responses) to avoid false positives
 - Requires 5+ responses before recording changes (avoids startup noise)
 - History capped at 50 changes per hop
@@ -782,7 +782,7 @@ cap for a larger recording you trust.
 
 #### Replay Controls
 
-During animated replay, a progress bar shows the current position, speed, and event count. The following controls are available:
+During animated replay, a progress bar shows the current position and playback speed. The following controls are available:
 
 | Key | Action |
 |-----|--------|
