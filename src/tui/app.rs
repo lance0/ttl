@@ -1565,8 +1565,12 @@ fn draw_status_bar(
         ..area
     };
     let mut hint_width = area.width;
-    if let Some((ref message, _)) = ui_state.status_message {
-        let message = fit_text(message, area.width);
+    if let Some((message, _)) = &ui_state.status_message {
+        // Keep room for the highest-priority hint: a message that spans the
+        // whole bar would otherwise blank every key hint on the row.
+        let reserved =
+            hint_line(&hints[..hints.len().min(1)], area.width, theme).width() as u16 + 2;
+        let message = fit_text(message, area.width.saturating_sub(reserved));
         let width = Span::raw(&message).width() as u16;
         hint_width = area.width.saturating_sub(width + 2);
         f.render_widget(
@@ -2434,18 +2438,22 @@ mod tests {
                     let status: String = (0..width).map(|x| buf[(x, 11)].symbol()).collect();
                     let hints = match message {
                         // The message keeps its row slot at the right edge.
-                        Some(message) if usize::from(width) > message.len() + 2 => {
-                            assert!(status.trim_end().ends_with(message), "{width}: {status}");
+                        Some(message) if status.trim_end().ends_with(message) => {
                             &status[..status.len() - message.len() - 1]
                         }
-                        Some(_) => continue,
-                        None => &status,
+                        _ => &status[..],
                     };
                     let hints = hints.trim_end();
-                    assert!(
-                        hints.is_empty() || labels.iter().any(|l| hints.ends_with(l)),
-                        "{width}: clipped {status}"
-                    );
+                    if message.is_some() {
+                        // A transient message must never remove the first hint,
+                        // however long it is for the width.
+                        assert!(hints.contains("? help"), "{width}: {status}");
+                    } else {
+                        assert!(
+                            hints.is_empty() || labels.iter().any(|l| hints.ends_with(l)),
+                            "{width}: clipped {status}"
+                        );
+                    }
                     if width >= 40 && message.is_none() {
                         assert!(hints.contains("? help  q quit  Enter details"), "{status}");
                     }

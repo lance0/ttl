@@ -217,8 +217,10 @@ impl<'a> SettingsView<'a> {
 impl Widget for SettingsView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Taller when the PeeringDB section is shown.
-        let popup_width = 48.min(area.width.saturating_sub(4));
         let content_height = if self.ix_enabled { 21 } else { 16 };
+        // 52 columns fit the four footer key hints (46 cells in a 46-cell
+        // budget); at 48 the last pair, `Enter select`, was always dropped.
+        let popup_width = 52.min(area.width.saturating_sub(4));
         let popup_height = (content_height + super::POPUP_ROWS).min(area.height.saturating_sub(4));
         let inner = super::popup(
             area,
@@ -534,6 +536,25 @@ mod tests {
             "{row}"
         );
         assert!(!locked.iter().any(|r| r.contains("Enter to toggle")));
+    }
+
+    #[test]
+    fn footer_shows_every_key_hint() {
+        use ratatui::{buffer::Buffer, layout::Rect};
+        let theme = Theme::default();
+        let state = SettingsState::new(0, DisplayMode::Auto, None);
+        for width in [60u16, 80, 120] {
+            let area = Rect::new(0, 0, width, 30);
+            let mut buf = Buffer::empty(area);
+            SettingsView::new(&theme, &state, Theme::list(), None, false).render(area, &mut buf);
+            let rendered: String = (0..30)
+                .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            for hint in ["Esc close", "Tab section", "Enter select"] {
+                assert!(rendered.contains(hint), "{width}: missing {hint}");
+            }
+        }
     }
 
     #[test]
