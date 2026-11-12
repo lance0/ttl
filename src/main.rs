@@ -3,7 +3,7 @@ use clap::Parser;
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, IsTerminal, Read};
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -378,7 +378,7 @@ async fn main() -> Result<()> {
     // Check for update notification (only for non-interactive mode)
     // Use short timeout so we don't delay exit if check is slow
     if let Some(update_rx) = update_rx
-        && is_terminal::is_terminal(std::io::stderr())
+        && std::io::stderr().is_terminal()
         && let Ok(Some(new_version)) = update_rx.recv_timeout(Duration::from_millis(100))
     {
         update::print_update_notice(&new_version);
@@ -479,7 +479,7 @@ fn run_diff_mode(before_path: &str, after_path: &str, json: bool, max_bytes: u64
         write_diff_json(&diff, stdout.lock())?;
         println!();
     } else {
-        let color = is_terminal::is_terminal(std::io::stdout());
+        let color = std::io::stdout().is_terminal();
         write_diff_text(&diff, stdout.lock(), color)?;
     }
     Ok(())
