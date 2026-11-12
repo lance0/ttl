@@ -124,9 +124,14 @@ impl Receiver {
 
     fn derive_flow_hint(&self, src_port: Option<u16>) -> Option<u8> {
         match src_port {
+            // Compared in u32: `base + num_flows` reaches 65536 for the
+            // boundary combinations `Args::validate` accepts (for example
+            // `--src-port 65535` with the default single flow), which would
+            // overflow the u16 bound and empty the whole window.
             Some(port)
                 if port >= self.config.src_port_base
-                    && port < self.config.src_port_base + self.config.num_flows as u16 =>
+                    && u32::from(port - self.config.src_port_base)
+                        < u32::from(self.config.num_flows) =>
             {
                 Some((port - self.config.src_port_base) as u8)
             }
@@ -608,13 +613,17 @@ mod tests {
     use crate::trace::pending::new_pending_map;
 
     fn test_receiver(num_flows: u8) -> Receiver {
+        test_receiver_at(50000, num_flows)
+    }
+
+    fn test_receiver_at(src_port_base: u16, num_flows: u8) -> Receiver {
         let sessions: SessionMap = Arc::new(RwLock::new(HashMap::new()));
         let pending = new_pending_map();
         let cancel = CancellationToken::new();
         let config = ReceiverConfig {
             timeout: Duration::from_secs(1),
             ipv6: false,
-            src_port_base: 50000,
+            src_port_base,
             num_flows,
             interface: None,
             recv_any: false,
@@ -686,6 +695,23 @@ mod tests {
     fn test_derive_flow_hint_none_single_flow_is_zero() {
         let receiver = test_receiver(1);
         assert_eq!(receiver.derive_flow_hint(None), Some(0));
+    }
+
+    /// `--src-port 65520 --flows 16` uses ports 65520..=65535, which
+    /// `Args::validate` accepts. `base + num_flows` is 65536 and must not be
+    /// computed in u16: the wrapped bound used to empty the window, so every
+    /// reply was reported as unknown-flow and dropped.
+    #[test]
+    fn test_derive_flow_hint_window_ending_at_last_port() {
+        let receiver = test_receiver_at(65520, 16);
+        assert_eq!(receiver.derive_flow_hint(Some(65520)), Some(0));
+        assert_eq!(receiver.derive_flow_hint(Some(65535)), Some(15));
+        assert_eq!(receiver.derive_flow_hint(Some(65519)), None);
+
+        // Single flow with the maximum base: exactly one usable port.
+        let receiver = test_receiver_at(65535, 1);
+        assert_eq!(receiver.derive_flow_hint(Some(65535)), Some(0));
+        assert_eq!(receiver.derive_flow_hint(Some(65534)), None);
     }
 
     fn one_pending(probe_id: ProbeId, target: IpAddr) -> HashMap<PendingKey, PendingProbe> {
