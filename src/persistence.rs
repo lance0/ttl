@@ -23,7 +23,7 @@ pub(crate) fn atomic_write(
 /// directory. Following a symlink there would let anyone who can write to that
 /// directory redirect the replacement onto an arbitrary file the user can
 /// write (a planted `ttl-<target>-<timestamp>.json -> ~/.bashrc`). Preferences
-/// keep the following behaviour: dotfile config links are deliberate.
+/// keep the following behavior: dotfile config links are deliberate.
 pub(crate) fn atomic_write_no_follow(
     path: &Path,
     write: impl FnOnce(&mut dyn Write) -> Result<()>,

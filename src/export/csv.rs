@@ -90,7 +90,7 @@ pub fn export_csv<W: Write>(session: &Session, mut writer: W) -> Result<()> {
 }
 
 /// Escape a string for CSV: quote if it contains a comma, quote, newline, or
-/// carriage return, and neutralise a leading formula character so a
+/// carriage return, and neutralize a leading formula character so a
 /// spreadsheet does not evaluate the cell.
 ///
 /// Hostnames come from PTR records, so a hop operator controls them. Unprefixed,
@@ -163,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn test_escape_csv_neutralises_formula_prefixes() {
+    fn test_escape_csv_neutralizes_formula_prefixes() {
         // A PTR record is attacker-controlled: a leading formula character must
         // not reach a spreadsheet as a live formula.
         assert_eq!(escape_csv("=1+1"), "'=1+1");
