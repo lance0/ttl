@@ -298,7 +298,16 @@ impl Args {
         }
 
         if !replay_or_diff && self.is_batch_mode() && self.count == 0 {
-            return Err("Batch output modes (--json, --csv, --report) require -c to be set".into());
+            let mode = if self.json {
+                "--json"
+            } else if self.csv {
+                "--csv"
+            } else {
+                "--report"
+            };
+            return Err(format!(
+                "{mode} needs a positive -c: -c 0 means run until quit, which cannot be used for batch output"
+            ));
         }
 
         if self.ipv4 && self.ipv6 {

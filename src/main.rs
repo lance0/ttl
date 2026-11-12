@@ -555,8 +555,11 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
         )
         .await?;
 
-        // Save preferences (best effort, don't fail on save error)
-        let _ = final_prefs.save();
+        // Saving preferences must not abort a run, but a silent failure would
+        // lose the theme, display mode, API key and update-check changes.
+        if let Err(error) = final_prefs.save() {
+            eprintln!("Warning: could not save preferences: {error}");
+        }
     }
 
     Ok(())
@@ -604,7 +607,10 @@ fn resolve_targets(
 
     for target_str in target_strs {
         let ips = if resolve_all {
-            resolve_all_ips(target_str)?
+            // Name the host that failed: with several targets a bare resolver
+            // error leaves the user unable to tell which name to fix.
+            resolve_all_ips(target_str)
+                .with_context(|| format!("Failed to resolve target: {target_str}"))?
         } else {
             vec![resolve_target(target_str, force_ipv4, force_ipv6)?]
         };
@@ -974,8 +980,11 @@ async fn run_interactive_mode(
     )
     .await?;
 
-    // Save preferences (best effort, don't fail on save error)
-    let _ = final_prefs.save();
+    // Saving preferences must not abort a run, but a silent failure would lose
+    // the theme, display mode, API key and update-check changes.
+    if let Err(error) = final_prefs.save() {
+        eprintln!("Warning: could not save preferences: {error}");
+    }
 
     // Cleanup
     shutdown_log("interactive cleanup start");
