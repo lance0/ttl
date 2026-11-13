@@ -1067,9 +1067,12 @@ fn udp_quote_probe_id(udp: &[u8], src: IpAddr, dst: IpAddr) -> Option<ProbeId> {
         return extract_probe_id_from_udp_payload(&udp[8..]);
     }
     // ponytail: a short quote has no magic bytes, so another program's UDP
-    // also decodes to some sequence; only the receiver's pending match
-    // (sequence, flow, target) filters it. Add a per-run payload nonce if
-    // that ever misattributes.
+    // also decodes to some sequence. Only the receiver's pending match
+    // filters it, and with a single target and an unknown source port that
+    // is the sequence alone (unmatched ones become recorded late replies
+    // when the quoted destination is a target). Add a per-run payload nonce,
+    // or check the quoted dst port against the probe's TTL, if that ever
+    // misattributes.
     let quoted = u16::from_be_bytes([udp[6], udp[7]]);
     let payload_len = usize::from(u16::from_be_bytes([udp[4], udp[5]])).checked_sub(8)?;
     // 0 is IPv4 "no checksum"; our probes are never shorter than MIN_UDP_PAYLOAD.
