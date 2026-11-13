@@ -1100,8 +1100,11 @@ fn test_replay_event_roundtrip() {
     assert_eq!(hop3.primary, Some(target_ip));
 }
 
+/// A late reply arrives after the live run counted the probe's timeout, and
+/// the live stats ignore it (its RTT is unknown, recorded as 0). Replay must
+/// give the same single outcome, not a timeout plus a 0 ms reply.
 #[test]
-fn test_replay_late_reply_does_not_increment_total_sent_or_timeouts() {
+fn test_replay_late_reply_matches_live_accounting() {
     let mut session = test_session();
     let hop_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
 
@@ -1121,7 +1124,7 @@ fn test_replay_late_reply_does_not_increment_total_sent_or_timeouts() {
         flow_id: 0,
         outcome: ProbeOutcome::LateReply {
             addr: hop_ip,
-            rtt_us: 12_000,
+            rtt_us: 0,
         },
     };
     session.apply_replay_event(&late);
@@ -1130,8 +1133,7 @@ fn test_replay_late_reply_does_not_increment_total_sent_or_timeouts() {
     let hop = session.hop(2).unwrap();
     assert_eq!(hop.sent, 1);
     assert_eq!(hop.timeouts, 1);
-    assert_eq!(
-        hop.received, 1,
-        "LateReply should count as a received response"
-    );
+    assert_eq!(hop.received, 0, "the live run did not count the late reply");
+    assert!(hop.responders.is_empty(), "no 0 ms RTT sample");
+    assert_eq!(hop.loss_pct(), 100.0);
 }

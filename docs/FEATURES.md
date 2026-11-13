@@ -684,7 +684,9 @@ with a `target` field added for demultiplexing multi-target runs:
 {"target":"8.8.8.8","offset_ms":4021,"ttl":7,"seq":1,"flow_id":0,"type":"timeout"}
 ```
 
-Event types are `reply`, `timeout`, and `late_reply`. When the stream ends, a
+Event types are `reply`, `timeout`, and `late_reply`. A `late_reply` arrived
+after its probe's `timeout` event; it is informational (`rtt_us` is 0, the RTT
+is unknown) and does not change the stats. When the stream ends, a
 final `summary` line is emitted per target:
 
 ```json

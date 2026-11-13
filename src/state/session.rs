@@ -1569,16 +1569,9 @@ impl Session {
                     hop.record_flow_timeout(event.flow_id);
                     self.total_sent += 1;
                 }
-                ProbeOutcome::LateReply { addr, rtt_us } => {
-                    // Late reply arrives after timeout accounting already happened.
-                    let rtt = Duration::from_micros(*rtt_us);
-                    if single_flow {
-                        hop.record_response_detecting_flaps(*addr, rtt, None);
-                    } else {
-                        hop.record_response_with_mpls(*addr, rtt, None);
-                    }
-                    hop.record_flow_response(event.flow_id, *addr, rtt);
-                }
+                // The live run counted this probe's timeout and ignored the
+                // late reply (its RTT is unknown), so replay does the same.
+                ProbeOutcome::LateReply { .. } => {}
             }
         }
     }

@@ -332,24 +332,13 @@ impl Receiver {
                                     quoted_ttl: parsed.quoted_ttl,
                                 });
                             } else {
-                                // Late packet arrival - response came after timeout
-                                // Record as LateReply for replay accuracy
                                 if let Some(target) = parsed.original_dest {
-                                    let sessions = self.sessions.read();
-                                    if let Some(session_lock) = sessions.get(&target) {
-                                        let mut state = session_lock.write();
-                                        let offset_ms = state.offset_ms();
-                                        state.record_event(ProbeEvent {
-                                            offset_ms,
-                                            ttl: parsed.probe_id.ttl,
-                                            seq: parsed.probe_id.seq,
-                                            flow_id: flow_hint.unwrap_or(0),
-                                            outcome: ProbeOutcome::LateReply {
-                                                addr: parsed.responder,
-                                                rtt_us: 0, // RTT unknown for late arrivals
-                                            },
-                                        });
-                                    }
+                                    self.record_late_reply(
+                                        parsed.probe_id,
+                                        target,
+                                        flow_hint,
+                                        parsed.responder,
+                                    );
                                 }
                                 #[cfg(debug_assertions)]
                                 eprintln!(
@@ -428,6 +417,44 @@ impl Receiver {
         }
 
         Ok(())
+    }
+
+    /// Record a reply that matched no pending probe as a `LateReply` event,
+    /// for the record only: the probe's timeout was already counted. A probe
+    /// still pending means the match was ambiguous (an unknown flow with
+    /// several flows of that probe in flight), not late, so no event is
+    /// recorded and the probe's own reply or timeout accounts for it.
+    fn record_late_reply(
+        &self,
+        probe_id: ProbeId,
+        target: IpAddr,
+        flow_hint: Option<u8>,
+        responder: IpAddr,
+    ) {
+        // Read before taking the sessions lock: never hold both
+        let still_pending = self
+            .pending
+            .read()
+            .keys()
+            .any(|&(pid, _, tgt, _)| pid == probe_id && tgt == target);
+        if still_pending {
+            return;
+        }
+        let sessions = self.sessions.read();
+        if let Some(session_lock) = sessions.get(&target) {
+            let mut state = session_lock.write();
+            let offset_ms = state.offset_ms();
+            state.record_event(ProbeEvent {
+                offset_ms,
+                ttl: probe_id.ttl,
+                seq: probe_id.seq,
+                flow_id: flow_hint.unwrap_or(0),
+                outcome: ProbeOutcome::LateReply {
+                    addr: responder,
+                    rtt_us: 0, // RTT unknown for late arrivals
+                },
+            });
+        }
     }
 
     /// Apply the responses drained from the socket to their sessions.
@@ -787,6 +814,48 @@ mod tests {
         let session = state.read();
         assert_eq!(session.hop(1).unwrap().received, 1);
         assert_eq!(session.hop(2).unwrap().timeouts, 1);
+    }
+
+    /// A reply that only failed to match because several flows of its probe
+    /// are still pending is not late: recording it as `LateReply` and then
+    /// the probe's timeout would replay as two outcomes for one probe.
+    #[test]
+    fn ambiguous_match_is_not_recorded_as_late_reply() {
+        use crate::config::Config;
+        use crate::state::{Session, Target};
+
+        let receiver = test_receiver(2);
+        let target: IpAddr = "192.0.2.1".parse().unwrap();
+        let router: IpAddr = "192.0.2.254".parse().unwrap();
+        let probe_id = ProbeId::new(1, 0);
+        let session = Session::new(Target::new("t".into(), target), Config::default());
+        let state = Arc::new(SessionLock::new(session));
+        receiver.sessions.write().insert(target, state.clone());
+        for flow_id in 0..2 {
+            receiver.pending.write().insert(
+                (probe_id, flow_id, target, false),
+                PendingProbe {
+                    sent_at: Instant::now(),
+                    target,
+                    flow_id,
+                    original_src_port: None,
+                    packet_size: None,
+                },
+            );
+        }
+
+        receiver.record_late_reply(probe_id, target, None, router);
+        assert!(state.read().events.is_empty());
+
+        receiver.pending.write().clear();
+        receiver.record_late_reply(probe_id, target, None, router);
+        assert!(matches!(
+            state.read().events[..],
+            [ProbeEvent {
+                outcome: ProbeOutcome::LateReply { .. },
+                ..
+            }]
+        ));
     }
 
     fn one_pending(probe_id: ProbeId, target: IpAddr) -> HashMap<PendingKey, PendingProbe> {
