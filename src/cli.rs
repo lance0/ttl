@@ -470,6 +470,8 @@ impl Args {
                         {
                             let cname = std::ffi::CString::new(zone)
                                 .map_err(|_| format!("Invalid zone name: {zone}"))?;
+                            // SAFETY: `cname` is a valid NUL-terminated C string that
+                            // outlives the call; if_nametoindex only reads it.
                             let idx = unsafe { libc::if_nametoindex(cname.as_ptr()) };
                             if idx == 0 {
                                 return Err(format!(

@@ -80,6 +80,10 @@ getifs = "0.8"
 tokio-test = "0.4"
 proptest = "1.4"
 
+[lints.clippy]
+# Every `unsafe` block must carry a `// SAFETY:` comment naming the invariant it relies on.
+undocumented_unsafe_blocks = "warn"
+
 [profile.release]
 lto = true
 codegen-units = 1
