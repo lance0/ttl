@@ -338,6 +338,7 @@ impl Receiver {
                                         target,
                                         flow_hint,
                                         parsed.responder,
+                                        parsed.response_type,
                                     );
                                 }
                                 #[cfg(debug_assertions)]
@@ -430,7 +431,19 @@ impl Receiver {
         target: IpAddr,
         flow_hint: Option<u8>,
         responder: IpAddr,
+        response_type: IcmpResponseType,
     ) {
+        // On Linux the engine's send socket gets a copy of every IPv6 Echo
+        // Reply, so one with no pending probe has usually been recorded by the
+        // engine already.
+        // ponytail: a genuinely late IPv6 Echo Reply goes unrecorded on Linux;
+        // track timed-out keys if that record matters.
+        if cfg!(target_os = "linux")
+            && self.config.ipv6
+            && matches!(response_type, IcmpResponseType::EchoReply)
+        {
+            return;
+        }
         // Read before taking the sessions lock: never hold both
         let still_pending = self
             .pending
@@ -844,11 +857,12 @@ mod tests {
             );
         }
 
-        receiver.record_late_reply(probe_id, target, None, router);
+        let late = IcmpResponseType::TimeExceeded(0);
+        receiver.record_late_reply(probe_id, target, None, router, late);
         assert!(state.read().events.is_empty());
 
         receiver.pending.write().clear();
-        receiver.record_late_reply(probe_id, target, None, router);
+        receiver.record_late_reply(probe_id, target, None, router, late);
         assert!(matches!(
             state.read().events[..],
             [ProbeEvent {
@@ -856,6 +870,33 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    /// Linux raw mode: the engine's send socket and the receiver both get each
+    /// IPv6 Echo Reply. The engine recorded the reply, so the receiver's copy,
+    /// finding nothing pending, is not a late reply.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ipv6_echo_reply_copy_is_not_recorded_as_late_reply() {
+        use crate::config::Config;
+        use crate::state::{Session, Target};
+
+        let mut receiver = test_receiver(1);
+        receiver.config.ipv6 = true;
+        let target: IpAddr = "2001:db8::1".parse().unwrap();
+        let session = Session::new(Target::new("t".into(), target), Config::default());
+        let state = Arc::new(SessionLock::new(session));
+        receiver.sessions.write().insert(target, state.clone());
+
+        let probe_id = ProbeId::new(1, 0);
+        receiver.record_late_reply(
+            probe_id,
+            target,
+            Some(0),
+            target,
+            IcmpResponseType::EchoReply,
+        );
+        assert!(state.read().events.is_empty());
     }
 
     fn one_pending(probe_id: ProbeId, target: IpAddr) -> HashMap<PendingKey, PendingProbe> {
