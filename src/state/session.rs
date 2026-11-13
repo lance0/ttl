@@ -1473,6 +1473,10 @@ pub struct Session {
     /// Recorded probe events for animated replay
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<ProbeEvent>,
+    /// Oldest events discarded once `events` reached [`Session::MAX_EVENT_LOG`];
+    /// a non-zero value means `events` starts mid-run.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dropped_events: u64,
     /// Runtime recording policy. Headless modes without an event consumer turn
     /// this off; saved sessions retain the normal replay-compatible default.
     #[serde(skip, default = "default_event_recording")]
@@ -1529,6 +1533,11 @@ impl Drop for SessionWriteGuard<'_> {
 }
 
 impl Session {
+    /// Probe events kept for replay/export. A live TUI records ~30 events/s
+    /// on a 30-hop path, so this is about an hour (~5 MB) of the newest
+    /// history; JSON streams drain it every tick and never get close.
+    pub const MAX_EVENT_LOG: usize = 100_000;
+
     pub fn new(target: Target, config: Config) -> Self {
         let max_ttl = config.max_ttl;
         let mut hops = Vec::with_capacity(max_ttl as usize);
@@ -1557,6 +1566,7 @@ impl Session {
             source_ip: None,
             gateway: None,
             events: Vec::new(),
+            dropped_events: 0,
             record_events: true,
             render_generation: 0,
         }
@@ -1677,6 +1687,7 @@ impl Session {
 
         // Clear recorded events
         self.events.clear();
+        self.dropped_events = 0;
 
         for hop in &mut self.hops {
             hop.sent = 0;
@@ -1718,6 +1729,7 @@ impl Session {
             source_ip: self.source_ip,
             gateway: self.gateway,
             events: Vec::new(),
+            dropped_events: self.dropped_events,
             record_events: self.record_events,
             render_generation: self.render_generation,
         }
@@ -1734,9 +1746,16 @@ impl Session {
 
     /// Record a probe event for animated replay or streaming output.
     pub fn record_event(&mut self, event: ProbeEvent) {
-        if self.record_events {
-            self.events.push(event);
+        if !self.record_events {
+            return;
         }
+        if self.events.len() >= Self::MAX_EVENT_LOG {
+            // Drop the oldest quarter at once so the shift is amortized O(1).
+            let n = Self::MAX_EVENT_LOG / 4;
+            self.events.drain(..n);
+            self.dropped_events += n as u64;
+        }
+        self.events.push(event);
     }
 
     /// Get monotonic offset in milliseconds since session start.
@@ -1809,6 +1828,46 @@ mod tests {
         assert!(
             session.events.is_empty(),
             "reset must preserve the recording policy"
+        );
+    }
+
+    #[test]
+    fn live_event_log_keeps_the_newest_events_and_counts_the_rest() {
+        let mut session = Session::new(
+            Target::new("example.test".into(), "192.0.2.1".parse().unwrap()),
+            Config::default(),
+        );
+        let total = 3 * Session::MAX_EVENT_LOG as u64;
+        for offset_ms in 0..total {
+            session.record_event(ProbeEvent {
+                offset_ms,
+                ttl: 1,
+                seq: 0,
+                flow_id: 0,
+                outcome: ProbeOutcome::Timeout,
+            });
+        }
+        assert!(session.events.len() <= Session::MAX_EVENT_LOG);
+        assert_eq!(session.dropped_events + session.events.len() as u64, total);
+        assert_eq!(session.events.last().unwrap().offset_ms, total - 1);
+        assert_eq!(
+            session.events[0].offset_ms, session.dropped_events,
+            "only the oldest events are dropped, in order"
+        );
+
+        let json = serde_json::to_value(&session).unwrap();
+        assert_eq!(json["dropped_events"], session.dropped_events);
+        assert_eq!(
+            session.snapshot_for_render().dropped_events,
+            session.dropped_events
+        );
+        session.reset_stats();
+        assert_eq!(session.dropped_events, 0);
+        assert!(
+            serde_json::to_value(&session)
+                .unwrap()
+                .get("dropped_events")
+                .is_none()
         );
     }
 

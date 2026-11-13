@@ -55,7 +55,10 @@ loads. The fields scripts use most:
 | `.pmtud.discovered_mtu` | Path MTU with `--pmtud`, or `null` if no size was confirmed |
 
 Hop loss is `timeouts / (received + timeouts)`; there is no precomputed loss
-field. Recorded probe events (`.events`) are included for replay.
+field. Recorded probe events (`.events`) are included for replay. A session
+keeps its newest 100,000 events; `.dropped_events`, present only when non-zero,
+counts older ones discarded, so `.events` then starts mid-run. Hop counters
+always cover the whole run.
 
 ## Parsing JSON Output
 

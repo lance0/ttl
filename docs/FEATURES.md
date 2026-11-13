@@ -781,6 +781,11 @@ Replay and diff refuse input over 10 MiB by default, since saved sessions may
 come from untrusted sources. `--replay-size-limit <MiB>` (1-1024) raises the
 cap for a larger recording you trust.
 
+A session records at most its newest 100,000 probe events (about an hour of a
+30-hop path at the default interval). An export from a longer run carries a
+`dropped_events` count; `--animate` says so and starts at the first kept
+event. Final hop statistics are unaffected.
+
 #### Replay Controls
 
 During animated replay, a progress bar shows the current position and playback speed. The following controls are available:
