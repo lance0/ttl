@@ -759,6 +759,7 @@ fn spawn_receivers(
             num_flows: effective_flows_v4,
             interface: interface.clone(),
             recv_any: config.recv_any,
+            udp_paris: config.paris,
         };
         handles.push(spawn_receiver(
             sessions.clone(),
@@ -776,6 +777,7 @@ fn spawn_receivers(
             num_flows: effective_flows_v6,
             interface: interface.clone(),
             recv_any: config.recv_any,
+            udp_paris: config.paris,
         };
         handles.push(spawn_receiver(
             sessions.clone(),
@@ -1179,6 +1181,7 @@ async fn run_target_manager(mut ctx: TargetManagerCtx) -> Result<()> {
                 num_flows,
                 interface: ctx.interface.clone(),
                 recv_any: ctx.config.recv_any,
+                udp_paris: ctx.config.paris,
             };
             receiver_handles.push(spawn_receiver(
                 ctx.sessions.clone(),

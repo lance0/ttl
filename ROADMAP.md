@@ -173,7 +173,7 @@ The macOS single-hop fix (#12) removes the stale-TTL race from the probe send pa
 - [x] Add tests for per-packet ECMP classification, `-p auto` ICMP warning behavior, and out-of-range src-port flow attribution
 - [x] #46 acceptance: per-packet ECMP no longer presents as misleading `Paths: 1` when many responders are observed
 - [x] #46 acceptance: `E` (ECMP) and `!` (route flap) are no longer conflated in the same scenario
-- [ ] Paris strategy for UDP (`--strategy paris` — fixed 5-tuple, checksum encodes sequence) *(follow-on after #46 core fix)*
+- [x] Paris strategy for UDP (`--strategy paris` — fixed 5-tuple, checksum encodes sequence) *(follow-on after #46 core fix)*
 - [ ] Dublin strategy for UDP (`--strategy dublin` — IP ID field encodes sequence) *(follow-on after #46 core fix)*
 
 ---

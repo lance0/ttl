@@ -12,9 +12,9 @@ use crate::probe::rawip::{
 };
 use crate::probe::{
     DEFAULT_PAYLOAD_SIZE, DEFAULT_UDP_PAYLOAD, ICMP_HEADER_SIZE, InterfaceInfo, SocketInfo,
-    TCP_HEADER_SIZE, bind_to_source_ip, build_echo_request, build_tcp_syn_sized,
-    build_udp_payload_sized, create_send_socket_with_interface, create_tcp_socket_with_interface,
-    create_udp_dgram_socket, create_udp_dgram_socket_bound_full,
+    TCP_HEADER_SIZE, bind_to_source_ip, build_echo_request, build_paris_udp_payload,
+    build_tcp_syn_sized, build_udp_payload_sized, create_send_socket_with_interface,
+    create_tcp_socket_with_interface, create_udp_dgram_socket, create_udp_dgram_socket_bound_full,
     create_udp_dgram_socket_bound_with_interface, detect_source_ip, get_identifier,
     get_local_addr_with_interface, send_icmp, send_tcp_probe, send_udp_probe, set_dont_fragment,
     set_dscp, set_ttl,
@@ -474,6 +474,16 @@ impl ProbeEngine {
         // Base port for UDP probes (classic traceroute)
         let base_port = self.config.port.unwrap_or(33434);
 
+        // Paris: the kernel fills in the UDP checksum, so the payload is built against
+        // the source address it will use (same lookup as the TCP checksum path).
+        // ponytail: resolved once per run; a source address that changes mid-run (IPv6
+        // privacy rotation) only loses 8-byte-quote matching, payload quotes still match.
+        let paris_src = self.config.paris.then(|| {
+            source_ip.unwrap_or_else(|| {
+                get_local_addr_with_interface(self.target, self.interface.as_ref())
+            })
+        });
+
         let mut seq: u8 = 0;
         let mut rounds_completed: u64 = 0;
         let mut interval = tokio::time::interval(self.config.interval);
@@ -545,7 +555,6 @@ impl ProbeEngine {
                             let payload_size = self.config.packet_size
                                 .map(|s| (s as usize).saturating_sub(ip_header_size + UDP_HEADER_SIZE))
                                 .unwrap_or(DEFAULT_UDP_PAYLOAD);
-                            let payload = build_udp_payload_sized(probe_id, payload_size);
 
                             // Set TTL before sending
                             if let Err(e) = set_ttl(send_sock, ttl, ipv6) {
@@ -558,6 +567,10 @@ impl ProbeEngine {
                                 base_port
                             } else {
                                 base_port + (ttl as u16)
+                            };
+                            let payload = match paris_src {
+                                Some(src) => build_paris_udp_payload(probe_id, payload_size, src, self.target, src_port, dst_port),
+                                None => build_udp_payload_sized(probe_id, payload_size),
                             };
 
                             let sent_at = Instant::now();
@@ -968,12 +981,15 @@ impl ProbeEngine {
                                 .packet_size
                                 .map(|s| (s as usize).saturating_sub(IPV4_HEADER_SIZE + UDP_HEADER_SIZE))
                                 .unwrap_or(DEFAULT_UDP_PAYLOAD);
-                            let payload = build_udp_payload_sized(probe_id, payload_size);
-
                             let dst_port = if self.config.port_fixed {
                                 base_port
                             } else {
                                 base_port + (ttl as u16)
+                            };
+                            let payload = if self.config.paris {
+                                build_paris_udp_payload(probe_id, payload_size, src.into(), dst.into(), src_port, dst_port)
+                            } else {
+                                build_udp_payload_sized(probe_id, payload_size)
                             };
 
                             let udp = build_udp_datagram(src, dst, src_port, dst_port, &payload);

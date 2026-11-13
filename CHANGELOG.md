@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`--strategy paris` for UDP probes.** Each flow keeps one fixed 5-tuple (source and destination port), and the probe sequence is carried in the UDP checksum by adjusting two payload bytes. Replies from routers that quote only the 8-byte UDP header now correlate; with the default `classic` strategy those hops show as `* * *`, because the probe ID lives in the payload. On a test path every router past the home gateway quoted 8 bytes: classic UDP saw only hop 1, Paris saw every responding hop and the destination. IPv4 and IPv6; `classic` stays the default and is unchanged. Rejected with `-p icmp`, `-p tcp` and `-p auto`.
+
 ## [0.25.0] - 2026-11-12
 
 ### Security

@@ -46,6 +46,53 @@ pub fn build_udp_payload_sized(probe_id: ProbeId, size: usize) -> Vec<u8> {
     payload
 }
 
+/// UDP checksum (RFC 768 / RFC 8200 pseudo-header) of `udp`, a full datagram whose
+/// checksum field (bytes 6..8) is zero.
+fn udp_checksum(src: IpAddr, dst: IpAddr, udp: &[u8]) -> u16 {
+    let (src, dst) = match (src, dst) {
+        (IpAddr::V4(s), IpAddr::V4(d)) => return crate::probe::rawip::udp_checksum_v4(s, d, udp),
+        (IpAddr::V6(s), IpAddr::V6(d)) => (s, d),
+        _ => unreachable!("UDP probe source and target are always the same family"),
+    };
+    let mut buf = Vec::with_capacity(40 + udp.len());
+    buf.extend_from_slice(&src.octets());
+    buf.extend_from_slice(&dst.octets());
+    buf.extend_from_slice(&(udp.len() as u32).to_be_bytes());
+    buf.extend_from_slice(&[0, 0, 0, IPPROTO_UDP]);
+    buf.extend_from_slice(udp);
+    crate::probe::rawip::internet_checksum(&buf)
+}
+
+/// Paris traceroute payload: the usual probe payload with bytes 6..8 chosen so the
+/// datagram's UDP checksum equals `probe_id.to_sequence()`. The ports stay fixed per
+/// flow, and an ICMP error that quotes only the 8-byte UDP header still identifies
+/// the probe (see `correlate.rs`). `src`/`dst` must be the addresses on the wire.
+pub fn build_paris_udp_payload(
+    probe_id: ProbeId,
+    size: usize,
+    src: IpAddr,
+    dst: IpAddr,
+    src_port: u16,
+    dst_port: u16,
+) -> Vec<u8> {
+    let mut payload = build_udp_payload_sized(probe_id, size);
+    payload[6] = 0;
+    payload[7] = 0;
+    let len = (8 + payload.len()) as u16;
+    let mut dgram = Vec::with_capacity(len as usize);
+    dgram.extend_from_slice(&src_port.to_be_bytes());
+    dgram.extend_from_slice(&dst_port.to_be_bytes());
+    dgram.extend_from_slice(&len.to_be_bytes());
+    dgram.extend_from_slice(&[0, 0]);
+    dgram.extend_from_slice(&payload);
+    // checksum = !sum. Adding word w gives !(sum + w) = target, so w = !target + checksum
+    // (one's-complement add). Payload offset 6 is 16-bit aligned (UDP header is 8 bytes).
+    let w = u32::from(!probe_id.to_sequence()) + u32::from(udp_checksum(src, dst, &dgram));
+    let w = ((w & 0xFFFF) + (w >> 16)) as u16;
+    payload[6..8].copy_from_slice(&w.to_be_bytes());
+    payload
+}
+
 /// Create a raw UDP socket for sending probes
 #[allow(dead_code)]
 pub fn create_udp_send_socket(ipv6: bool) -> Result<Socket> {
@@ -219,6 +266,45 @@ mod tests {
         let payload = vec![0x0F, 0x2A, 0x54]; // Only 3 bytes
         let extracted = extract_probe_id_from_udp_payload(&payload);
         assert!(extracted.is_none());
+    }
+
+    /// The on-wire checksum must equal the probe sequence for every TTL/seq the CLI
+    /// allows (max TTL 64), across payload sizes and both address families.
+    #[test]
+    fn test_paris_checksum_encodes_sequence() {
+        let pairs: [(IpAddr, IpAddr); 2] = [
+            (
+                "192.0.2.10".parse().unwrap(),
+                "198.51.100.7".parse().unwrap(),
+            ),
+            (
+                "2001:db8::10".parse().unwrap(),
+                "2001:db8:ff::7".parse().unwrap(),
+            ),
+        ];
+        for (src, dst) in pairs {
+            for size in [8, 9, 32, 1472] {
+                for ttl in 1..=64u8 {
+                    for seq in [0u8, 1, 127, 254, 255] {
+                        let id = ProbeId::new(ttl, seq);
+                        let payload = build_paris_udp_payload(id, size, src, dst, 50003, 33434);
+                        assert_eq!(payload.len(), size);
+                        assert_eq!(extract_probe_id_from_udp_payload(&payload), Some(id));
+                        let mut dgram = vec![0xC3, 0x53, 0x82, 0x9A, 0, 0, 0, 0];
+                        dgram[4..6].copy_from_slice(&((8 + size) as u16).to_be_bytes());
+                        dgram.extend_from_slice(&payload);
+                        assert_eq!(udp_checksum(src, dst, &dgram), id.to_sequence());
+                        // The IPv4 send path's datagram builder agrees.
+                        if let (IpAddr::V4(s), IpAddr::V4(d)) = (src, dst) {
+                            let built = crate::probe::rawip::build_udp_datagram(
+                                s, d, 50003, 33434, &payload,
+                            );
+                            assert_eq!(&built[6..8], &id.to_sequence().to_be_bytes());
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

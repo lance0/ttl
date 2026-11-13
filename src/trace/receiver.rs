@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::probe::{
-    InterfaceInfo, create_recv_socket_with_interface, get_identifier, parse_icmp_response,
+    InterfaceInfo, create_recv_socket_with_interface, get_identifier, parse_icmp_response_with,
     recv_icmp_with_ttl,
 };
 use crate::state::{
@@ -34,6 +34,8 @@ pub struct ReceiverConfig {
     pub interface: Option<InterfaceInfo>,
     /// Don't bind receiver to interface (for asymmetric routing)
     pub recv_any: bool,
+    /// Paris UDP strategy: match 8-byte UDP quotes by checksum
+    pub udp_paris: bool,
 }
 
 /// Maximum consecutive errors before stopping the receiver
@@ -273,11 +275,12 @@ impl Receiver {
                         // scope_id from the source address (non-zero for IPv6 link-local)
                         let responder_scope_id = recv_result.scope_id;
 
-                        if let Some(parsed) = parse_icmp_response(
+                        if let Some(parsed) = parse_icmp_response_with(
                             &buffer[..recv_result.len],
                             recv_result.source,
                             identifier,
                             is_dgram,
+                            self.config.udp_paris,
                         ) {
                             let flow_hint = self.derive_flow_hint(parsed.src_port);
 
@@ -627,6 +630,7 @@ mod tests {
             num_flows,
             interface: None,
             recv_any: false,
+            udp_paris: false,
         };
         Receiver::new(sessions, pending, cancel, config)
     }
