@@ -16,7 +16,7 @@ pub const DEFAULT_UDP_PAYLOAD: usize = 32;
 
 /// Build a UDP probe payload with default size (convenience wrapper)
 /// The payload contains the probe_id for correlation
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn build_udp_payload(probe_id: ProbeId) -> Vec<u8> {
     build_udp_payload_sized(probe_id, DEFAULT_UDP_PAYLOAD)
 }
@@ -46,21 +46,6 @@ pub fn build_udp_payload_sized(probe_id: ProbeId, size: usize) -> Vec<u8> {
     payload
 }
 
-/// Create a raw UDP socket for sending probes
-#[allow(dead_code)]
-pub fn create_udp_send_socket(ipv6: bool) -> Result<Socket> {
-    let domain = if ipv6 { Domain::IPV6 } else { Domain::IPV4 };
-
-    // Use SOCK_RAW with IPPROTO_UDP for TTL control
-    // This requires root/CAP_NET_RAW but gives us TTL control
-    let socket = Socket::new(domain, Type::RAW, Some(Protocol::UDP))?;
-
-    socket.set_nonblocking(false)?;
-    socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-
-    Ok(socket)
-}
-
 /// Create a DGRAM UDP socket for sending probes (fallback, simpler)
 pub fn create_udp_dgram_socket(ipv6: bool) -> Result<Socket> {
     let domain = if ipv6 { Domain::IPV6 } else { Domain::IPV4 };
@@ -68,22 +53,6 @@ pub fn create_udp_dgram_socket(ipv6: bool) -> Result<Socket> {
 
     socket.set_nonblocking(false)?;
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-
-    Ok(socket)
-}
-
-/// Create a DGRAM UDP socket bound to a specific source port (for multi-flow Paris traceroute)
-#[allow(dead_code)]
-pub fn create_udp_dgram_socket_bound(ipv6: bool, src_port: u16) -> Result<Socket> {
-    let socket = create_udp_dgram_socket(ipv6)?;
-
-    // Bind to the specified source port
-    let bind_addr = if ipv6 {
-        SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), src_port)
-    } else {
-        SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), src_port)
-    };
-    socket.bind(&SockAddr::from(bind_addr))?;
 
     Ok(socket)
 }

@@ -9,13 +9,11 @@ use std::borrow::Cow;
 
 /// All themeable colors in the application
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct Theme {
     name: Cow<'static, str>,
 
     // UI chrome
     pub border: Color,
-    pub border_focused: Color,
     pub text: Color,
     pub text_dim: Color,
     pub highlight_bg: Color,
@@ -44,7 +42,6 @@ impl Theme {
 
             // UI chrome - original ttl used Cyan for borders
             border: Color::Cyan,
-            border_focused: Color::Cyan,
             // Reset keeps the terminal's own foreground, so the default theme
             // reads on light and dark terminals alike.
             text: Color::Reset,
@@ -68,7 +65,6 @@ impl Theme {
             name: Cow::Borrowed("kawaii"),
 
             border: Color::Rgb(255, 182, 214), // Pink
-            border_focused: Color::Rgb(255, 182, 214),
             text: Color::Rgb(255, 255, 255),
             text_dim: Color::Rgb(180, 180, 200),
             highlight_bg: Color::Rgb(60, 50, 70),
@@ -88,7 +84,6 @@ impl Theme {
             name: Cow::Borrowed("cyber"),
 
             border: Color::Rgb(0, 255, 255), // Cyan neon
-            border_focused: Color::Rgb(0, 255, 255),
             text: Color::Rgb(255, 255, 255),
             text_dim: Color::Rgb(121, 121, 138),
             highlight_bg: Color::Rgb(20, 20, 35),
@@ -107,8 +102,7 @@ impl Theme {
         Self {
             name: Cow::Borrowed("dracula"),
 
-            border: Color::Rgb(189, 147, 249), // Purple
-            border_focused: Color::Rgb(189, 147, 249),
+            border: Color::Rgb(189, 147, 249),    // Purple
             text: Color::Rgb(248, 248, 242),      // Foreground
             text_dim: Color::Rgb(133, 146, 184),  // Comment, lifted for contrast
             highlight_bg: Color::Rgb(68, 71, 90), // Current line
@@ -128,7 +122,6 @@ impl Theme {
             name: Cow::Borrowed("monochrome"),
 
             border: Color::Rgb(200, 200, 200),
-            border_focused: Color::Rgb(200, 200, 200),
             text: Color::Rgb(255, 255, 255),
             text_dim: Color::Rgb(120, 120, 120),
             highlight_bg: Color::Rgb(50, 50, 50),
@@ -148,7 +141,6 @@ impl Theme {
             name: Cow::Borrowed("matrix"),
 
             border: Color::Rgb(0, 255, 0), // Bright green
-            border_focused: Color::Rgb(0, 255, 0),
             text: Color::Rgb(0, 255, 0),
             text_dim: Color::Rgb(0, 170, 60),
             highlight_bg: Color::Rgb(0, 20, 0),
@@ -167,8 +159,7 @@ impl Theme {
         Self {
             name: Cow::Borrowed("nord"),
 
-            border: Color::Rgb(136, 192, 208), // Nord8 cyan
-            border_focused: Color::Rgb(136, 192, 208),
+            border: Color::Rgb(136, 192, 208),    // Nord8 cyan
             text: Color::Rgb(236, 239, 244),      // Nord6
             text_dim: Color::Rgb(147, 158, 178),  // Nord3, lifted for contrast
             highlight_bg: Color::Rgb(59, 66, 82), // Nord1
@@ -187,8 +178,7 @@ impl Theme {
         Self {
             name: Cow::Borrowed("gruvbox"),
 
-            border: Color::Rgb(254, 128, 25), // Orange
-            border_focused: Color::Rgb(254, 128, 25),
+            border: Color::Rgb(254, 128, 25),     // Orange
             text: Color::Rgb(235, 219, 178),      // fg
             text_dim: Color::Rgb(168, 153, 132),  // fg4
             highlight_bg: Color::Rgb(80, 73, 69), // bg2
@@ -207,8 +197,7 @@ impl Theme {
         Self {
             name: Cow::Borrowed("catppuccin"),
 
-            border: Color::Rgb(203, 166, 247), // Mauve
-            border_focused: Color::Rgb(203, 166, 247),
+            border: Color::Rgb(203, 166, 247),     // Mauve
             text: Color::Rgb(205, 214, 244),       // Text
             text_dim: Color::Rgb(147, 153, 178),   // Overlay2
             highlight_bg: Color::Rgb(88, 91, 112), // Surface2
@@ -227,8 +216,7 @@ impl Theme {
         Self {
             name: Cow::Borrowed("tokyo_night"),
 
-            border: Color::Rgb(187, 154, 247), // Purple
-            border_focused: Color::Rgb(187, 154, 247),
+            border: Color::Rgb(187, 154, 247),    // Purple
             text: Color::Rgb(192, 202, 245),      // Foreground
             text_dim: Color::Rgb(125, 132, 164),  // Comment, lifted for contrast
             highlight_bg: Color::Rgb(59, 66, 97), // bg_highlight
@@ -247,8 +235,7 @@ impl Theme {
         Self {
             name: Cow::Borrowed("solarized"),
 
-            border: Color::Rgb(42, 161, 152), // Cyan
-            border_focused: Color::Rgb(42, 161, 152),
+            border: Color::Rgb(42, 161, 152),    // Cyan
             text: Color::Rgb(147, 161, 161),     // base1
             text_dim: Color::Rgb(131, 148, 150), // base0
             highlight_bg: Color::Rgb(7, 54, 66), // base02
@@ -327,13 +314,11 @@ impl Theme {
     }
 
     /// Get the theme name
-    #[allow(dead_code)]
     pub fn name(&self) -> &str {
         &self.name
     }
 
     /// List all available theme names
-    #[allow(dead_code)]
     pub fn list() -> &'static [&'static str] {
         &[
             "default",

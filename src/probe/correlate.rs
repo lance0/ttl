@@ -455,10 +455,10 @@ fn parse_icmp_response_v4(
 // IPv6 Next Header protocol numbers
 // Note: These are currently unused because Linux strips the IPv6 header from raw
 // ICMPv6 sockets before delivery. Kept for potential future use on other platforms.
-#[allow(dead_code)]
 const IPV6_NH_HOP_BY_HOP: u8 = 0;
 const IPV6_NH_ROUTING: u8 = 43;
 const IPV6_NH_FRAGMENT: u8 = 44;
+#[cfg(test)]
 const IPV6_NH_ICMPV6: u8 = 58;
 const IPV6_NH_NO_NEXT: u8 = 59;
 const IPV6_NH_DEST_OPTS: u8 = 60;
@@ -468,7 +468,7 @@ const IPV6_NH_DEST_OPTS: u8 = 60;
 ///
 /// Note: Currently unused because Linux strips IPv6 headers from raw ICMPv6 sockets.
 /// Kept for potential future use on platforms that include the IPv6 header.
-#[allow(dead_code)]
+#[cfg(test)]
 fn skip_ipv6_extension_headers(data: &[u8]) -> Option<usize> {
     const IPV6_HEADER_LEN: usize = 40;
 
@@ -575,7 +575,7 @@ fn skip_ipv6_ext_headers_quoted(ipv6_data: &[u8]) -> Option<(usize, u8)> {
 ///
 /// Currently unused because Linux strips IPv6 headers from raw ICMPv6 sockets.
 /// The DGRAM parser is used instead. Kept for potential future use.
-#[allow(dead_code)]
+#[cfg(test)]
 fn parse_icmp_response_v6(
     data: &[u8],
     responder: IpAddr,
@@ -855,7 +855,7 @@ fn parse_icmp_error_payload_v4_with_mtu(
 ///
 /// Currently unused because Linux strips IPv6 headers from raw ICMPv6 sockets.
 /// The DGRAM error parser is used instead. Kept for potential future use.
-#[allow(dead_code)]
+#[cfg(test)]
 fn parse_icmp_error_payload_v6_with_mtu(
     icmp_data: &[u8],
     responder: IpAddr,

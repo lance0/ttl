@@ -11,10 +11,6 @@ pub enum SocketCapability {
     /// Full raw socket access - can send/receive with custom IP headers
     #[cfg_attr(windows, allow(dead_code))] // check_permissions always errors on Windows
     Raw,
-    /// Unprivileged ICMP socket (limited functionality)
-    /// Note: Only used on Linux; macOS always requires Raw for receiving ICMP errors
-    #[allow(dead_code)]
-    Dgram,
 }
 
 /// Socket with metadata about type (for DGRAM-aware parsing)

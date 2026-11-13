@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- `ttl::state::ProbeResult` (and the `ttl::state::session::ProbeResult` path). Nothing in the library produced or consumed it.
+- The unused `csv` crate dependency. CSV export is written by hand and is unchanged.
+
+### Changed
+
+- Every `unsafe` block now carries a `// SAFETY:` comment, and clippy's `undocumented_unsafe_blocks` lint is on so new blocks need one too.
+- Dead-code cleanup: removed unused internal helpers (`create_udp_send_socket`, `create_udp_dgram_socket_bound`, `IxLookup::prefix_count`, the never-built `SocketCapability::Dgram`, the never-read `Theme::border_focused`), moved test-only helpers behind `#[cfg(test)]`, and gave each remaining `allow(dead_code)` a reason.
+
 ## [0.25.0] - 2026-11-12
 
 ### Security

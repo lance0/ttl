@@ -124,16 +124,6 @@ pub struct IcmpInterfaceInfo {
     pub mtu: Option<u32>,
 }
 
-/// Result of a single probe
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct ProbeResult {
-    pub id: ProbeId,
-    pub rtt: Option<Duration>,
-    pub responder: Option<IpAddr>,
-    pub icmp_type: Option<IcmpResponseType>,
-}
-
 /// ASN information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AsnInfo {
@@ -313,7 +303,7 @@ impl ResponderStats {
     }
 
     /// Record a timeout (no response) - updates sparkline only
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "public library API")]
     pub fn record_timeout(&mut self) {
         self.recent.push_back(None);
         if self.recent.len() > RECENT_WINDOW_SIZE {
@@ -401,7 +391,7 @@ pub struct FlowPathStats {
 }
 
 impl FlowPathStats {
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "public library API")]
     pub fn new() -> Self {
         Self::default()
     }
@@ -431,7 +421,7 @@ impl FlowPathStats {
     }
 
     /// Loss percentage for this flow (based on completed probes only)
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "public library API")]
     pub fn loss_pct(&self) -> f64 {
         let completed = self.received + self.timeouts;
         if completed == 0 {
@@ -1025,7 +1015,7 @@ impl Hop {
     }
 
     /// Record a response from a responder
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "public library API")]
     pub fn record_response(&mut self, ip: IpAddr, rtt: Duration) {
         self.record_response_with_mpls(ip, rtt, None);
     }

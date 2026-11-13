@@ -47,7 +47,10 @@ pub mod export;
 pub mod state;
 
 // Internal implementation - not part of public API
-// These modules are used by the binary but not exported from the lib
+// These modules are used by the binary but not exported from the lib. The lib
+// only compiles them because config/export/state depend on them, so most of
+// their items are unused here; the binary (main.rs) declares and uses them in
+// full, so dead code there is still caught by the bin build.
 #[allow(dead_code)]
 pub(crate) mod cli;
 #[allow(dead_code)]
