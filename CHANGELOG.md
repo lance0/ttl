@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With `-c`, targets added from the TUI with `o` now get their full rounds. The run used to end once the initial targets were done, cutting the added ones short.
 - Pressing Esc while an added target is still resolving no longer adds it anyway. The target used to be probed for the rest of the run without appearing in the TUI.
 - Animated replay (`--replay --animate`) no longer counts a `late_reply` event as a reply. It used to add a 0 ms RTT sample on top of the probe's timeout, so the minimum RTT read 0 and the replayed stats disagreed with the stats saved in the same file. A reply that only failed to match because several flows of its probe were still pending is no longer recorded as `late_reply` either.
+- IPv6 Echo Replies read by the probe engine (the Linux ICMPv6 datagram-socket fallback, and sometimes raw mode) now produce a `reply` event. `--stream-json` emitted no reply for the destination while its summary said `complete`, and animated replay of such a recording lost the destination hop.
 
 ## [0.25.0] - 2026-11-12
 
