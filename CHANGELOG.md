@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A malformed RFC 5837 Interface Information Object no longer hides a valid one with the same role.** The parser keeps the first object per role and ignores repeats, but it claimed the role before checking the object, so a truncated first object (or one with an unknown address family) was dropped and also blocked a well-formed repeat after it. The role now goes to the first object that parses.
+
 ## [0.25.0] - 2026-11-12
 
 ### Security

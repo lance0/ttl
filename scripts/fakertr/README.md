@@ -34,6 +34,9 @@ docker run --rm -it --privileged -v "$PWD:/w" -w /w ttl-fakertr \
   ./target/release/ttl --no-dns --no-asn --no-geo --no-ix --no-update-check -p icmp 10.250.0.9
 ```
 
+Add `-e FAKERTR_BAD_FIRST=1` to put a malformed incoming-role object ahead of
+the valid one; hop 1 should still show `Ethernet1@fake-rt1` (ifIndex 1, not 99).
+
 `--privileged` is needed for `ip netns` inside the container. `setup.sh`
 turns off `ip_forward` in the `rtr` namespace on purpose: a privileged
 container inherits `1`, and the kernel would then answer probes with its own
