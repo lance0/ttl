@@ -409,6 +409,9 @@ impl<'a> MainView<'a> {
             DisplayMode::Auto => {
                 let mut max_host: usize = MIN_HOST as usize;
                 let mut max_asn: usize = MIN_ASN as usize;
+                // Widest marker set (" E!~^+"); multi-flow only drops markers.
+                let max_indicators =
+                    build_hop_indicators(false, true, true, true, true, true).len();
 
                 for hop in self
                     .session
@@ -423,7 +426,7 @@ impl<'a> MainView<'a> {
                             .as_ref()
                             .map(|h| h.chars().count())
                             .unwrap_or_else(|| stats.ip.to_string().len())
-                            + 5; // space for " E~^+" / " !~^+"
+                            + max_indicators;
                         max_host = max_host.max(host_len);
 
                         // ASN column shows "AS##### name", account for full format
@@ -923,6 +926,45 @@ mod tests {
         let header = row(&buf, 1);
         assert!(find(&header, "Last").is_none() && find(&header, "Recent").is_none());
         assert!(find(&header, "Avg").is_some());
+    }
+
+    #[test]
+    fn widest_indicator_set_fits_host_column() {
+        use crate::state::{MplsLabel, RouteChange};
+        use std::time::Duration;
+        let mut session = sample_session();
+        let host = "core1.example.net";
+        let hop = &mut session.hops[0];
+        // Two responders split 50/50 (E), plus a recorded change (!).
+        let (a, b) = ("10.0.0.1".parse().unwrap(), "10.0.0.2".parse().unwrap());
+        for _ in 0..8 {
+            hop.record_sent();
+            hop.record_response(a, Duration::from_millis(5));
+            hop.record_sent();
+            hop.record_response(b, Duration::from_millis(5));
+        }
+        for stats in hop.responders.values_mut() {
+            stats.hostname = Some(host.into());
+            stats.mpls_labels = Some(vec![MplsLabel {
+                label: 16,
+                exp: 0,
+                bottom: true,
+                ttl: 1,
+            }]);
+        }
+        hop.route_changes.push(RouteChange {
+            from_ip: a,
+            to_ip: b,
+            at_seq: 10,
+        });
+        hop.asymmetry.get_or_insert_default().suspected = true;
+        hop.ttl_manip.get_or_insert_default().suspected = true;
+
+        let area = Rect::new(0, 0, 160, 10);
+        let mut buf = Buffer::empty(area);
+        MainView::new(&session, None, false, &Theme::default()).render(area, &mut buf);
+        let text: String = row(&buf, 2).into_iter().collect();
+        assert!(text.contains(&format!("{host} E!~^+")), "{text}");
     }
 
     #[test]
