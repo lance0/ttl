@@ -971,6 +971,13 @@ async fn run_interactive_mode(
         }))
     };
 
+    // With -c, this cancels (closing the TUI) once every initial target is done
+    let engines_done = tokio::spawn(finish_engines(
+        engine_handles,
+        cancel.clone(),
+        config.timeout,
+    ));
+
     // Run TUI (with target list for cycling)
     // Pass update_rx directly — TUI polls it non-blocking each tick
     let final_prefs = run_tui(
@@ -998,9 +1005,7 @@ async fn run_interactive_mode(
     cancel.cancel();
     shutdown_log("interactive cancel requested");
     shutdown_log("interactive waiting for probe engines");
-    for handle in engine_handles {
-        handle.await??;
-    }
+    engines_done.await??;
     shutdown_log("interactive probe engines joined");
     shutdown_log("interactive joining receiver threads");
     join_receivers(receiver_handles)?;
@@ -1215,6 +1220,40 @@ async fn run_target_manager(mut ctx: TargetManagerCtx) -> Result<()> {
     Ok(())
 }
 
+/// Wait for every probe engine, then end the run by cancelling.
+///
+/// With `-c` each engine returns once its own rounds are sent, so the run
+/// lasts until the slowest target is done. The receivers then get the probe
+/// timeout (plus a margin) to collect the last round's replies before the
+/// cancel makes them flush what is still pending as timeouts. A quit cancels
+/// first, which stops the engines and skips the wait. A failed engine does not
+/// end the run early; its error is returned once the others are done. With no
+/// engines (an empty TUI) there is nothing to finish, so the run is left alone.
+async fn finish_engines(
+    engine_handles: Vec<tokio::task::JoinHandle<Result<()>>>,
+    cancel: CancellationToken,
+    timeout: Duration,
+) -> Result<()> {
+    if engine_handles.is_empty() {
+        return Ok(());
+    }
+    shutdown_log("waiting for probe engines");
+    let mut first_error = None;
+    for handle in engine_handles {
+        if let Err(e) = handle.await.map_err(anyhow::Error::from).and_then(|r| r) {
+            first_error.get_or_insert(e);
+        }
+    }
+    shutdown_log("probe engines joined; waiting for final replies");
+    tokio::select! {
+        _ = cancel.cancelled() => {}
+        _ = tokio::time::sleep(timeout + Duration::from_millis(500)) => {}
+    }
+    cancel.cancel();
+    shutdown_log("final replies settled; cancel requested");
+    first_error.map_or(Ok(()), Err)
+}
+
 async fn run_batch_mode(
     args: Args,
     sessions: SessionMap,
@@ -1324,19 +1363,7 @@ async fn run_batch_mode(
     // Spawn rate limit detection worker (always enabled, lightweight analysis)
     let ratelimit_handle = tokio::spawn(run_ratelimit_worker(sessions.clone(), cancel.clone()));
 
-    // Wait for all engines to complete
-    shutdown_log("batch waiting for probe engines");
-    for handle in engine_handles {
-        handle.await??;
-    }
-    shutdown_log("batch probe engines joined");
-
-    // Wait for final responses and enrichment to settle
-    shutdown_log("batch waiting for final response settle window");
-    tokio::time::sleep(config.timeout + Duration::from_millis(500)).await;
-    shutdown_log("batch settle window complete");
-    cancel.cancel();
-    shutdown_log("batch cancel requested");
+    finish_engines(engine_handles, cancel.clone(), config.timeout).await?;
 
     shutdown_log("batch joining receiver threads");
     join_receivers(receiver_handles)?;
@@ -1554,6 +1581,12 @@ async fn run_streaming_mode(
              probing continues but results are not observable."
         );
     }
+    // With -c, this cancels (ending the loop below) once every target is done
+    let engines_done = tokio::spawn(finish_engines(
+        engine_handles,
+        cancel.clone(),
+        config.timeout,
+    ));
     let mut last_total_received: HashMap<IpAddr, u64> = HashMap::new();
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
 
@@ -1609,9 +1642,7 @@ async fn run_streaming_mode(
     }
 
     shutdown_log("streaming waiting for probe engines");
-    for handle in engine_handles {
-        handle.await??;
-    }
+    engines_done.await??;
     shutdown_log("streaming probe engines joined");
     shutdown_log("streaming joining receiver threads");
     join_receivers(receiver_handles)?;
@@ -1793,6 +1824,41 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
     use std::net::Ipv6Addr;
+
+    /// The run ends only after the slowest engine and then the reply window,
+    /// and a quit skips the window.
+    #[tokio::test(start_paused = true)]
+    async fn finish_engines_waits_for_every_engine_then_the_reply_window() {
+        let timeout = Duration::from_secs(3);
+        let cancel = CancellationToken::new();
+        let engines = [1, 10].map(|secs| {
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(secs)).await;
+                Ok(())
+            })
+        });
+        let start = tokio::time::Instant::now();
+        let done = tokio::spawn(finish_engines(engines.into(), cancel.clone(), timeout));
+
+        tokio::time::sleep(Duration::from_secs(13)).await;
+        assert!(!cancel.is_cancelled(), "slow engine plus reply window");
+        done.await.unwrap().unwrap();
+        assert!(cancel.is_cancelled());
+        assert_eq!(start.elapsed(), Duration::from_millis(13_500));
+
+        let cancel = CancellationToken::new();
+        let quit = cancel.clone();
+        let engine = tokio::spawn(async move {
+            quit.cancelled().await;
+            Ok(())
+        });
+        let start = tokio::time::Instant::now();
+        let done = tokio::spawn(finish_engines(vec![engine], cancel.clone(), timeout));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        cancel.cancel();
+        done.await.unwrap().unwrap();
+        assert_eq!(start.elapsed(), Duration::from_secs(1));
+    }
 
     #[test]
     fn headless_modes_only_record_events_for_json_streams() {

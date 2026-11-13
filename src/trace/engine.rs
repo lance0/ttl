@@ -169,7 +169,10 @@ impl ProbeEngine {
         Ok(socket)
     }
 
-    /// Run the probe engine
+    /// Run the probe engine until cancelled or, with `-c`, until this target's
+    /// rounds are sent. It never cancels the shared token itself: other targets
+    /// and the receivers share it, and the caller ends the run once every
+    /// engine has returned and the last round's replies have had time to land.
     pub async fn run(self) -> Result<()> {
         match self.config.protocol {
             ProbeProtocol::Auto => self.run_auto().await,
@@ -279,8 +282,6 @@ impl ProbeEngine {
                     if let Some(count) = self.config.count
                         && rounds_completed >= count
                     {
-                        // Signal completion
-                        self.cancel.cancel();
                         break;
                     }
 
@@ -491,7 +492,6 @@ impl ProbeEngine {
                     if let Some(count) = self.config.count
                         && rounds_completed >= count
                     {
-                        self.cancel.cancel();
                         break;
                     }
 
@@ -657,7 +657,6 @@ impl ProbeEngine {
                     if let Some(count) = self.config.count
                         && rounds_completed >= count
                     {
-                        self.cancel.cancel();
                         break;
                     }
 
@@ -838,7 +837,6 @@ impl ProbeEngine {
                     if let Some(count) = self.config.count
                         && rounds_completed >= count
                     {
-                        self.cancel.cancel();
                         break;
                     }
 
@@ -944,7 +942,6 @@ impl ProbeEngine {
                     if let Some(count) = self.config.count
                         && rounds_completed >= count
                     {
-                        self.cancel.cancel();
                         break;
                     }
 
@@ -1049,7 +1046,6 @@ impl ProbeEngine {
                     if let Some(count) = self.config.count
                         && rounds_completed >= count
                     {
-                        self.cancel.cancel();
                         break;
                     }
 
@@ -1535,6 +1531,45 @@ mod tests {
         let pmtud = state.pmtud.as_ref().expect("PMTUD state should exist");
         assert_eq!(pmtud.phase, PmtudPhase::Complete);
         assert!(pmtud.discovered_mtu.is_none());
+    }
+
+    /// `-c` ends only this engine: the token is shared with every other
+    /// target's engine and the receivers, so cancelling it would cut their
+    /// rounds short and flush their in-flight probes as timeouts.
+    /// IPv6 UDP uses unprivileged datagram sockets, so this runs anywhere.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn count_completion_leaves_the_shared_token_alone() {
+        let config = Config {
+            count: Some(2),
+            interval: Duration::from_millis(10),
+            max_ttl: 2,
+            protocol: ProbeProtocol::Udp,
+            src_port_base: 0,
+            ..Config::default()
+        };
+        let target: IpAddr = "::1".parse().unwrap();
+        let session = Arc::new(SessionLock::new(Session::new(
+            Target::new("loopback".to_string(), target),
+            config.clone(),
+        )));
+        let cancel = CancellationToken::new();
+        let engine = ProbeEngine::new(
+            config,
+            target,
+            session.clone(),
+            new_pending_map(),
+            cancel.clone(),
+            None,
+        );
+
+        tokio::time::timeout(Duration::from_secs(5), engine.run())
+            .await
+            .expect("engine stops after its rounds")
+            .expect("UDP probing over IPv6 loopback");
+
+        assert_eq!(session.read().total_sent, 4, "2 rounds x 2 TTLs");
+        assert!(!cancel.is_cancelled());
     }
 
     #[test]
