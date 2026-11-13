@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Resetting stats with `r` no longer counts replies and timeouts for probes sent before the reset. Those probes used to show up in the fresh stats right away, as a reply on a hop that had not sent a new probe yet or as a timeout well before the probe timeout.
 - With `-c`, targets added from the TUI with `o` now get their full rounds. The run used to end once the initial targets were done, cutting the added ones short.
+- Pressing Esc while an added target is still resolving no longer adds it anyway. The target used to be probed for the rest of the run without appearing in the TUI.
 
 ## [0.25.0] - 2026-11-12
 

@@ -1096,6 +1096,11 @@ async fn run_target_manager(mut ctx: TargetManagerCtx) -> Result<()> {
             }
         };
 
+        // Esc while resolving drops the reply receiver: nothing to add
+        if request.reply.is_closed() {
+            continue;
+        }
+
         if ctx.sessions.read().contains_key(&ip) {
             let _ = request.reply.send(Ok(AddedTarget {
                 ip,
@@ -1195,14 +1200,16 @@ async fn run_target_manager(mut ctx: TargetManagerCtx) -> Result<()> {
             *family_has_receiver = true;
         }
 
-        // Spawn the probe engine
+        // Spawn the probe engine. Its own token stops it if the add is
+        // canceled after all; the run's cancel still reaches it.
+        let engine_cancel = ctx.cancel.child_token();
         let engine_config = state.read().config.clone();
         let engine = ProbeEngine::new(
             engine_config,
             ip,
             state.clone(),
             ctx.pending.clone(),
-            ctx.cancel.clone(),
+            engine_cancel.clone(),
             ctx.interface.clone(),
         );
         // finish_engines only stops listening once the run is over
@@ -1210,11 +1217,20 @@ async fn run_target_manager(mut ctx: TargetManagerCtx) -> Result<()> {
             .engines
             .send(tokio::spawn(async move { engine.run().await }));
 
-        let _ = request.reply.send(Ok(AddedTarget {
-            ip,
-            name: request.host,
-            existed: false,
-        }));
+        // Esc landed after the check above: the TUI will never show this
+        // target, so stop probing it and drop its session.
+        if request
+            .reply
+            .send(Ok(AddedTarget {
+                ip,
+                name: request.host,
+                existed: false,
+            }))
+            .is_err()
+        {
+            engine_cancel.cancel();
+            ctx.sessions.write().remove(&ip);
+        }
     }
 
     // Join the receivers this task spawned (cancellation already requested)
@@ -1934,6 +1950,53 @@ mod tests {
         // 10.5 s: second engine done; 14 s: its window ends and the third
         // engine (done at 15.5 s) is picked up; 19 s: its window ends.
         assert_eq!(start.elapsed(), Duration::from_secs(19));
+    }
+
+    /// Esc while "Resolving..." drops the reply receiver. The manager must not
+    /// add or probe that target: the TUI would never show it.
+    #[tokio::test]
+    async fn canceled_add_target_request_adds_nothing() {
+        let existing: IpAddr = "192.0.2.1".parse().unwrap();
+        let sessions = make_session_map(&[(existing, 1)]);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (engines_tx, mut engines_rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = CancellationToken::new();
+        let manager = tokio::spawn(run_target_manager(TargetManagerCtx {
+            rx,
+            engines: engines_tx,
+            sessions: sessions.clone(),
+            pending: new_pending_map(),
+            cancel: cancel.clone(),
+            interface: None,
+            config: Config::default(),
+            force_ipv4: false,
+            force_ipv6: false,
+            has_v4_receiver: true,
+            has_v6_receiver: true,
+            effective_flows_v4: Some(1),
+            effective_flows_v6: Some(1),
+        }));
+
+        let (reply, canceled) = tokio::sync::oneshot::channel();
+        drop(canceled);
+        tx.send(AddTargetRequest {
+            host: "192.0.2.2".into(),
+            reply,
+        })
+        .unwrap();
+        // Requests are handled in order, so this reply means the first is done
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        tx.send(AddTargetRequest {
+            host: existing.to_string(),
+            reply,
+        })
+        .unwrap();
+        assert!(answer.await.unwrap().unwrap().existed);
+
+        assert_eq!(sessions.read().keys().collect::<Vec<_>>(), vec![&existing]);
+        assert!(engines_rx.try_recv().is_err(), "no engine was spawned");
+        cancel.cancel();
+        manager.await.unwrap().unwrap();
     }
 
     #[test]
