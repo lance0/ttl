@@ -1220,7 +1220,7 @@ async fn run_target_manager(mut ctx: TargetManagerCtx) -> Result<()> {
     Ok(())
 }
 
-/// Wait for every probe engine, then end the run by cancelling.
+/// Wait for every probe engine, then end the run by canceling.
 ///
 /// With `-c` each engine returns once its own rounds are sent, so the run
 /// lasts until the slowest target is done. The receivers then get the probe

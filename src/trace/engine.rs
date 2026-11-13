@@ -169,7 +169,7 @@ impl ProbeEngine {
         Ok(socket)
     }
 
-    /// Run the probe engine until cancelled or, with `-c`, until this target's
+    /// Run the probe engine until canceled or, with `-c`, until this target's
     /// rounds are sent. It never cancels the shared token itself: other targets
     /// and the receivers share it, and the caller ends the run once every
     /// engine has returned and the last round's replies have had time to land.
@@ -1572,7 +1572,7 @@ mod tests {
     }
 
     /// `-c` ends only this engine: the token is shared with every other
-    /// target's engine and the receivers, so cancelling it would cut their
+    /// target's engine and the receivers, so canceling it would cut their
     /// rounds short and flush their in-flight probes as timeouts.
     /// IPv6 UDP uses unprivileged datagram sockets, so this runs anywhere.
     #[cfg(unix)]
