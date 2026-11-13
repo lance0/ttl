@@ -57,7 +57,12 @@ const METRICS: &[(&str, &str, &str)] = &[
     (
         "ttl_hop_responders",
         "gauge",
-        "Distinct responder IPs seen at this hop (ECMP)",
+        "Distinct responder IPs tracked at this hop (ECMP)",
+    ),
+    (
+        "ttl_hop_responders_evicted_total",
+        "counter",
+        "Responders dropped after the per-hop responder cap was reached",
     ),
     (
         "ttl_hop_info",
@@ -152,6 +157,11 @@ pub fn render_metrics(sessions: &SessionMap) -> String {
                     "ttl_hop_responders",
                     hop_labels.clone(),
                     hop.responders.len() as f64,
+                );
+                push(
+                    "ttl_hop_responders_evicted_total",
+                    hop_labels.clone(),
+                    hop.responders_evicted as f64,
                 );
                 let hostname = stats.hostname.as_deref().unwrap_or("");
                 push(

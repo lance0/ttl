@@ -506,7 +506,19 @@ async fn run_replay_mode(args: &Args, replay_path: &str) -> Result<()> {
                 (session, None)
             } else {
                 // Create fresh session with same config but no data
-                let events = session.events.clone();
+                let mut events = session.events.clone();
+                if session.dropped_events > 0 {
+                    eprintln!(
+                        "Note: the recording kept only its last {} probe events ({} earlier ones were dropped); animated replay starts mid-run.",
+                        events.len(),
+                        session.dropped_events
+                    );
+                    // Start playback at the first kept event, not hours of silence.
+                    let start = events.iter().map(|e| e.offset_ms).min().unwrap_or(0);
+                    for event in &mut events {
+                        event.offset_ms -= start;
+                    }
+                }
                 let fresh_session = Session::new(session.target.clone(), session.config.clone());
                 let mut replay = ReplayState::new(events, args.speed);
                 // Events carry no enrichment; replay copies it from the loaded session

@@ -750,7 +750,8 @@ Exported metrics (labels: `target` = resolved IP, `host` = name as given,
 | `ttl_timeouts_total` | counter | Timeouts per hop |
 | `ttl_loss_ratio` | gauge | Loss ratio per hop (0–1) |
 | `ttl_rtt_avg_seconds` / `min` / `max` / `stddev` | gauge | RTT stats for the hop's primary responder |
-| `ttl_hop_responders` | gauge | Distinct responder IPs at the hop (ECMP) |
+| `ttl_hop_responders` | gauge | Distinct responder IPs tracked at the hop (ECMP; at most 64) |
+| `ttl_hop_responders_evicted_total` | counter | Responders dropped once a hop tracks 64 (the fewest-reply one goes; hop totals keep their replies) |
 | `ttl_hop_info` | gauge | Primary responder identity (`ip`, `hostname` labels, value 1) |
 | `ttl_target_reachable` | gauge | Destination responded (1/0) |
 | `ttl_path_hops` | gauge | Hop count to destination |
@@ -779,6 +780,11 @@ the session showing hop-by-hop discovery as it happened.
 Replay and diff refuse input over 10 MiB by default, since saved sessions may
 come from untrusted sources. `--replay-size-limit <MiB>` (1-1024) raises the
 cap for a larger recording you trust.
+
+A session records at most its newest 100,000 probe events (about an hour of a
+30-hop path at the default interval). An export from a longer run carries a
+`dropped_events` count; `--animate` says so and starts at the first kept
+event. Final hop statistics are unaffected.
 
 #### Replay Controls
 

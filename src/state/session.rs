@@ -416,8 +416,11 @@ impl FlowPathStats {
         self.received += 1;
         let count = self.responder_counts.entry(responder).or_insert(0);
         *count += 1;
+        self.update_primary();
+    }
 
-        // Update primary responder (most frequent)
+    /// Primary responder is the most frequent one on this flow.
+    fn update_primary(&mut self) {
         self.primary_responder = self
             .responder_counts
             .iter()
@@ -956,6 +959,10 @@ pub struct Hop {
     #[serde(default)]
     pub timeouts: u64,
     pub responders: HashMap<IpAddr, ResponderStats>,
+    /// Responders dropped after `responders` reached [`Hop::MAX_RESPONDERS`].
+    /// Hop totals (sent/received/timeouts) still include their replies.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub responders_evicted: u64,
     pub primary: Option<IpAddr>, // most frequently seen responder
     /// Rolling window of recent probe results for hop-level loss sparkline
     /// true = response received, false = timeout
@@ -986,7 +993,15 @@ pub struct Hop {
     flap_tracking_primary: Option<IpAddr>,
 }
 
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
 impl Hop {
+    /// Distinct responders kept per hop. Real ECMP fans out to a handful of
+    /// addresses; per-packet balancing behind CGNAT or a box answering from
+    /// spoofed sources would otherwise add a ~5 KB entry per reply forever.
+    pub const MAX_RESPONDERS: usize = 64;
     /// Margin required for primary to change (avoids per-packet LB noise)
     const PRIMARY_CHANGE_MARGIN: u64 = 2;
     /// Minimum responses before tracking route changes
@@ -1007,6 +1022,7 @@ impl Hop {
             received: 0,
             timeouts: 0,
             responders: HashMap::new(),
+            responders_evicted: 0,
             primary: None,
             recent_results: VecDeque::with_capacity(RECENT_WINDOW_SIZE),
             flow_paths: HashMap::new(),
@@ -1040,6 +1056,9 @@ impl Hop {
     ) {
         self.received += 1;
 
+        if self.responders.len() >= Self::MAX_RESPONDERS && !self.responders.contains_key(&ip) {
+            self.evict_weakest_responder();
+        }
         let stats = self
             .responders
             .entry(ip)
@@ -1150,6 +1169,32 @@ impl Hop {
         self.recent_results.push_back(false);
         if self.recent_results.len() > RECENT_WINDOW_SIZE {
             self.recent_results.pop_front();
+        }
+    }
+
+    /// Drop the responder with the fewest replies, never the primary or the
+    /// flap-tracking primary. Evicting the weakest (not the least recent)
+    /// means one-off sources churn through a single slot instead of pushing
+    /// out real ECMP paths. Loss and the primary's RTT are hop-level or
+    /// primary-only, so they are unchanged; flows forget the address too, so
+    /// their counts stay within the same bound.
+    fn evict_weakest_responder(&mut self) {
+        let keep = [self.primary, self.flap_tracking_primary];
+        let Some(ip) = self
+            .responders
+            .iter()
+            .filter(|(ip, _)| !keep.contains(&Some(**ip)))
+            .min_by_key(|(_, s)| s.received)
+            .map(|(ip, _)| *ip)
+        else {
+            return;
+        };
+        self.responders.remove(&ip);
+        self.responders_evicted += 1;
+        for flow in self.flow_paths.values_mut() {
+            if flow.responder_counts.remove(&ip).is_some() && flow.primary_responder == Some(ip) {
+                flow.update_primary();
+            }
         }
     }
 
@@ -1428,6 +1473,10 @@ pub struct Session {
     /// Recorded probe events for animated replay
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<ProbeEvent>,
+    /// Oldest events discarded once `events` reached [`Session::MAX_EVENT_LOG`];
+    /// a non-zero value means `events` starts mid-run.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dropped_events: u64,
     /// Runtime recording policy. Headless modes without an event consumer turn
     /// this off; saved sessions retain the normal replay-compatible default.
     #[serde(skip, default = "default_event_recording")]
@@ -1484,6 +1533,11 @@ impl Drop for SessionWriteGuard<'_> {
 }
 
 impl Session {
+    /// Probe events kept for replay/export. A live TUI records ~30 events/s
+    /// on a 30-hop path, so this is about an hour (~5 MB) of the newest
+    /// history; JSON streams drain it every tick and never get close.
+    pub const MAX_EVENT_LOG: usize = 100_000;
+
     pub fn new(target: Target, config: Config) -> Self {
         let max_ttl = config.max_ttl;
         let mut hops = Vec::with_capacity(max_ttl as usize);
@@ -1512,6 +1566,7 @@ impl Session {
             source_ip: None,
             gateway: None,
             events: Vec::new(),
+            dropped_events: 0,
             record_events: true,
             render_generation: 0,
         }
@@ -1632,12 +1687,14 @@ impl Session {
 
         // Clear recorded events
         self.events.clear();
+        self.dropped_events = 0;
 
         for hop in &mut self.hops {
             hop.sent = 0;
             hop.received = 0;
             hop.timeouts = 0;
             hop.responders.clear();
+            hop.responders_evicted = 0;
             hop.primary = None;
             hop.recent_results.clear();
             hop.flow_paths.clear();
@@ -1672,6 +1729,7 @@ impl Session {
             source_ip: self.source_ip,
             gateway: self.gateway,
             events: Vec::new(),
+            dropped_events: self.dropped_events,
             record_events: self.record_events,
             render_generation: self.render_generation,
         }
@@ -1688,9 +1746,16 @@ impl Session {
 
     /// Record a probe event for animated replay or streaming output.
     pub fn record_event(&mut self, event: ProbeEvent) {
-        if self.record_events {
-            self.events.push(event);
+        if !self.record_events {
+            return;
         }
+        if self.events.len() >= Self::MAX_EVENT_LOG {
+            // Drop the oldest quarter at once so the shift is amortized O(1).
+            let n = Self::MAX_EVENT_LOG / 4;
+            self.events.drain(..n);
+            self.dropped_events += n as u64;
+        }
+        self.events.push(event);
     }
 
     /// Get monotonic offset in milliseconds since session start.
@@ -1763,6 +1828,46 @@ mod tests {
         assert!(
             session.events.is_empty(),
             "reset must preserve the recording policy"
+        );
+    }
+
+    #[test]
+    fn live_event_log_keeps_the_newest_events_and_counts_the_rest() {
+        let mut session = Session::new(
+            Target::new("example.test".into(), "192.0.2.1".parse().unwrap()),
+            Config::default(),
+        );
+        let total = 3 * Session::MAX_EVENT_LOG as u64;
+        for offset_ms in 0..total {
+            session.record_event(ProbeEvent {
+                offset_ms,
+                ttl: 1,
+                seq: 0,
+                flow_id: 0,
+                outcome: ProbeOutcome::Timeout,
+            });
+        }
+        assert!(session.events.len() <= Session::MAX_EVENT_LOG);
+        assert_eq!(session.dropped_events + session.events.len() as u64, total);
+        assert_eq!(session.events.last().unwrap().offset_ms, total - 1);
+        assert_eq!(
+            session.events[0].offset_ms, session.dropped_events,
+            "only the oldest events are dropped, in order"
+        );
+
+        let json = serde_json::to_value(&session).unwrap();
+        assert_eq!(json["dropped_events"], session.dropped_events);
+        assert_eq!(
+            session.snapshot_for_render().dropped_events,
+            session.dropped_events
+        );
+        session.reset_stats();
+        assert_eq!(session.dropped_events, 0);
+        assert!(
+            serde_json::to_value(&session)
+                .unwrap()
+                .get("dropped_events")
+                .is_none()
         );
     }
 
@@ -1947,6 +2052,58 @@ mod tests {
         let primary = hop.primary_stats().unwrap();
         assert_eq!(primary.ip, ip1);
         assert_eq!(primary.received, 6);
+    }
+
+    #[test]
+    fn responder_map_stays_bounded_without_changing_hop_stats() {
+        let ip = |n: u32| IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + n));
+        let (main, alt) = (ip(1), ip(2));
+        let one_offs = 10 * Hop::MAX_RESPONDERS as u32;
+        let mut hop = Hop::new(5);
+        // Two real per-packet paths (flow 0), a stream of one-off sources
+        // (flow 1), and some timeouts.
+        for n in 0..one_offs {
+            for (flow, addr) in [(0, main), (0, main), (0, alt), (1, ip(1000 + n))] {
+                hop.record_sent();
+                hop.record_flow_sent(flow);
+                hop.record_response_detecting_flaps(addr, Duration::from_millis(10), None);
+                hop.record_flow_response(flow, addr, Duration::from_millis(10));
+            }
+            hop.record_sent();
+            hop.record_timeout();
+        }
+
+        assert_eq!(hop.responders.len(), Hop::MAX_RESPONDERS);
+        assert_eq!(
+            hop.responders_evicted,
+            u64::from(one_offs) + 2 - Hop::MAX_RESPONDERS as u64
+        );
+        assert!(hop.responders.contains_key(&alt), "real paths survive");
+        assert_eq!(hop.primary, Some(main));
+        assert_eq!(
+            hop.primary_stats().unwrap().received,
+            2 * u64::from(one_offs)
+        );
+        assert_eq!(hop.received, 4 * u64::from(one_offs));
+        assert_eq!(hop.loss_pct(), 20.0);
+        assert!(hop.route_changes.is_empty(), "evictions are not flaps");
+        let flow_ips: usize = hop
+            .flow_paths
+            .values()
+            .map(|f| f.responder_counts.len())
+            .sum();
+        assert!(flow_ips <= Hop::MAX_RESPONDERS);
+        // Primary share is 50%: still per-packet balancing.
+        assert_eq!(hop.ecmp_kind(), EcmpKind::PerPacket);
+
+        let json = serde_json::to_value(&hop).unwrap();
+        assert_eq!(json["responders_evicted"], hop.responders_evicted);
+        assert!(
+            serde_json::to_value(Hop::new(1))
+                .unwrap()
+                .get("responders_evicted")
+                .is_none()
+        );
     }
 
     #[test]

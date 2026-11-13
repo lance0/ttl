@@ -47,14 +47,18 @@ loads. The fields scripts use most:
 | `.hops[]` | One entry per TTL up to `--max-ttl`, including TTLs beyond the destination |
 | `.hops[].ttl`, `.sent`, `.received`, `.timeouts` | Per-hop counters |
 | `.hops[].primary` | IP of the most frequent responder, or `null` |
-| `.hops[].responders` | Object keyed by responder IP |
+| `.hops[].responders` | Object keyed by responder IP (at most 64 per hop) |
+| `.hops[].responders_evicted` | Responders dropped past that cap (the fewest-reply one goes); present only when non-zero. Hop counters still include their replies |
 | `.hops[].responders[ip].hostname`, `.asn`, `.geo`, `.ix` | Enrichment (`null` when unavailable) |
 | `.hops[].responders[ip].mean_rtt`, `.min_rtt`, `.max_rtt` | RTT in microseconds |
 | `.hops[].nat_info`, `.rate_limit`, `.route_changes` | Detection details, present only when there is data |
 | `.pmtud.discovered_mtu` | Path MTU with `--pmtud`, or `null` if no size was confirmed |
 
 Hop loss is `timeouts / (received + timeouts)`; there is no precomputed loss
-field. Recorded probe events (`.events`) are included for replay.
+field. Recorded probe events (`.events`) are included for replay. A session
+keeps its newest 100,000 events; `.dropped_events`, present only when non-zero,
+counts older ones discarded, so `.events` then starts mid-run. Hop counters
+always cover the whole run.
 
 ## Parsing JSON Output
 

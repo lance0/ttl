@@ -490,6 +490,18 @@ impl HopDetailView<'_> {
                 }
             }
         }
+        if self.hop.responders_evicted > 0 {
+            lines.push(note(
+                "Evicted",
+                format!(
+                    "{} low-count responders (keeps {})",
+                    self.hop.responders_evicted,
+                    Hop::MAX_RESPONDERS
+                ),
+                text,
+                dim,
+            ));
+        }
 
         wrap_lines(lines, inner_width)
     }
@@ -702,6 +714,20 @@ mod tests {
             let text = buffer_text(&buf);
             assert!(text.contains("MTU 9000"), "MTU missing at width {width}");
         }
+    }
+
+    #[test]
+    fn evicted_responders_are_reported() {
+        let mut hop = extension_hop();
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 100, 60);
+        let mut buf = Buffer::empty(area);
+        HopDetailView::new(&hop, &theme).render(area, &mut buf);
+        assert!(!buffer_text(&buf).contains("Evicted"));
+        hop.responders_evicted = 7;
+        let mut buf = Buffer::empty(area);
+        HopDetailView::new(&hop, &theme).render(area, &mut buf);
+        assert!(buffer_text(&buf).contains("7 low-count responders"));
     }
 
     #[test]
