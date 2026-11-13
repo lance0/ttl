@@ -18,6 +18,7 @@ EXAMPLES:
 
     ECMP path discovery:
         ttl -p udp --flows 4 host        # Discover load-balanced paths
+        ttl -p udp --strategy paris --flows 4 host   # Fixed 5-tuple per flow
 
     Path MTU discovery:
         ttl --pmtud 8.8.8.8              # Find max packet size
@@ -90,6 +91,12 @@ pub struct Args {
     /// Base source port for flow identification
     #[arg(long = "src-port", default_value = "50000")]
     pub src_port: u16,
+
+    /// UDP probe strategy: classic (destination port varies per TTL) or paris
+    /// (fixed ports per flow; the probe is identified by the UDP checksum, so
+    /// routers that quote only 8 bytes still correlate). paris requires -p udp
+    #[arg(long = "strategy", default_value = "classic", value_parser = ["classic", "paris"])]
+    pub strategy: String,
 
     /// Probe timeout in seconds
     #[arg(long = "timeout", default_value = "3")]
@@ -370,9 +377,16 @@ impl Args {
         }
         // Validate destination port + max_ttl doesn't overflow u16 (UDP/TCP modes)
         // The engine sends probes to ports base_port..base_port+max_ttl (unless --fixed-port)
+        let paris = self.strategy == "paris";
+        if paris && protocol != "udp" && !replay_or_diff {
+            return Err(format!(
+                "--strategy paris requires -p udp (it encodes the probe in the UDP checksum), got -p {protocol}"
+            ));
+        }
         let uses_port = matches!(protocol.as_str(), "udp" | "tcp")
             || (protocol == "auto" && self.port.is_some());
-        if uses_port && !self.port_fixed {
+        // Paris fixes the destination port, so it never walks base..base+max_ttl
+        if uses_port && !self.port_fixed && !paris {
             let default_port = Self::default_destination_port(&protocol);
             let base = self.port.unwrap_or(default_port) as u32;
             let max_dst_port = base + self.max_ttl as u32;
@@ -518,6 +532,7 @@ impl Args {
                 (self.port_fixed, "--fixed-port"),
                 (self.flows != 1, "--flows"),
                 (self.src_port != 50000, "--src-port"),
+                (paris, "--strategy"),
                 (self.rate.is_some(), "--rate"),
                 (self.size.is_some(), "--size"),
                 (self.dscp.is_some(), "--dscp"),
@@ -550,6 +565,7 @@ mod tests {
             port_fixed: false,
             flows: 1,
             src_port: 50000,
+            strategy: "classic".to_string(),
             timeout: 3.0,
             ipv4: false,
             ipv6: false,
@@ -777,6 +793,29 @@ mod tests {
         });
         let err = args.validate().unwrap_err();
         assert!(err.contains("65536"));
+    }
+
+    #[test]
+    fn test_paris_strategy_requires_udp() {
+        for proto in ["auto", "icmp", "tcp"] {
+            let mut args = make_args(|a| {
+                a.protocol = proto.to_string();
+                a.strategy = "paris".to_string();
+            });
+            let err = args.validate().unwrap_err();
+            assert!(err.contains("--strategy paris requires -p udp"), "{err}");
+        }
+        // UDP is accepted, and the fixed destination port skips the port+max_ttl check
+        let mut args = make_args(|a| {
+            a.protocol = "udp".to_string();
+            a.strategy = "paris".to_string();
+            a.port = Some(65535);
+        });
+        assert!(args.validate().is_ok());
+        assert!(Args::try_parse_from(["ttl", "--strategy", "dublin", "x"]).is_err());
+        let mut args =
+            Args::try_parse_from(["ttl", "--replay", "a.json", "--strategy", "paris"]).unwrap();
+        assert!(args.validate().unwrap_err().contains("--strategy"));
     }
 
     #[test]

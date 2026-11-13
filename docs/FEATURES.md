@@ -66,6 +66,7 @@ Tries ICMP first, falls back to UDP, then TCP if raw sockets aren't available.
 ttl 8.8.8.8 -p udp --flows 4
 ttl 8.8.8.8 -p tcp --port 443 --flows 8
 ttl 8.8.8.8 -p udp --flows 4 --src-port 33000
+ttl 8.8.8.8 -p udp --flows 4 --strategy paris
 ```
 
 Discover multiple ECMP (Equal-Cost Multi-Path) routes by probing with different flow identifiers.
@@ -89,12 +90,28 @@ Classification uses a primary concentration heuristic: if no single responder do
 
 **Note:** `--flows` requires UDP or TCP probing (`-p udp` or `-p tcp`). ICMP probes have no port to vary, so flows are always 1 in ICMP mode. ttl warns at startup if `--flows > 1` resolves to effective ICMP probing.
 
-### Paris vs Dublin
+<a id="paris-vs-dublin"></a>
+### UDP Strategies: Classic and Paris
 
-- **Paris traceroute**: Varies source port to enumerate paths
-- **Dublin traceroute**: Also manipulates flow label (IPv6)
+`--strategy` picks how UDP probes are built (`-p udp` only; it is rejected with
+other protocols):
 
-ttl implements Paris-style ECMP detection using source port variation.
+- **`classic`** (default): each flow keeps its source port, but the destination
+  port increments per TTL (`--fixed-port` stops that). The probe is identified by
+  its payload, so a router must quote at least 6 payload bytes in its ICMP error.
+- **`paris`**: source and destination ports are both fixed per flow, so every
+  probe of a flow has the same 5-tuple and per-flow load balancers keep it on one
+  path at every TTL. The probe sequence is written into the UDP checksum by
+  adjusting two payload bytes. Routers that quote only the RFC 792 minimum (the IP
+  header plus the 8-byte UDP header, with no payload) still correlate, where
+  classic probes from those hops show as `* * *`.
+
+Use `--strategy paris` when hops past a point never answer UDP probes but do
+answer ICMP: those routers usually quote just 8 bytes. A NAT that rewrites the
+source port without restoring the quoted checksum in its ICMP errors breaks
+8-byte-quote matching; replies that quote the payload still match.
+
+ttl does not implement the Dublin strategy (identifying probes by IP ID) yet.
 
 ## Detection Indicators
 
@@ -813,6 +830,7 @@ session ([Interactive Target Selection](#interactive-target-selection)).
       --fixed-port           Keep the destination port fixed instead of incrementing per TTL
       --flows <N>            Flows for ECMP detection, 1-16 (default: 1; needs UDP or TCP)
       --src-port <N>         Base source port for flows (default: 50000)
+      --strategy <S>         UDP strategy: classic or paris (default: classic; paris needs -p udp)
       --timeout <S>          Probe timeout in seconds (default: 3; must be < 256 x interval)
       --rate <N>             Max probes per second, 0-10000 (0 = unlimited)
       --size <N>             Packet size in bytes, 36-9216 (conflicts with --pmtud)

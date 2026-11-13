@@ -39,6 +39,9 @@ pub struct Config {
     /// Base source port for flow identification
     #[serde(default = "default_src_port")]
     pub src_port_base: u16,
+    /// Paris UDP strategy: fixed ports per flow, probe identified by the UDP checksum
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paris: bool,
     /// Enable reverse DNS lookups
     pub dns_enabled: bool,
     /// Enable ASN enrichment
@@ -95,6 +98,7 @@ impl Default for Config {
             port_fixed: false,
             flows: 1,
             src_port_base: 50000,
+            paris: false,
             dns_enabled: true,
             asn_enabled: true,
             geo_enabled: true,
@@ -139,9 +143,11 @@ impl From<&Args> for Config {
             timeout: args.timeout_duration(),
             protocol,
             port,
-            port_fixed: args.port_fixed,
+            // Paris keeps the whole 5-tuple fixed per flow, destination port included
+            port_fixed: args.port_fixed || args.strategy == "paris",
             flows: args.flows,
             src_port_base: args.src_port,
+            paris: args.strategy == "paris",
             dns_enabled: !args.no_dns,
             asn_enabled: !args.no_asn,
             geo_enabled: !args.no_geo,

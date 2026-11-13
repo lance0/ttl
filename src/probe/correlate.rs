@@ -329,6 +329,19 @@ pub fn parse_icmp_response(
     our_identifier: u16,
     is_dgram: bool,
 ) -> Option<ParsedResponse> {
+    parse_icmp_response_with(data, responder, our_identifier, is_dgram, false)
+}
+
+/// [`parse_icmp_response`] with the UDP strategy: when `udp_paris` is set, a UDP
+/// quote too short to hold the probe payload is identified by its UDP checksum
+/// (see [`udp_quote_probe_id`]).
+pub fn parse_icmp_response_with(
+    data: &[u8],
+    responder: IpAddr,
+    our_identifier: u16,
+    is_dgram: bool,
+    udp_paris: bool,
+) -> Option<ParsedResponse> {
     if data.is_empty() {
         return None;
     }
@@ -336,17 +349,17 @@ pub fn parse_icmp_response(
     if is_dgram {
         // DGRAM socket: no IP header, use responder address to determine version
         if responder.is_ipv4() {
-            parse_icmp_response_v4_dgram(data, responder, our_identifier)
+            parse_icmp_response_v4_dgram(data, responder, our_identifier, udp_paris)
         } else {
-            parse_icmp_response_v6_dgram(data, responder, our_identifier)
+            parse_icmp_response_v6_dgram(data, responder, our_identifier, udp_paris)
         }
     } else if responder.is_ipv6() {
         // RAW IPv6 socket: Linux kernel strips IPv6 header, delivers ICMPv6 directly
         // Use DGRAM parser which expects no IP header
-        parse_icmp_response_v6_dgram(data, responder, our_identifier)
+        parse_icmp_response_v6_dgram(data, responder, our_identifier, udp_paris)
     } else {
         // RAW IPv4 socket: has IP header
-        parse_icmp_response_v4(data, responder, our_identifier)
+        parse_icmp_response_v4(data, responder, our_identifier, udp_paris)
     }
 }
 
@@ -355,6 +368,7 @@ fn parse_icmp_response_v4(
     data: &[u8],
     responder: IpAddr,
     our_identifier: u16,
+    udp_paris: bool,
 ) -> Option<ParsedResponse> {
     let ip_packet = Ipv4Packet::new(data)?;
     let ip_header_len = (ip_packet.get_header_length() as usize) * 4;
@@ -429,6 +443,7 @@ fn parse_icmp_response_v4(
                 our_identifier,
                 IcmpResponseType::TimeExceeded(code),
                 None,
+                udp_paris,
             )
         }
         IcmpTypes::DestinationUnreachable => {
@@ -446,6 +461,7 @@ fn parse_icmp_response_v4(
                 our_identifier,
                 IcmpResponseType::DestUnreachable(code),
                 mtu,
+                udp_paris,
             )
         }
         _ => None,
@@ -691,6 +707,7 @@ fn parse_icmp_error_payload_v4_with_mtu(
     our_identifier: u16,
     response_type: IcmpResponseType,
     mtu: Option<u16>,
+    udp_paris: bool,
 ) -> Option<ParsedResponse> {
     // ICMP error format (RFC 4884):
     // [0]    Type
@@ -820,15 +837,10 @@ fn parse_icmp_error_payload_v4_with_mtu(
             // UDP header: [0-1] src port, [2-3] dst port, [4-5] length, [6-7] checksum
             // Our payload starts at offset 8
 
-            if original_payload.len() < 8 + 6 {
-                // Need UDP header + at least 6 bytes of payload
-                return None;
-            }
-
+            // Checks the quote length before the port read below
+            let probe_id = udp_quote_probe_id(original_payload, udp_paris)?;
             // Extract source port for flow identification (Paris/Dublin traceroute)
             let src_port = u16::from_be_bytes([original_payload[0], original_payload[1]]);
-            let udp_payload = &original_payload[8..];
-            let probe_id = extract_probe_id_from_udp_payload(udp_payload)?;
 
             Some(ParsedResponse {
                 responder,
@@ -1019,15 +1031,10 @@ fn parse_icmp_error_payload_v6_with_mtu(
             // UDP header: [0-1] src port, [2-3] dst port, [4-5] length, [6-7] checksum
             // Our payload starts at offset 8
 
-            if original_payload.len() < 8 + 6 {
-                // Need UDP header + at least 6 bytes of payload
-                return None;
-            }
-
+            // Checks the quote length before the port read below
+            let probe_id = udp_quote_probe_id(original_payload, false)?;
             // Extract source port for flow identification (Paris/Dublin traceroute)
             let src_port = u16::from_be_bytes([original_payload[0], original_payload[1]]);
-            let udp_payload = &original_payload[8..];
-            let probe_id = extract_probe_id_from_udp_payload(udp_payload)?;
 
             Some(ParsedResponse {
                 responder,
@@ -1044,6 +1051,23 @@ fn parse_icmp_error_payload_v6_with_mtu(
         }
         _ => None,
     }
+}
+
+/// Probe ID from a quoted UDP probe (`udp` starts at the UDP header).
+///
+/// The payload marker wins whenever the router quoted it. RFC 792 only requires the
+/// first 8 bytes of the original datagram (the UDP header), which loses the payload;
+/// in Paris mode the sender set the UDP checksum to the probe sequence, so that
+/// header alone still identifies the probe. Classic mode has no such guarantee, and
+/// decoding an arbitrary checksum would attribute replies to the wrong probe.
+fn udp_quote_probe_id(udp: &[u8], paris: bool) -> Option<ProbeId> {
+    if udp.len() < 8 {
+        return None;
+    }
+    if udp.len() >= 8 + 6 {
+        return extract_probe_id_from_udp_payload(&udp[8..]);
+    }
+    paris.then(|| ProbeId::from_sequence(u16::from_be_bytes([udp[6], udp[7]])))
 }
 
 // ============================================================================
@@ -1076,6 +1100,7 @@ fn parse_icmp_response_v4_dgram(
     icmp_data: &[u8],
     responder: IpAddr,
     our_identifier: u16,
+    udp_paris: bool,
 ) -> Option<ParsedResponse> {
     if icmp_data.len() < 8 {
         return None;
@@ -1142,6 +1167,7 @@ fn parse_icmp_response_v4_dgram(
                 our_identifier,
                 IcmpResponseType::TimeExceeded(icmp_code),
                 None,
+                udp_paris,
             )
         }
         3 => {
@@ -1158,6 +1184,7 @@ fn parse_icmp_response_v4_dgram(
                 our_identifier,
                 IcmpResponseType::DestUnreachable(icmp_code),
                 mtu,
+                udp_paris,
             )
         }
         _ => None,
@@ -1171,6 +1198,7 @@ fn parse_icmp_error_payload_v4_dgram(
     our_identifier: u16,
     response_type: IcmpResponseType,
     mtu: Option<u16>,
+    udp_paris: bool,
 ) -> Option<ParsedResponse> {
     // ICMP error: [0-7] ICMP header, [8..] original IP packet
     if icmp_data.len() < 8 + 20 + 8 {
@@ -1265,12 +1293,11 @@ fn parse_icmp_error_payload_v4_dgram(
             })
         }
         IPPROTO_UDP => {
-            if original_payload.len() < 8 + 6 {
+            if original_payload.len() < 8 {
                 return None;
             }
             let src_port = u16::from_be_bytes([original_payload[0], original_payload[1]]);
-            let udp_payload = &original_payload[8..];
-            let probe_id = extract_probe_id_from_udp_payload(udp_payload)?;
+            let probe_id = udp_quote_probe_id(original_payload, udp_paris)?;
 
             Some(ParsedResponse {
                 responder,
@@ -1294,6 +1321,7 @@ fn parse_icmp_response_v6_dgram(
     icmp_data: &[u8],
     responder: IpAddr,
     our_identifier: u16,
+    udp_paris: bool,
 ) -> Option<ParsedResponse> {
     if icmp_data.len() < 8 {
         return None;
@@ -1362,6 +1390,7 @@ fn parse_icmp_response_v6_dgram(
                 our_identifier,
                 IcmpResponseType::PacketTooBig,
                 mtu,
+                udp_paris,
             )
         }
         ICMPV6_TIME_EXCEEDED => parse_icmp_error_payload_v6_dgram(
@@ -1370,6 +1399,7 @@ fn parse_icmp_response_v6_dgram(
             our_identifier,
             IcmpResponseType::TimeExceeded(icmp_code),
             None,
+            udp_paris,
         ),
         ICMPV6_PARAMETER_PROBLEM => parse_icmp_error_payload_v6_dgram(
             icmp_data,
@@ -1377,6 +1407,7 @@ fn parse_icmp_response_v6_dgram(
             our_identifier,
             IcmpResponseType::ParameterProblem(icmp_code),
             None,
+            udp_paris,
         ),
         ICMPV6_DEST_UNREACHABLE => parse_icmp_error_payload_v6_dgram(
             icmp_data,
@@ -1384,6 +1415,7 @@ fn parse_icmp_response_v6_dgram(
             our_identifier,
             IcmpResponseType::DestUnreachable(icmp_code),
             None,
+            udp_paris,
         ),
         _ => None,
     }
@@ -1396,6 +1428,7 @@ fn parse_icmp_error_payload_v6_dgram(
     our_identifier: u16,
     response_type: IcmpResponseType,
     mtu: Option<u16>,
+    udp_paris: bool,
 ) -> Option<ParsedResponse> {
     const IPV6_HEADER_LEN: usize = 40;
 
@@ -1520,12 +1553,11 @@ fn parse_icmp_error_payload_v6_dgram(
             })
         }
         IPPROTO_UDP => {
-            if original_payload.len() < 8 + 6 {
+            if original_payload.len() < 8 {
                 return None;
             }
             let src_port = u16::from_be_bytes([original_payload[0], original_payload[1]]);
-            let udp_payload = &original_payload[8..];
-            let probe_id = extract_probe_id_from_udp_payload(udp_payload)?;
+            let probe_id = udp_quote_probe_id(original_payload, udp_paris)?;
 
             Some(ParsedResponse {
                 responder,
@@ -1840,6 +1872,81 @@ mod tests {
         assert_eq!(parsed.probe_id.ttl, 5);
         assert_eq!(parsed.probe_id.seq, 3);
         assert_eq!(parsed.response_type, IcmpResponseType::TimeExceeded(0));
+    }
+
+    /// A router that quotes only the RFC 792 minimum (IP header + 8 bytes) drops the
+    /// UDP payload. Classic UDP probes are unmatchable then; Paris probes are matched
+    /// by the quoted checksum. Covers the IPv4 raw, IPv4 DGRAM and IPv6 parsers.
+    #[test]
+    fn test_udp_eight_byte_quote_correlates_only_in_paris() {
+        use crate::probe::udp::build_paris_udp_payload;
+        let probe_id = ProbeId::new(9, 77);
+        let (src, dst) = ("192.0.2.10", "198.51.100.7");
+        let payload = build_paris_udp_payload(
+            probe_id,
+            32,
+            src.parse().unwrap(),
+            dst.parse().unwrap(),
+            50002,
+            33434,
+        );
+        let src4: Ipv4Addr = src.parse().unwrap();
+        let dst4: Ipv4Addr = dst.parse().unwrap();
+        let udp = crate::probe::rawip::build_udp_datagram(src4, dst4, 50002, 33434, &payload);
+
+        // ICMP Time Exceeded quoting the original IPv4 header + the 8-byte UDP header
+        let mut icmp = vec![11, 0, 0, 0, 0, 0, 0, 0];
+        let mut quoted_ip = vec![0u8; 20];
+        quoted_ip[0] = 0x45;
+        quoted_ip[8] = 1; // TTL at the router
+        quoted_ip[9] = IPPROTO_UDP;
+        quoted_ip[12..16].copy_from_slice(&src4.octets());
+        quoted_ip[16..20].copy_from_slice(&dst4.octets());
+        icmp.extend_from_slice(&quoted_ip);
+        icmp.extend_from_slice(&udp[..8]);
+        let mut raw = vec![0u8; 20];
+        raw[0] = 0x45;
+        raw[9] = IPPROTO_ICMP;
+        raw.extend_from_slice(&icmp);
+
+        let responder: IpAddr = "203.0.113.1".parse().unwrap();
+        for (data, is_dgram) in [(&raw, false), (&icmp, true)] {
+            assert!(parse_icmp_response_with(data, responder, 1, is_dgram, false).is_none());
+            let parsed = parse_icmp_response_with(data, responder, 1, is_dgram, true).unwrap();
+            assert_eq!(parsed.probe_id, probe_id);
+            assert_eq!(parsed.src_port, Some(50002));
+        }
+
+        // IPv6: ICMPv6 Time Exceeded + 40-byte IPv6 header + 8-byte UDP header. The
+        // kernel computes the checksum; test_paris_checksum_encodes_sequence (udp.rs)
+        // shows it comes out as the probe sequence.
+        let (s6, d6): (Ipv6Addr, Ipv6Addr) = (
+            "2001:db8::10".parse().unwrap(),
+            "2001:db8:ff::7".parse().unwrap(),
+        );
+        let mut icmp6 = vec![ICMPV6_TIME_EXCEEDED, 0, 0, 0, 0, 0, 0, 0];
+        let mut quoted_ip6 = vec![0u8; 40];
+        quoted_ip6[0] = 0x60;
+        quoted_ip6[6] = IPPROTO_UDP;
+        quoted_ip6[7] = 1;
+        quoted_ip6[8..24].copy_from_slice(&s6.octets());
+        quoted_ip6[24..40].copy_from_slice(&d6.octets());
+        icmp6.extend_from_slice(&quoted_ip6);
+        icmp6.extend_from_slice(&[0xC3, 0x52, 0x82, 0x9A, 0, 40]);
+        icmp6.extend_from_slice(&probe_id.to_sequence().to_be_bytes());
+        let responder6: IpAddr = "2001:db8::1".parse().unwrap();
+        assert!(parse_icmp_response_with(&icmp6, responder6, 1, false, false).is_none());
+        let parsed = parse_icmp_response_with(&icmp6, responder6, 1, false, true).unwrap();
+        assert_eq!(parsed.probe_id, probe_id);
+        assert_eq!(parsed.src_port, Some(50002));
+
+        // A full quote still uses the payload marker in both modes
+        let mut full = icmp.clone();
+        full.extend_from_slice(&udp[8..]);
+        for paris in [false, true] {
+            let parsed = parse_icmp_response_with(&full, responder, 1, true, paris).unwrap();
+            assert_eq!(parsed.probe_id, probe_id);
+        }
     }
 
     #[test]
