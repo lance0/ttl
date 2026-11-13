@@ -1441,6 +1441,9 @@ impl ProbeEngine {
 
                         // Record response (sent counting already happened at send time)
                         let mut state = self.state.write();
+                        if state.predates_reset(probe.sent_at) {
+                            continue;
+                        }
 
                         // Only record hop stats for normal probes, not PMTUD probes
                         if !is_pmtud_probe && let Some(hop) = state.hop_mut(parsed.probe_id.ttl) {

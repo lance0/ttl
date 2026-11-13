@@ -1693,6 +1693,16 @@ impl Session {
         }
     }
 
+    /// Whether a probe sent at `sent_at` went out before the last stats reset.
+    /// Its reply or timeout belongs to the cleared stats, so counting it would
+    /// credit the fresh ones with a probe they never sent.
+    // ponytail: a reset landing inside the send syscall (after `sent_at`, before
+    // `record_sent`) leaves that one probe sent with no outcome; skip
+    // `record_sent` for such probes too if it ever shows up.
+    pub fn predates_reset(&self, sent_at: std::time::Instant) -> bool {
+        self.started_instant.is_some_and(|start| sent_at < start)
+    }
+
     /// Get monotonic offset in milliseconds since session start.
     /// Uses Instant for monotonic timing (avoids clock jumps).
     /// Falls back to Utc for deserialized sessions (where started_instant is None).

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Resetting stats with `r` no longer counts replies and timeouts for probes sent before the reset. Those probes used to show up in the fresh stats right away, as a reply on a hop that had not sent a new probe yet or as a timeout well before the probe timeout.
+
 ## [0.25.0] - 2026-11-12
 
 ### Security
