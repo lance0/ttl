@@ -12,7 +12,7 @@ This document tracks known limitations and edge cases that are documented but no
 ### Protocol Limitations
 
 - **ICMP:** some networks filter ICMP; try `-p udp` or `-p tcp`.
-- **TCP:** probes are SYN only; ttl never completes a connection.
+- **TCP:** probes are SYN only; ttl never completes a connection. ttl reads only ICMP replies, not the destination's SYN-ACK or RST, so a TCP trace marks the destination reached only if the target answers with ICMP (for example Destination Unreachable); otherwise TTLs past it show as timeouts up to the max TTL.
 - **UDP:** high destination ports may be filtered by firewalls; set a port with `--port` (and `--fixed-port`).
 
 ### Multi-flow Mode Behind NAT

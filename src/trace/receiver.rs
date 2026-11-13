@@ -76,6 +76,22 @@ fn is_packet_too_big(response_type: IcmpResponseType, ipv6: bool) -> bool {
         || (!ipv6 && response_type == IcmpResponseType::DestUnreachable(4))
 }
 
+/// Whether a reply means the probe reached the target: an Echo Reply or a
+/// Destination Unreachable (e.g. Port Unreachable to a UDP probe) sent by the
+/// target itself. Time Exceeded and Parameter Problem never count, nor does
+/// anything sent by another host.
+fn is_destination_reply(
+    response_type: IcmpResponseType,
+    responder: IpAddr,
+    target: IpAddr,
+) -> bool {
+    responder == target
+        && matches!(
+            response_type,
+            IcmpResponseType::EchoReply | IcmpResponseType::DestUnreachable(_)
+        )
+}
+
 fn record_pmtud_response(
     pmtud: &mut PmtudState,
     response_type: IcmpResponseType,
@@ -457,9 +473,7 @@ impl Receiver {
                         }
 
                         // Check if we reached the destination
-                        if matches!(resp.response_type, IcmpResponseType::EchoReply)
-                            && resp.responder == resp.target
-                        {
+                        if is_destination_reply(resp.response_type, resp.responder, resp.target) {
                             state.complete = true;
                             let ttl = resp.probe_id.ttl;
                             if state.dest_ttl.is_none_or(|d| ttl < d) {
@@ -677,6 +691,34 @@ mod tests {
             IcmpResponseType::DestUnreachable(4),
             false
         ));
+    }
+
+    /// UDP (and TCP) probes reaching the target draw a Port Unreachable,
+    /// not an Echo Reply; only the target's own replies end the path.
+    #[test]
+    fn destination_reply_includes_port_unreachable_from_target() {
+        for (target, router, port_unreachable) in [
+            (
+                "192.0.2.1",
+                "192.0.2.2",
+                IcmpResponseType::DestUnreachable(3),
+            ),
+            (
+                "2001:db8::1",
+                "2001:db8::2",
+                IcmpResponseType::DestUnreachable(4),
+            ),
+        ] {
+            let target: IpAddr = target.parse().unwrap();
+            let router: IpAddr = router.parse().unwrap();
+            let reached = |kind, from| is_destination_reply(kind, from, target);
+            assert!(reached(IcmpResponseType::EchoReply, target));
+            assert!(reached(port_unreachable, target));
+            assert!(!reached(port_unreachable, router));
+            assert!(!reached(IcmpResponseType::EchoReply, router));
+            assert!(!reached(IcmpResponseType::TimeExceeded(0), target));
+            assert!(!reached(IcmpResponseType::ParameterProblem(0), target));
+        }
     }
 
     #[test]
