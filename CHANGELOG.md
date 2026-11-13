@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Route flaps (`!`) no longer fire on per-packet load-balanced hops, and genuine path changes are reported promptly.** Flap detection compared cumulative response counts with a margin of 2. On a hop where a balancer hands probes to responders at random, those counts take turns leading, so route changes piled up in the hop's history (9 in a simulated 600-round 50/50 run) even though the hop was already marked `E`. The same cumulative comparison delayed a real change until the new responder outnumbered the old one's entire history: after 200 rounds on one router, 20 rounds on the new one recorded nothing. A responder now has to answer 5 times in a row to become, or replace, the hop's stable responder. No change is recorded while the hop's responses are split per-packet (no responder at 70% or more, the `E` test). `!` is no longer hidden when `E` is also shown, so a recorded change stays visible.
+
 ## [0.25.0] - 2026-11-12
 
 ### Security

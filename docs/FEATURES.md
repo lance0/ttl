@@ -120,7 +120,7 @@ name. Press `?` in the TUI for the same legend; `ttl --help` lists it too.
 | Host marker | Meaning |
 |-------------|---------|
 | `E` | ECMP: several responders answer at this hop ([ECMP Classification](#ecmp-classification)) |
-| `!` | Route flap: the primary responder changed ([Route Flap Detection](#route-flap-detection)) |
+| `!` | Route flap: the hop's stable responder changed; per-packet balancing does not count ([Route Flap Detection](#route-flap-detection)) |
 | `~` | Asymmetric routing suspected at this hop |
 | `^` | TTL manipulation suspected at this hop |
 | `+` | Interface or MPLS details are available ([ICMP Extension Details](#icmp-extension-details)) |
@@ -217,13 +217,12 @@ Trace all IP addresses that a hostname resolves to. Useful for:
 ttl -i 0.5 production-server.com
 ```
 
-ttl detects route instability when the primary responder IP changes at a hop:
+ttl detects route instability when the stable responder at a hop changes:
 
-- Main table shows `!` indicator after hostname when route changes detected
-- `!` is suppressed when ECMP is detected at the hop (`E` shown instead) — per-packet load balancing is expected multi-path behavior, not instability
+- A responder becomes the hop's stable responder only after 5 consecutive responses; a change is recorded when a different responder then holds 5 in a row. Shorter runs (a brief blip, or responders alternating) never count, and the change is reported after 5 rounds of the new path regardless of how long the old one was in use
+- No change is recorded while the hop balances per-packet, that is, when no single responder has 70% or more of the hop's responses before the new run began (the same test that sets `E`). Rotating responders are expected multi-path behavior, not instability ([Known Issues](../KNOWN_ISSUES.md#route-flaps-not-recorded-on-per-packet-balanced-hops))
+- Main table shows `!` after the hostname once a change is recorded. It can appear alongside `E`: a genuine change spreads a hop's responses over two responders, which can make it look per-packet balanced afterward
 - Hop detail view (Enter key) shows route change history with the response count at which each change was detected
-- Uses hysteresis (margin of 2 responses) to avoid false positives
-- Requires 5+ responses before recording changes (avoids startup noise)
 - History capped at 50 changes per hop
 - Only active in single-flow mode (disabled when `--flows > 1` since ECMP expects path variation)
 

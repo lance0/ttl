@@ -183,7 +183,7 @@ fn build_hop_indicators(
     has_extensions: bool,
 ) -> String {
     let show_ecmp_marker = !multi_flow && has_ecmp;
-    let has_flap = !multi_flow && has_route_changes && !has_ecmp;
+    let has_flap = !multi_flow && has_route_changes;
     let has_asym = !multi_flow && has_asymmetry;
     let has_ttl = has_ttl_manip;
 
@@ -547,7 +547,7 @@ impl Widget for MainView<'_> {
                     };
                     // Add indicators:
                     // E = ECMP detected (single-flow only)
-                    // ! = route flap (single-flow only, suppressed when ECMP is detected)
+                    // ! = route flap (single-flow only; not recorded while the hop balances per-packet)
                     // ~ = asymmetric routing (single-flow only)
                     // ^ = TTL manipulation (all flow modes)
                     // + = ICMP interface/MPLS details available (Enter)
@@ -960,16 +960,19 @@ mod tests {
         }
         assert_eq!(
             build_hop_indicators(false, true, true, true, true, true),
-            " E~^+"
+            " E!~^+"
         );
     }
 
     #[test]
-    fn test_build_hop_indicators_single_flow_ecmp_suppresses_flap() {
+    fn test_build_hop_indicators_single_flow_ecmp_and_flap_coexist() {
         let indicators = build_hop_indicators(true, true, true, true, true, false);
         assert_eq!(indicators, " ^", "multi-flow hides E/!/~ markers");
 
         let indicators = build_hop_indicators(false, true, true, true, true, false);
-        assert_eq!(indicators, " E~^", "ECMP suppresses route flap marker");
+        assert_eq!(
+            indicators, " E!~^",
+            "a recorded flap stays visible on an ECMP hop"
+        );
     }
 }
