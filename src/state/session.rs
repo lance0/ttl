@@ -1569,16 +1569,9 @@ impl Session {
                     hop.record_flow_timeout(event.flow_id);
                     self.total_sent += 1;
                 }
-                ProbeOutcome::LateReply { addr, rtt_us } => {
-                    // Late reply arrives after timeout accounting already happened.
-                    let rtt = Duration::from_micros(*rtt_us);
-                    if single_flow {
-                        hop.record_response_detecting_flaps(*addr, rtt, None);
-                    } else {
-                        hop.record_response_with_mpls(*addr, rtt, None);
-                    }
-                    hop.record_flow_response(event.flow_id, *addr, rtt);
-                }
+                // The live run counted this probe's timeout and ignored the
+                // late reply (its RTT is unknown), so replay does the same.
+                ProbeOutcome::LateReply { .. } => {}
             }
         }
     }
@@ -1691,6 +1684,16 @@ impl Session {
         if self.record_events {
             self.events.push(event);
         }
+    }
+
+    /// Whether a probe sent at `sent_at` went out before the last stats reset.
+    /// Its reply or timeout belongs to the cleared stats, so counting it would
+    /// credit the fresh ones with a probe they never sent.
+    // ponytail: a reset landing inside the send syscall (after `sent_at`, before
+    // `record_sent`) leaves that one probe sent with no outcome; skip
+    // `record_sent` for such probes too if it ever shows up.
+    pub fn predates_reset(&self, sent_at: std::time::Instant) -> bool {
+        self.started_instant.is_some_and(|start| sent_at < start)
     }
 
     /// Get monotonic offset in milliseconds since session start.

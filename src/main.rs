@@ -948,6 +948,7 @@ async fn run_interactive_mode(
     // Spawn the target manager: resolves and starts probing targets added
     // at runtime via the TUI's 'o' modal
     let (add_target_tx, add_target_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (added_engine_tx, added_engine_rx) = tokio::sync::mpsc::unbounded_channel();
     let manager_handle = {
         let has_v4_receiver = targets.iter().any(|t| t.is_ipv4());
         let has_v6_receiver = targets.iter().any(|t| t.is_ipv6());
@@ -957,6 +958,7 @@ async fn run_interactive_mode(
             .then(|| session_effective_flows_for_family(&sessions, &targets, true, config.flows));
         tokio::spawn(run_target_manager(TargetManagerCtx {
             rx: add_target_rx,
+            engines: added_engine_tx,
             sessions: sessions.clone(),
             pending: pending.clone(),
             cancel: cancel.clone(),
@@ -971,9 +973,11 @@ async fn run_interactive_mode(
         }))
     };
 
-    // With -c, this cancels (closing the TUI) once every initial target is done
+    // With -c, this cancels (closing the TUI) once every target, including
+    // the ones added with 'o', is done
     let engines_done = tokio::spawn(finish_engines(
         engine_handles,
+        added_engine_rx,
         cancel.clone(),
         config.timeout,
     ));
@@ -1043,6 +1047,8 @@ async fn run_interactive_mode(
 /// Everything the target manager needs to start probing a new target
 struct TargetManagerCtx {
     rx: tokio::sync::mpsc::UnboundedReceiver<AddTargetRequest>,
+    /// Engines of added targets, handed to `finish_engines`
+    engines: tokio::sync::mpsc::UnboundedSender<EngineHandle>,
     sessions: SessionMap,
     pending: PendingMap,
     cancel: CancellationToken,
@@ -1058,9 +1064,9 @@ struct TargetManagerCtx {
 
 /// Handle add-target requests from the TUI: resolve the host, create the
 /// session, spawn its probe engine, and spawn a receiver if the IP family
-/// is new. Owns the handles it spawns and joins them after cancellation.
+/// is new. Engines go to `finish_engines`; the receivers it spawns are joined
+/// here after cancellation.
 async fn run_target_manager(mut ctx: TargetManagerCtx) -> Result<()> {
-    let mut engine_handles = Vec::new();
     let mut receiver_handles = Vec::new();
 
     loop {
@@ -1089,6 +1095,11 @@ async fn run_target_manager(mut ctx: TargetManagerCtx) -> Result<()> {
                 continue;
             }
         };
+
+        // Esc while resolving drops the reply receiver: nothing to add
+        if request.reply.is_closed() {
+            continue;
+        }
 
         if ctx.sessions.read().contains_key(&ip) {
             let _ = request.reply.send(Ok(AddedTarget {
@@ -1189,30 +1200,40 @@ async fn run_target_manager(mut ctx: TargetManagerCtx) -> Result<()> {
             *family_has_receiver = true;
         }
 
-        // Spawn the probe engine
+        // Spawn the probe engine. Its own token stops it if the add is
+        // canceled after all; the run's cancel still reaches it.
+        let engine_cancel = ctx.cancel.child_token();
         let engine_config = state.read().config.clone();
         let engine = ProbeEngine::new(
             engine_config,
             ip,
             state.clone(),
             ctx.pending.clone(),
-            ctx.cancel.clone(),
+            engine_cancel.clone(),
             ctx.interface.clone(),
         );
-        engine_handles.push(tokio::spawn(async move { engine.run().await }));
+        // finish_engines only stops listening once the run is over
+        let _ = ctx
+            .engines
+            .send(tokio::spawn(async move { engine.run().await }));
 
-        let _ = request.reply.send(Ok(AddedTarget {
-            ip,
-            name: request.host,
-            existed: false,
-        }));
+        // Esc landed after the check above: the TUI will never show this
+        // target, so stop probing it and drop its session.
+        if request
+            .reply
+            .send(Ok(AddedTarget {
+                ip,
+                name: request.host,
+                existed: false,
+            }))
+            .is_err()
+        {
+            engine_cancel.cancel();
+            ctx.sessions.write().remove(&ip);
+        }
     }
 
-    // Join everything this task spawned (cancellation already requested)
-    shutdown_log("target manager waiting for its probe engines");
-    for handle in engine_handles {
-        handle.await??;
-    }
+    // Join the receivers this task spawned (cancellation already requested)
     shutdown_log("target manager joining its receiver threads");
     tokio::task::spawn_blocking(move || join_receivers(receiver_handles)).await??;
     shutdown_log("target manager receivers joined");
@@ -1220,37 +1241,57 @@ async fn run_target_manager(mut ctx: TargetManagerCtx) -> Result<()> {
     Ok(())
 }
 
+type EngineHandle = tokio::task::JoinHandle<Result<()>>;
+
 /// Wait for every probe engine, then end the run by canceling.
 ///
 /// With `-c` each engine returns once its own rounds are sent, so the run
 /// lasts until the slowest target is done. The receivers then get the probe
 /// timeout (plus a margin) to collect the last round's replies before the
-/// cancel makes them flush what is still pending as timeouts. A quit cancels
-/// first, which stops the engines and skips the wait. A failed engine does not
-/// end the run early; its error is returned once the others are done. With no
-/// engines (an empty TUI) there is nothing to finish, so the run is left alone.
+/// cancel makes them flush what is still pending as timeouts. Engines of
+/// targets added from the TUI arrive on `added` and are waited for too, so an
+/// added target gets its full `-c` rounds. A quit cancels first, which stops
+/// the engines and skips the wait. A failed engine does not end the run early;
+/// its error is returned once the others are done. With no initial engines (an
+/// empty TUI) the run is left to the user, and added engines are joined after
+/// the quit.
 async fn finish_engines(
-    engine_handles: Vec<tokio::task::JoinHandle<Result<()>>>,
+    mut engine_handles: Vec<EngineHandle>,
+    mut added: tokio::sync::mpsc::UnboundedReceiver<EngineHandle>,
     cancel: CancellationToken,
     timeout: Duration,
 ) -> Result<()> {
-    if engine_handles.is_empty() {
-        return Ok(());
-    }
-    shutdown_log("waiting for probe engines");
     let mut first_error = None;
-    for handle in engine_handles {
-        if let Err(e) = handle.await.map_err(anyhow::Error::from).and_then(|r| r) {
+    let mut join = |result: Result<Result<()>, tokio::task::JoinError>| {
+        if let Err(e) = result.map_err(anyhow::Error::from).and_then(|r| r) {
             first_error.get_or_insert(e);
         }
+    };
+    if engine_handles.is_empty() {
+        cancel.cancelled().await;
     }
-    shutdown_log("probe engines joined; waiting for final replies");
-    tokio::select! {
-        _ = cancel.cancelled() => {}
-        _ = tokio::time::sleep(timeout + Duration::from_millis(500)) => {}
+    while !engine_handles.is_empty() {
+        shutdown_log("waiting for probe engines");
+        for handle in engine_handles.drain(..) {
+            join(handle.await);
+        }
+        shutdown_log("probe engines joined; waiting for final replies");
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            _ = tokio::time::sleep(timeout + Duration::from_millis(500)) => {}
+        }
+        // Targets added while waiting keep the run going
+        while let Ok(handle) = added.try_recv() {
+            engine_handles.push(handle);
+        }
     }
     cancel.cancel();
     shutdown_log("final replies settled; cancel requested");
+    // Join the added engines still running; the channel closes once the
+    // target manager has seen the cancel and exited.
+    while let Some(handle) = added.recv().await {
+        join(handle.await);
+    }
     first_error.map_or(Ok(()), Err)
 }
 
@@ -1363,7 +1404,9 @@ async fn run_batch_mode(
     // Spawn rate limit detection worker (always enabled, lightweight analysis)
     let ratelimit_handle = tokio::spawn(run_ratelimit_worker(sessions.clone(), cancel.clone()));
 
-    finish_engines(engine_handles, cancel.clone(), config.timeout).await?;
+    // Batch mode adds no targets, so the added-engine channel starts closed
+    let no_added = tokio::sync::mpsc::unbounded_channel().1;
+    finish_engines(engine_handles, no_added, cancel.clone(), config.timeout).await?;
 
     shutdown_log("batch joining receiver threads");
     join_receivers(receiver_handles)?;
@@ -1584,6 +1627,7 @@ async fn run_streaming_mode(
     // With -c, this cancels (ending the loop below) once every target is done
     let engines_done = tokio::spawn(finish_engines(
         engine_handles,
+        tokio::sync::mpsc::unbounded_channel().1,
         cancel.clone(),
         config.timeout,
     ));
@@ -1838,7 +1882,12 @@ mod tests {
             })
         });
         let start = tokio::time::Instant::now();
-        let done = tokio::spawn(finish_engines(engines.into(), cancel.clone(), timeout));
+        let done = tokio::spawn(finish_engines(
+            engines.into(),
+            tokio::sync::mpsc::unbounded_channel().1,
+            cancel.clone(),
+            timeout,
+        ));
 
         tokio::time::sleep(Duration::from_secs(13)).await;
         assert!(!cancel.is_cancelled(), "slow engine plus reply window");
@@ -1853,11 +1902,101 @@ mod tests {
             Ok(())
         });
         let start = tokio::time::Instant::now();
-        let done = tokio::spawn(finish_engines(vec![engine], cancel.clone(), timeout));
+        let done = tokio::spawn(finish_engines(
+            vec![engine],
+            tokio::sync::mpsc::unbounded_channel().1,
+            cancel.clone(),
+            timeout,
+        ));
         tokio::time::sleep(Duration::from_secs(1)).await;
         cancel.cancel();
         done.await.unwrap().unwrap();
         assert_eq!(start.elapsed(), Duration::from_secs(1));
+    }
+
+    /// A target added from the TUI gets its full `-c` rounds: the run waits
+    /// for its engine instead of ending when the initial targets are done.
+    #[tokio::test(start_paused = true)]
+    async fn finish_engines_waits_for_targets_added_mid_run() {
+        let timeout = Duration::from_secs(3);
+        let cancel = CancellationToken::new();
+        let sleeper = |secs| {
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(secs)).await;
+                Ok(())
+            })
+        };
+        let (added_tx, added_rx) = tokio::sync::mpsc::unbounded_channel();
+        let start = tokio::time::Instant::now();
+        let done = tokio::spawn(finish_engines(
+            vec![sleeper(1)],
+            added_rx,
+            cancel.clone(),
+            timeout,
+        ));
+
+        // Added while the initial engine still runs
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        added_tx.send(sleeper(10)).unwrap();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert!(!cancel.is_cancelled(), "the added target is still probing");
+
+        // Added during the next reply window
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        added_tx.send(sleeper(5)).unwrap();
+        drop(added_tx);
+        done.await.unwrap().unwrap();
+        assert!(cancel.is_cancelled());
+        // 10.5 s: second engine done; 14 s: its window ends and the third
+        // engine (done at 15.5 s) is picked up; 19 s: its window ends.
+        assert_eq!(start.elapsed(), Duration::from_secs(19));
+    }
+
+    /// Esc while "Resolving..." drops the reply receiver. The manager must not
+    /// add or probe that target: the TUI would never show it.
+    #[tokio::test]
+    async fn canceled_add_target_request_adds_nothing() {
+        let existing: IpAddr = "192.0.2.1".parse().unwrap();
+        let sessions = make_session_map(&[(existing, 1)]);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (engines_tx, mut engines_rx) = tokio::sync::mpsc::unbounded_channel();
+        let cancel = CancellationToken::new();
+        let manager = tokio::spawn(run_target_manager(TargetManagerCtx {
+            rx,
+            engines: engines_tx,
+            sessions: sessions.clone(),
+            pending: new_pending_map(),
+            cancel: cancel.clone(),
+            interface: None,
+            config: Config::default(),
+            force_ipv4: false,
+            force_ipv6: false,
+            has_v4_receiver: true,
+            has_v6_receiver: true,
+            effective_flows_v4: Some(1),
+            effective_flows_v6: Some(1),
+        }));
+
+        let (reply, canceled) = tokio::sync::oneshot::channel();
+        drop(canceled);
+        tx.send(AddTargetRequest {
+            host: "192.0.2.2".into(),
+            reply,
+        })
+        .unwrap();
+        // Requests are handled in order, so this reply means the first is done
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        tx.send(AddTargetRequest {
+            host: existing.to_string(),
+            reply,
+        })
+        .unwrap();
+        assert!(answer.await.unwrap().unwrap().existed);
+
+        assert_eq!(sessions.read().keys().collect::<Vec<_>>(), vec![&existing]);
+        assert!(engines_rx.try_recv().is_err(), "no engine was spawned");
+        cancel.cancel();
+        manager.await.unwrap().unwrap();
     }
 
     #[test]

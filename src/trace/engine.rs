@@ -1390,6 +1390,8 @@ impl ProbeEngine {
     /// Note: macOS delivers Echo Reply to any raw ICMPv6 socket, so this is not needed there.
     #[cfg(target_os = "linux")]
     fn poll_ipv6_echo_reply(&self, socket: &socket2::Socket, is_dgram: bool) {
+        use crate::state::{ProbeEvent, ProbeOutcome};
+
         // Set socket to non-blocking for polling
         let _ = socket.set_nonblocking(true);
 
@@ -1441,6 +1443,9 @@ impl ProbeEngine {
 
                         // Record response (sent counting already happened at send time)
                         let mut state = self.state.write();
+                        if state.predates_reset(probe.sent_at) {
+                            continue;
+                        }
 
                         // Only record hop stats for normal probes, not PMTUD probes
                         if !is_pmtud_probe && let Some(hop) = state.hop_mut(parsed.probe_id.ttl) {
@@ -1451,6 +1456,21 @@ impl ProbeEngine {
                             if let Some(response_ttl) = recv_result.response_ttl {
                                 hop.record_response_ttl(response_ttl, true);
                             }
+                        }
+                        // Same event the receiver records: the pending entry
+                        // was removed here, so the receiver will not record it
+                        if !is_pmtud_probe {
+                            let offset_ms = state.offset_ms();
+                            state.record_event(ProbeEvent {
+                                offset_ms,
+                                ttl: parsed.probe_id.ttl,
+                                seq: parsed.probe_id.seq,
+                                flow_id,
+                                outcome: ProbeOutcome::Reply {
+                                    addr: parsed.responder,
+                                    rtt_us: rtt.as_micros() as u64,
+                                },
+                            });
                         }
 
                         // Mark trace as complete if this is the destination
@@ -1616,6 +1636,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn final_round_ipv6_echo_reply_is_drained() {
+        use crate::state::{ProbeEvent, ProbeOutcome};
+
         let target: IpAddr = "::1".parse().unwrap();
         let config = Config {
             count: Some(1),
@@ -1675,6 +1697,19 @@ mod tests {
         let state = session.read();
         assert_eq!(state.hops[0].received, 1);
         assert_eq!(state.dest_ttl, Some(1));
+        // Stream and animated replay see the reply too
+        assert!(
+            matches!(
+                state.events[..],
+                [ProbeEvent {
+                    ttl: 1,
+                    outcome: ProbeOutcome::Reply { addr, .. },
+                    ..
+                }] if addr == target
+            ),
+            "{:?}",
+            state.events
+        );
     }
 
     #[test]
