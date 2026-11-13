@@ -47,7 +47,7 @@ DETECTION INDICATORS (press ? in the TUI for the legend):
     RL      - Loss at this hop is likely ICMP rate limiting
   Host markers:
     E       - ECMP detected at this hop (single-flow marker; see Paths in multi-flow)
-    !       - Route flap: the stable responder changed (per-packet ECMP never counts)
+    !       - Route flap: the stable responder changed (not recorded on per-packet ECMP)
     ~       - Asymmetric routing suspected at this hop
     ^       - TTL manipulation suspected at this hop
     +       - Interface/MPLS details available (Enter)
