@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **Long runs no longer grow memory without bound at a hop with many responders.** Every distinct source address that answered at a hop was kept for the whole run (about 5 KB each), so per-packet balancing behind CGNAT, or a box replying from spoofed sources, grew `--daemon`/`--prometheus` and long TUI sessions steadily and slowed every render and scrape. A hop now tracks up to 64 responders; past that the one with the fewest replies is dropped (never the primary), so one-off sources churn through a single slot instead of pushing out real ECMP paths. Hop sent/received/loss and the primary's RTT are unchanged. The count is reported as `responders_evicted` in JSON, `ttl_hop_responders_evicted_total` in Prometheus, and an "Evicted" line in the hop details.
 - **A live TUI session's probe-event history is capped.** The event log behind `e` export and `--animate` grew for the whole session (about 5 MB an hour per target), and `e` copied all of it. A session now keeps its newest 100,000 events; an export from a longer run carries `dropped_events`, and `--animate` notes the truncation and starts at the first kept event instead of idling through the missing part.
+- **PeeringDB responses and the IX cache file are size-capped (16 MiB).** Both were read into memory whole; a broken or hostile response, or a replaced `ix_cache.json`, is now refused with an error that names the limit.
 
 ## [0.25.0] - 2026-11-12
 

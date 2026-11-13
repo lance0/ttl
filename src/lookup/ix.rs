@@ -3,12 +3,14 @@
 //! Identifies when a hop is at an Internet Exchange point by matching
 //! IP addresses against IX peering LAN prefixes from PeeringDB.
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 use ipnetwork::IpNetwork;
 use parking_lot::RwLock;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,6 +22,35 @@ use tokio_util::sync::CancellationToken;
 use super::sanitize_display;
 use crate::state::IxInfo;
 use crate::trace::receiver::SessionMap;
+
+/// PeeringDB `limit=0` dumps are under 1.5 MB each (`ix` is the largest) and
+/// the cache is smaller still; this leaves 10x headroom while keeping a broken
+/// or hostile response, or a replaced cache file, from being read whole.
+const MAX_PEERINGDB_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Fetch one PeeringDB endpoint, refusing a body over `MAX_PEERINGDB_BYTES`.
+async fn fetch_endpoint<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<Vec<T>> {
+    let body = read_body_limited(client.get(url).send().await?, MAX_PEERINGDB_BYTES).await?;
+    Ok(serde_json::from_slice::<PdbResponse<T>>(&body)?.data)
+}
+
+async fn read_body_limited(mut resp: reqwest::Response, max_bytes: u64) -> Result<Vec<u8>> {
+    let url = resp.url().clone();
+    if resp.content_length().is_some_and(|len| len > max_bytes) {
+        bail!("PeeringDB response from {url} exceeds {max_bytes} bytes");
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if (body.len() + chunk.len()) as u64 > max_bytes {
+            bail!("PeeringDB response from {url} exceeds {max_bytes} bytes");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
 
 static CACHE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -463,8 +494,17 @@ impl IxLookup {
 
     /// Load cache from disk
     fn load_cache(&self) -> Result<IxCache> {
-        let data = fs::read_to_string(&self.cache_path)?;
-        let cache: IxCache = serde_json::from_str(&data)?;
+        let mut data = Vec::new();
+        fs::File::open(&self.cache_path)?
+            .take(MAX_PEERINGDB_BYTES + 1)
+            .read_to_end(&mut data)?;
+        if data.len() as u64 > MAX_PEERINGDB_BYTES {
+            bail!(
+                "PeeringDB cache {} exceeds {MAX_PEERINGDB_BYTES} bytes",
+                self.cache_path.display()
+            );
+        }
+        let cache: IxCache = serde_json::from_slice(&data)?;
         if cache.version != IxCache::VERSION {
             return Err(anyhow!("cache version mismatch"));
         }
@@ -539,10 +579,11 @@ impl IxLookup {
         let client = builder.build()?;
 
         // Fetch all three endpoints in parallel
+        // Note: limit=0 disables pagination to fetch all records
         let (ix_result, ixlan_result, ixpfx_result) = tokio::join!(
-            self.fetch_ix(&client),
-            self.fetch_ixlan(&client),
-            self.fetch_ixpfx(&client),
+            fetch_endpoint::<PdbIx>(&client, "https://www.peeringdb.com/api/ix?limit=0"),
+            fetch_endpoint::<PdbIxlan>(&client, "https://www.peeringdb.com/api/ixlan?limit=0"),
+            fetch_endpoint::<PdbIxpfx>(&client, "https://www.peeringdb.com/api/ixpfx?limit=0"),
         );
 
         let ix_data = ix_result?;
@@ -594,28 +635,6 @@ impl IxLookup {
             fetched_at: now,
             prefixes,
         })
-    }
-
-    /// Fetch IX data from API
-    /// Note: limit=0 disables pagination to fetch all records
-    async fn fetch_ix(&self, client: &reqwest::Client) -> Result<Vec<PdbIx>> {
-        let url = "https://www.peeringdb.com/api/ix?limit=0";
-        let resp: PdbResponse<PdbIx> = client.get(url).send().await?.json().await?;
-        Ok(resp.data)
-    }
-
-    /// Fetch IXLAN data from API
-    async fn fetch_ixlan(&self, client: &reqwest::Client) -> Result<Vec<PdbIxlan>> {
-        let url = "https://www.peeringdb.com/api/ixlan?limit=0";
-        let resp: PdbResponse<PdbIxlan> = client.get(url).send().await?.json().await?;
-        Ok(resp.data)
-    }
-
-    /// Fetch IX prefix data from API
-    async fn fetch_ixpfx(&self, client: &reqwest::Client) -> Result<Vec<PdbIxpfx>> {
-        let url = "https://www.peeringdb.com/api/ixpfx?limit=0";
-        let resp: PdbResponse<PdbIxpfx> = client.get(url).send().await?.json().await?;
-        Ok(resp.data)
     }
 
     /// Get the number of prefixes loaded
@@ -808,6 +827,65 @@ mod tests {
         table
             .lookup(ip.parse().unwrap())
             .map(|info| info.name.clone())
+    }
+
+    /// Serve one canned HTTP response on localhost and return its URL.
+    fn serve_once(response: Vec<u8>) -> String {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(&response);
+        });
+        format!("http://{addr}/api/ix?limit=0")
+    }
+
+    #[tokio::test]
+    async fn oversized_peeringdb_bodies_are_refused() {
+        let client = reqwest::Client::new();
+        let declared = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n".to_vec());
+        let err = read_body_limited(client.get(declared).send().await.unwrap(), 10)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("exceeds 10 bytes"), "{err}");
+
+        // No Content-Length: the cap applies while streaming.
+        let chunked = serve_once(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n8\r\n12345678\r\n8\r\n12345678\r\n0\r\n\r\n"
+                .to_vec(),
+        );
+        let err = read_body_limited(client.get(chunked).send().await.unwrap(), 10)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("exceeds 10 bytes"), "{err}");
+
+        let ok = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n{\"data\":[]}".to_vec());
+        let body = read_body_limited(client.get(ok).send().await.unwrap(), 11)
+            .await
+            .unwrap();
+        assert_eq!(body.len(), 10);
+    }
+
+    #[test]
+    fn oversized_cache_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut lookup = test_lookup();
+        lookup.cache_path = dir.path().join("ix_cache.json");
+        let cache = IxCache {
+            version: IxCache::VERSION,
+            fetched_at: 1,
+            prefixes: Vec::new(),
+        };
+        lookup.save_cache(&cache).unwrap();
+        assert!(lookup.load_cache().is_ok());
+        let mut json = serde_json::to_string(&cache).unwrap();
+        json.push_str(&" ".repeat(MAX_PEERINGDB_BYTES as usize));
+        fs::write(&lookup.cache_path, json).unwrap();
+        let err = lookup.load_cache().unwrap_err();
+        assert!(err.to_string().contains("exceeds"), "{err}");
     }
 
     fn test_lookup() -> IxLookup {
