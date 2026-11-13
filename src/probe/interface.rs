@@ -28,7 +28,7 @@ pub struct InterfaceInfo {
     /// Interface name (e.g., "eth0", "wlan0")
     pub name: String,
     /// Interface index (used for macOS binding)
-    #[allow(dead_code)]
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // only the macOS bind reads it
     pub index: u32,
     /// First IPv4 address on the interface (if any)
     pub ipv4: Option<Ipv4Addr>,

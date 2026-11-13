@@ -11,10 +11,6 @@ pub enum SocketCapability {
     /// Full raw socket access - can send/receive with custom IP headers
     #[cfg_attr(windows, allow(dead_code))] // check_permissions always errors on Windows
     Raw,
-    /// Unprivileged ICMP socket (limited functionality)
-    /// Note: Only used on Linux; macOS always requires Raw for receiving ICMP errors
-    #[allow(dead_code)]
-    Dgram,
 }
 
 /// Socket with metadata about type (for DGRAM-aware parsing)
@@ -322,6 +318,8 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
         const IPV6_DONTFRAG: libc::c_int = 62;
         let val: libc::c_int = 1;
         let ret = unsafe {
+            // SAFETY: the fd is open for the borrow of `socket`, and `val` is an
+            // initialized c_int that outlives the call with its exact size passed.
             libc::setsockopt(
                 socket.as_raw_fd(),
                 libc::IPPROTO_IPV6,
@@ -339,6 +337,8 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
         const IP_PMTUDISC_DO: libc::c_int = 2;
         let val: libc::c_int = IP_PMTUDISC_DO;
         let ret = unsafe {
+            // SAFETY: the fd is open for the borrow of `socket`, and `val` is an
+            // initialized c_int that outlives the call with its exact size passed.
             libc::setsockopt(
                 socket.as_raw_fd(),
                 libc::IPPROTO_IP,
@@ -365,6 +365,8 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
         const IPV6_DONTFRAG: libc::c_int = 62;
         let val: libc::c_int = 1;
         let ret = unsafe {
+            // SAFETY: the fd is open for the borrow of `socket`, and `val` is an
+            // initialized c_int that outlives the call with its exact size passed.
             libc::setsockopt(
                 socket.as_raw_fd(),
                 libc::IPPROTO_IPV6,
@@ -405,6 +407,8 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
     if ipv6 {
         let val: libc::c_int = 1;
         let ret = unsafe {
+            // SAFETY: the fd is open for the borrow of `socket`, and `val` is an
+            // initialized c_int that outlives the call with its exact size passed.
             libc::setsockopt(
                 socket.as_raw_fd(),
                 libc::IPPROTO_IPV6,
@@ -419,6 +423,8 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
     } else {
         let val: libc::c_int = 1;
         let ret = unsafe {
+            // SAFETY: the fd is open for the borrow of `socket`, and `val` is an
+            // initialized c_int that outlives the call with its exact size passed.
             libc::setsockopt(
                 socket.as_raw_fd(),
                 libc::IPPROTO_IP,
@@ -521,6 +527,8 @@ pub fn enable_recv_ttl(socket: &Socket, ipv6: bool) -> Result<()> {
 
     let val: libc::c_int = 1;
     let ret = unsafe {
+        // SAFETY: the fd is open for the borrow of `socket`, and `val` is an
+        // initialized c_int that outlives the call with its exact size passed.
         libc::setsockopt(
             socket.as_raw_fd(),
             level,
@@ -555,9 +563,11 @@ pub fn recv_icmp_with_ttl(socket: &Socket, buffer: &mut [u8], ipv6: bool) -> Res
     let mut cmsg_buf = AlignedBuf([0u8; 64]);
 
     // Source address storage
+    // SAFETY: sockaddr_storage is a plain C struct; all-zero bytes is a valid value.
     let mut src_storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
 
     // Set up msghdr
+    // SAFETY: msghdr is a plain C struct; all-zero (null pointers, zero lengths) is valid.
     let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
     msg.msg_name = &mut src_storage as *mut _ as *mut libc::c_void;
     msg.msg_namelen = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
@@ -568,6 +578,9 @@ pub fn recv_icmp_with_ttl(socket: &Socket, buffer: &mut [u8], ipv6: bool) -> Res
     msg.msg_controllen = cmsg_buf.0.len() as _;
 
     // Receive the packet
+    // SAFETY: the fd is open for the borrow of `socket`. Every pointer in `msg`
+    // (`src_storage`, `iov` -> `buffer`, `cmsg_buf`) is live, writable and paired
+    // with its true length for the whole call.
     let len = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut msg, 0) };
 
     if len < 0 {
@@ -605,8 +618,11 @@ unsafe fn read_cmsg_ttl(data_ptr: *const libc::c_uchar, data_len: usize) -> u8 {
     if data_len >= std::mem::size_of::<libc::c_int>() {
         // Native-endian int; `as u8` keeps the numerically low byte (the TTL)
         // on both little- and big-endian hosts.
+        // SAFETY: the caller guarantees `data_len` readable bytes, and this branch
+        // has `data_len >= size_of::<c_int>()`; the read tolerates misalignment.
         unsafe { std::ptr::read_unaligned(data_ptr as *const libc::c_int) as u8 }
     } else {
+        // SAFETY: the caller guarantees `data_len >= 1` readable bytes.
         unsafe { std::ptr::read_unaligned(data_ptr) }
     }
 }
@@ -664,6 +680,11 @@ fn extract_ttl_from_cmsg(msg: &libc::msghdr, ipv6: bool) -> Option<u8> {
     let ipv6_hoplimit = libc::IPV6_HOPLIMIT;
     #[cfg(target_os = "netbsd")]
     let ipv6_hoplimit: libc::c_int = 47;
+    // SAFETY: `msg` came back from recvmsg (or a test) with `msg_control` pointing at
+    // `msg_controllen` live bytes. CMSG_FIRSTHDR/CMSG_NXTHDR only return headers that
+    // fit in that buffer (or null), header fields are read unaligned, and
+    // `cmsg_len >= CMSG_LEN(0) + 1` guarantees `data_len` (>= 1) readable bytes at
+    // CMSG_DATA, which is read_cmsg_ttl's contract.
     unsafe {
         let mut cmsg = libc::CMSG_FIRSTHDR(msg);
         while !cmsg.is_null() {
@@ -712,11 +733,15 @@ fn extract_ttl_from_cmsg(msg: &libc::msghdr, ipv6: bool) -> Option<u8> {
 fn parse_sockaddr_storage(storage: &libc::sockaddr_storage) -> Result<(IpAddr, Option<u32>)> {
     match storage.ss_family as libc::c_int {
         libc::AF_INET => {
+            // SAFETY: ss_family says the storage holds a sockaddr_in, which is smaller
+            // than sockaddr_storage and no more strictly aligned.
             let addr: &libc::sockaddr_in = unsafe { &*(storage as *const _ as *const _) };
             let ip = std::net::Ipv4Addr::from(u32::from_be(addr.sin_addr.s_addr));
             Ok((IpAddr::V4(ip), None))
         }
         libc::AF_INET6 => {
+            // SAFETY: ss_family says the storage holds a sockaddr_in6, which is smaller
+            // than sockaddr_storage and no more strictly aligned.
             let addr: &libc::sockaddr_in6 = unsafe { &*(storage as *const _ as *const _) };
             let ip = std::net::Ipv6Addr::from(addr.sin6_addr.s6_addr);
             // sin6_scope_id is 0 for non-link-local addresses; preserve it so
@@ -825,7 +850,10 @@ mod tests {
         use std::mem;
 
         // Build a sockaddr_in6 with a link-local address and scope_id=3
+        // SAFETY: sockaddr_storage is a plain C struct; all-zero bytes is a valid value.
         let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+        // SAFETY: sockaddr_storage is large and aligned enough for any sockaddr_in6, and the
+        // exclusive borrow of `storage` is reborrowed for the cast's lifetime.
         let sin6: &mut libc::sockaddr_in6 =
             unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6) };
         sin6.sin6_family = libc::AF_INET6 as _;
@@ -843,7 +871,10 @@ mod tests {
         use std::mem;
 
         // Global IPv6 address — scope_id should be None (sin6_scope_id == 0)
+        // SAFETY: sockaddr_storage is a plain C struct; all-zero bytes is a valid value.
         let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+        // SAFETY: sockaddr_storage is large and aligned enough for any sockaddr_in6, and the
+        // exclusive borrow of `storage` is reborrowed for the cast's lifetime.
         let sin6: &mut libc::sockaddr_in6 =
             unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in6) };
         sin6.sin6_family = libc::AF_INET6 as _;
@@ -862,7 +893,10 @@ mod tests {
     fn test_parse_sockaddr_storage_ipv4() {
         use std::mem;
 
+        // SAFETY: sockaddr_storage is a plain C struct; all-zero bytes is a valid value.
         let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+        // SAFETY: sockaddr_storage is large and aligned enough for any sockaddr_in, and the
+        // exclusive borrow of `storage` is reborrowed for the cast's lifetime.
         let sin: &mut libc::sockaddr_in =
             unsafe { &mut *(&mut storage as *mut _ as *mut libc::sockaddr_in) };
         sin.sin_family = libc::AF_INET as _;
@@ -887,9 +921,13 @@ mod tests {
         #[repr(align(8))]
         struct Buf([u8; 64]);
         let mut buf = Buf([0u8; 64]);
+        // SAFETY: msghdr is a plain C struct; all-zero (null pointers, zero lengths) is valid.
         let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
         msg.msg_control = buf.0.as_mut_ptr() as *mut libc::c_void;
         msg.msg_controllen = buf.0.len() as _;
+        // SAFETY: `buf` is a live, 8-byte-aligned 64-byte control buffer; the first
+        // header is non-null (asserted) and CMSG_SPACE(data.len()) fits in it for the
+        // short test payloads, so the header writes and the copy stay in bounds.
         unsafe {
             let cmsg = libc::CMSG_FIRSTHDR(&msg);
             assert!(!cmsg.is_null());

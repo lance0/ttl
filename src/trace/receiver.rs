@@ -48,7 +48,7 @@ struct BatchedResponse {
     probe_id: ProbeId,
     responder: IpAddr,
     /// IPv6 scope ID for link-local responders (from sin6_scope_id)
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "never read; the hop does not store it")]
     responder_scope_id: Option<u32>,
     rtt: Duration,
     mpls_labels: Option<Vec<MplsLabel>>,

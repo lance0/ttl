@@ -505,7 +505,7 @@ mod tests {
     fn runtime_hdrincl_onwire_fields_linux() {
         use crate::probe::build_echo_request;
         use socket2::{Domain, Protocol, Type};
-        use std::mem::MaybeUninit;
+        use std::io::Read;
 
         let lo = Ipv4Addr::LOCALHOST;
         let ident: u16 = 0x7A7A;
@@ -523,15 +523,14 @@ mod tests {
         send_raw_ipv4(&send, &pkt, lo).expect("send IP_HDRINCL echo to loopback");
 
         // Loopback also yields the kernel's echo reply; read until we see our request.
-        let mut buf = [MaybeUninit::<u8>::uninit(); 2048];
+        let mut buf = [0u8; 2048];
         let mut found = false;
         for _ in 0..16 {
-            let n = match recv.recv(&mut buf) {
+            let n = match (&recv).read(&mut buf) {
                 Ok(n) => n,
                 Err(_) => break, // timeout
             };
-            // SAFETY: recv() initializes the first `n` bytes of buf.
-            let data: &[u8] = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, n) };
+            let data = &buf[..n];
             if data.len() < IPV4_HEADER_SIZE + 8 || data[0] >> 4 != 4 {
                 continue;
             }
