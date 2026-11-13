@@ -153,10 +153,10 @@ fn parse_icmp_extensions(
             // RFC 5837 §4.5 forbids two objects with the same role and says the
             // whole message "MUST be silently discarded". Deliberately lenient
             // here: keep the first object per role and ignore repeats, so a
-            // buggy router still yields the rest of its trace data.
+            // buggy router still yields the rest of its trace data. The role is
+            // claimed only by an object that parses, so a malformed first object
+            // does not hide a well-formed repeat.
             if seen_roles & role_mask == 0 {
-                seen_roles |= role_mask;
-
                 let role = match role_val {
                     0 => InterfaceRole::IncomingIp,
                     1 => InterfaceRole::SubIpComponent,
@@ -256,6 +256,7 @@ fn parse_icmp_extensions(
                 }
 
                 if !malformed {
+                    seen_roles |= role_mask;
                     interfaces.push(IcmpInterfaceInfo {
                         role,
                         if_index,
@@ -3275,6 +3276,102 @@ mod tests {
         // Duplicate role: first object wins, the repeat is ignored (lenient vs RFC 5837 §4.5)
         assert_eq!(ifaces.len(), 1);
         assert_eq!(ifaces[0].if_index, Some(100));
+    }
+
+    #[test]
+    fn test_rfc5837_malformed_first_does_not_block_duplicate_role() {
+        let responder = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 3));
+        let our_id = 0x2222;
+        let probe_id = ProbeId::new(3, 1);
+
+        let mut packet = vec![0u8; 20 + 8 + 128 + 4 + 8 + 8];
+        packet[0] = 0x45;
+        packet[9] = 1;
+        packet[20] = 11;
+        packet[25] = 32;
+        packet[28] = 0x45;
+        packet[37] = 1;
+        packet[48] = 8;
+        packet[52] = 0x22;
+        packet[53] = 0x22;
+        let seq = probe_id.to_sequence();
+        packet[54] = (seq >> 8) as u8;
+        packet[55] = (seq & 0xFF) as u8;
+
+        let ext_off = 156;
+        packet[ext_off] = 0x20;
+
+        // Object 1: Role 0, claims ifIndex + IP but only carries the ifIndex (malformed)
+        let obj1 = ext_off + 4;
+        packet[obj1..obj1 + 2].copy_from_slice(&8u16.to_be_bytes());
+        packet[obj1 + 2] = 2;
+        packet[obj1 + 3] = 0x0C; // Role 0, ifIndex + IP
+        packet[obj1 + 4..obj1 + 8].copy_from_slice(&100u32.to_be_bytes());
+
+        // Object 2: Role 0 again, well-formed ifIndex=200
+        let obj2 = obj1 + 8;
+        packet[obj2..obj2 + 2].copy_from_slice(&8u16.to_be_bytes());
+        packet[obj2 + 2] = 2;
+        packet[obj2 + 3] = 0x08; // Role 0, ifIndex
+        packet[obj2 + 4..obj2 + 8].copy_from_slice(&200u32.to_be_bytes());
+
+        let parsed = parse_icmp_response(&packet, responder, our_id, false).unwrap();
+        let ifaces = parsed
+            .interface_info
+            .expect("the well-formed repeat should be kept");
+        assert_eq!(ifaces.len(), 1);
+        assert_eq!(ifaces[0].role, InterfaceRole::IncomingIp);
+        assert_eq!(ifaces[0].if_index, Some(200));
+    }
+
+    #[test]
+    fn test_rfc5837_role_only_object() {
+        let responder = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 3));
+        let our_id = 0x2222;
+        let probe_id = ProbeId::new(3, 1);
+
+        let mut packet = vec![0u8; 20 + 8 + 128 + 4 + 4];
+        packet[0] = 0x45;
+        packet[9] = 1;
+        packet[20] = 11;
+        packet[25] = 32;
+        packet[28] = 0x45;
+        packet[37] = 1;
+        packet[48] = 8;
+        packet[52] = 0x22;
+        packet[53] = 0x22;
+        let seq = probe_id.to_sequence();
+        packet[54] = (seq >> 8) as u8;
+        packet[55] = (seq & 0xFF) as u8;
+
+        let ext_off = 156;
+        packet[ext_off] = 0x20;
+
+        // C-Type with only the role bits (Outgoing) and no field flags: header-only object
+        let obj = ext_off + 4;
+        packet[obj..obj + 2].copy_from_slice(&4u16.to_be_bytes());
+        packet[obj + 2] = 2;
+        packet[obj + 3] = 2 << 6;
+
+        let parsed = parse_icmp_response(&packet, responder, our_id, false).unwrap();
+        let ifaces = parsed
+            .interface_info
+            .expect("a role-only object is still reported");
+        assert_eq!(
+            ifaces,
+            vec![IcmpInterfaceInfo {
+                role: InterfaceRole::OutgoingIp,
+                if_index: None,
+                ip_addr: None,
+                name: None,
+                mtu: None,
+            }]
+        );
+        // JSON carries just the role; the TUI and report render it as "(no details)"
+        assert_eq!(
+            serde_json::to_string(&ifaces[0]).unwrap(),
+            r#"{"role":"outgoing_ip"}"#
+        );
     }
 
     #[test]
