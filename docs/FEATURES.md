@@ -750,7 +750,8 @@ Exported metrics (labels: `target` = resolved IP, `host` = name as given,
 | `ttl_timeouts_total` | counter | Timeouts per hop |
 | `ttl_loss_ratio` | gauge | Loss ratio per hop (0–1) |
 | `ttl_rtt_avg_seconds` / `min` / `max` / `stddev` | gauge | RTT stats for the hop's primary responder |
-| `ttl_hop_responders` | gauge | Distinct responder IPs at the hop (ECMP) |
+| `ttl_hop_responders` | gauge | Distinct responder IPs tracked at the hop (ECMP; at most 64) |
+| `ttl_hop_responders_evicted_total` | counter | Responders dropped once a hop tracks 64 (the fewest-reply one goes; hop totals keep their replies) |
 | `ttl_hop_info` | gauge | Primary responder identity (`ip`, `hostname` labels, value 1) |
 | `ttl_target_reachable` | gauge | Destination responded (1/0) |
 | `ttl_path_hops` | gauge | Hop count to destination |

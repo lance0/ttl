@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Long runs no longer grow memory without bound at a hop with many responders.** Every distinct source address that answered at a hop was kept for the whole run (about 5 KB each), so per-packet balancing behind CGNAT, or a box replying from spoofed sources, grew `--daemon`/`--prometheus` and long TUI sessions steadily and slowed every render and scrape. A hop now tracks up to 64 responders; past that the one with the fewest replies is dropped (never the primary), so one-off sources churn through a single slot instead of pushing out real ECMP paths. Hop sent/received/loss and the primary's RTT are unchanged. The count is reported as `responders_evicted` in JSON, `ttl_hop_responders_evicted_total` in Prometheus, and an "Evicted" line in the hop details.
+
 ## [0.25.0] - 2026-11-12
 
 ### Security
