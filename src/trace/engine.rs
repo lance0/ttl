@@ -282,6 +282,11 @@ impl ProbeEngine {
                     if let Some(count) = self.config.count
                         && rounds_completed >= count
                     {
+                        // Nothing reads the send socket once this engine returns
+                        #[cfg(target_os = "linux")]
+                        if ipv6 {
+                            self.drain_final_ipv6_echo_replies(&socket, is_dgram).await;
+                        }
                         break;
                     }
 
@@ -1486,6 +1491,39 @@ impl ProbeEngine {
         // Restore blocking mode for sending
         let _ = socket.set_nonblocking(false);
     }
+
+    /// After the last `-c` round, keep polling the send socket until no probe
+    /// an Echo Reply could answer is pending (or the probe timeout passes).
+    /// The per-round poll runs right after sending, so without this the last
+    /// round's destination replies are never read and show up as loss.
+    #[cfg(target_os = "linux")]
+    async fn drain_final_ipv6_echo_replies(&self, socket: &socket2::Socket, is_dgram: bool) {
+        let deadline = Instant::now() + self.config.timeout;
+        loop {
+            self.poll_ipv6_echo_reply(socket, is_dgram);
+            if !self.awaiting_echo_reply() || Instant::now() >= deadline {
+                break;
+            }
+            // ponytail: fixed 10ms poll, bounded by the probe timeout once per run
+            tokio::select! {
+                _ = self.cancel.cancelled() => break,
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+        }
+    }
+
+    /// Whether this target still has a probe pending that an Echo Reply could
+    /// answer: one at or past the destination's TTL, or any while that TTL is
+    /// unknown. Earlier hops answer with Time Exceeded, which the receiver
+    /// handles.
+    #[cfg(target_os = "linux")]
+    fn awaiting_echo_reply(&self) -> bool {
+        let dest_ttl = self.state.read().dest_ttl.unwrap_or(1);
+        self.pending
+            .read()
+            .keys()
+            .any(|&(probe_id, _, target, _)| target == self.target && probe_id.ttl >= dest_ttl)
+    }
 }
 
 #[cfg(test)]
@@ -1570,6 +1608,73 @@ mod tests {
 
         assert_eq!(session.read().total_sent, 4, "2 rounds x 2 TTLs");
         assert!(!cancel.is_cancelled());
+    }
+
+    /// The last round's IPv6 Echo Reply lands on the send socket after the
+    /// round's own poll; the end-of-run drain must still read it. A UDP socket
+    /// on loopback stands in for the ICMPv6 send socket (same recvmsg path).
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn final_round_ipv6_echo_reply_is_drained() {
+        let target: IpAddr = "::1".parse().unwrap();
+        let config = Config {
+            count: Some(1),
+            ..Config::default()
+        };
+        let session = Arc::new(SessionLock::new(Session::new(
+            Target::new("loopback".to_string(), target),
+            config.clone(),
+        )));
+        let pending = new_pending_map();
+        let engine = ProbeEngine::new(
+            config,
+            target,
+            session.clone(),
+            pending.clone(),
+            CancellationToken::new(),
+            None,
+        );
+
+        let probe_id = ProbeId::new(1, 0);
+        pending.write().insert(
+            (probe_id, 0, target, false),
+            PendingProbe {
+                sent_at: Instant::now(),
+                target,
+                flow_id: 0,
+                original_src_port: None,
+                packet_size: None,
+            },
+        );
+        let send_socket = create_udp_dgram_socket_bound_full(true, 0, None, Some(target), None)
+            .expect("IPv6 loopback socket");
+        let send_addr = send_socket.local_addr().unwrap().as_socket().unwrap();
+
+        // Echo Reply for the probe, arriving after the round's poll has run
+        let mut reply = build_echo_request(
+            engine.identifier,
+            probe_id.to_sequence(),
+            DEFAULT_PAYLOAD_SIZE,
+            true,
+            Some(("::1".parse().unwrap(), "::1".parse().unwrap())),
+            false,
+        );
+        reply[0] = 129;
+        engine.poll_ipv6_echo_reply(&send_socket, true);
+        let peer = std::net::UdpSocket::bind("[::1]:0").unwrap();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            peer.send_to(&reply, send_addr).unwrap();
+        });
+
+        engine
+            .drain_final_ipv6_echo_replies(&send_socket, true)
+            .await;
+
+        assert!(pending.read().is_empty());
+        let state = session.read();
+        assert_eq!(state.hops[0].received, 1);
+        assert_eq!(state.dest_ttl, Some(1));
     }
 
     #[test]
