@@ -1,6 +1,6 @@
 # ttl Roadmap
 
-Current release: **v0.24.1**. Changes since then are listed under [Unreleased](CHANGELOG.md#unreleased) in the changelog.
+Current release: **v0.25.0**. Changes since then are listed under [Unreleased](CHANGELOG.md#unreleased) in the changelog.
 
 ## Market Context
 
@@ -120,6 +120,15 @@ Current release: **v0.24.1**. Changes since then are listed under [Unreleased](C
 - [x] RFC 5837 interface and next-hop identification (#134, #137): Interface Information Objects in ICMP Time Exceeded / Destination Unreachable messages — ifIndex, IP, interface name, MTU for the incoming/outgoing/sub-IP/next-hop roles — parsed alongside RFC 4950 MPLS labels, shown in the hop detail view and JSON export. Validated against Arista EOS captures. Fixed the ICMPv6 RFC 4884 length field, which had blocked all ICMPv6 extensions.
 - [x] `scripts/fakertr`: a containerised fake RFC 5837 router for end-to-end smoke tests of the ICMP extension path with real packets
 - [x] Security: rustls 0.23.45 (RUSTSEC-2026-0285), maxminddb 0.31 (MMDB decode DoS hardening)
+
+---
+
+## Completed (v0.25.0)
+
+- [x] `-c` accounting: every target runs its full count, the last round's late replies are counted, and the Linux IPv6 datagram fallback drains its final Echo Replies (#173)
+- [x] Replay is read-only (`r`/`p`, including `--animate`); `--replay`/`--diff` reject probe-only flags; unknown `--theme` values are rejected (#171)
+- [x] Export safety: no writes through symlinks, CSV hostnames cannot inject spreadsheet formulas; saved PeeringDB key applies in every mode (#171)
+- [x] Security: rustix 1.1.6 (RUSTSEC-2026-0486)
 
 ---
 

@@ -7,10 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-11-12
+
+### Security
+- **`rustix` 1.1.4 → 1.1.6** clears RUSTSEC-2026-0486 (xattr functions mark unwritten bytes as initialized when given a zero-length buffer). Reaches ttl via `crossterm`; ttl does not call the xattr functions.
+
 ### Added
 - **`--no-default-features` is now compiled by CI.** Docs/INSTALL.md and docs/FEATURES.md advertise a build without the update check; the build job now checks and lints it so that configuration cannot rot silently.
 
 ### Changed
+- **Dependency updates**: tokio 1.54.1, libc 0.2.191, toml 1.2 and getifs 0.8 (#170).
 - **Unknown `--theme` values are rejected** with the offending name and the valid list, instead of starting in the default theme and then persisting that default over the theme you had saved. Documented aliases (`mono`, `futuristic`, `hacker`, `mocha`, `tokyo`, `tokyonight`) still work.
 - **`--replay` and `--diff` reject probe-only flags.** A positional target, `-c`, `-i`, `-m`, `--timeout`, `-p`, `--port`, `--fixed-port`, `--flows`, `--src-port`, `--rate`, `--size`, `--dscp`, `--interface` and `--source-ip` were previously accepted and silently ignored, because those modes never probe. Output and presentation flags are unaffected.
 - **Replay is read-only.** `r` and `p` no longer reset or "pause" a session loaded from a file, and `r` no longer blanks an `--animate` replay mid-playback; they report `Replay is read-only`, and the static-replay status bar no longer advertises reset.
