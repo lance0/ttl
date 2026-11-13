@@ -1,5 +1,8 @@
+use crate::probe::rawip::{internet_checksum, udp_checksum_v4};
 use crate::probe::tcp::extract_probe_id_from_tcp;
-use crate::probe::udp::extract_probe_id_from_udp_payload;
+use crate::probe::udp::{
+    MIN_UDP_PAYLOAD, build_udp_payload_sized, extract_probe_id_from_udp_payload,
+};
 use crate::state::{IcmpInterfaceInfo, IcmpResponseType, InterfaceRole, MplsLabel, ProbeId};
 use pnet_packet::icmp::{IcmpPacket, IcmpTypes};
 use pnet_packet::ipv4::Ipv4Packet;
@@ -820,15 +823,13 @@ fn parse_icmp_error_payload_v4_with_mtu(
             // UDP header: [0-1] src port, [2-3] dst port, [4-5] length, [6-7] checksum
             // Our payload starts at offset 8
 
-            if original_payload.len() < 8 + 6 {
-                // Need UDP header + at least 6 bytes of payload
-                return None;
-            }
-
             // Extract source port for flow identification (Paris/Dublin traceroute)
             let src_port = u16::from_be_bytes([original_payload[0], original_payload[1]]);
-            let udp_payload = &original_payload[8..];
-            let probe_id = extract_probe_id_from_udp_payload(udp_payload)?;
+            let probe_id = udp_quote_probe_id(
+                original_payload,
+                IpAddr::V4(original_ip.get_source()),
+                IpAddr::V4(original_ip.get_destination()),
+            )?;
 
             Some(ParsedResponse {
                 responder,
@@ -1050,6 +1051,68 @@ fn parse_icmp_error_payload_v6_with_mtu(
 // DGRAM socket parsing (no IP header - used on macOS)
 // ============================================================================
 
+/// Probe id of a quoted UDP probe. `udp` is the quoted UDP header plus
+/// whatever payload the router kept; `src`/`dst` come from the quoted IP header.
+///
+/// RFC 792 only requires routers to quote 8 bytes past the IP header, which
+/// is the UDP header alone, without the payload that carries the probe id. The
+/// UDP checksum still covers that payload, and every other byte it covers is
+/// known (pseudo-header, ports, length, the fixed payload pattern), so the
+/// sequence word can be solved for.
+fn udp_quote_probe_id(udp: &[u8], src: IpAddr, dst: IpAddr) -> Option<ProbeId> {
+    if udp.len() < 8 {
+        return None;
+    }
+    if udp.len() >= 8 + 6 {
+        return extract_probe_id_from_udp_payload(&udp[8..]);
+    }
+    // ponytail: a short quote has no magic bytes, so another program's UDP
+    // also decodes to some sequence; only the receiver's pending match
+    // (sequence, flow, target) filters it. Add a per-run payload nonce if
+    // that ever misattributes.
+    let quoted = u16::from_be_bytes([udp[6], udp[7]]);
+    let payload_len = usize::from(u16::from_be_bytes([udp[4], udp[5]])).checked_sub(8)?;
+    // 0 is IPv4 "no checksum"; our probes are never shorter than MIN_UDP_PAYLOAD.
+    if quoted == 0 || payload_len < MIN_UDP_PAYLOAD {
+        return None;
+    }
+    let mut dgram = udp[..8].to_vec();
+    dgram[6..8].fill(0);
+    dgram.extend(build_udp_payload_sized(
+        ProbeId::from_sequence(0),
+        payload_len,
+    ));
+    // One's-complement sums are linear: the sequence word is the quoted sum
+    // minus the sum with sequence 0.
+    let sum = u32::from(!quoted) + u32::from(udp_checksum(src, dst, &dgram)?);
+    let sequence = ((sum & 0xFFFF) + (sum >> 16)) as u16;
+    dgram[8..10].copy_from_slice(&sequence.to_be_bytes());
+    // Recheck: settles the 0x0000/0xFFFF ambiguity and any payload bytes
+    // the router did quote.
+    let check = match udp_checksum(src, dst, &dgram)? {
+        0 => 0xFFFF,
+        ck => ck,
+    };
+    (check == quoted && dgram[8..].starts_with(&udp[8..])).then(|| ProbeId::from_sequence(sequence))
+}
+
+/// UDP checksum over the IPv4 or IPv6 pseudo-header; `udp` has a zero checksum field.
+fn udp_checksum(src: IpAddr, dst: IpAddr, udp: &[u8]) -> Option<u16> {
+    match (src, dst) {
+        (IpAddr::V4(s), IpAddr::V4(d)) => Some(udp_checksum_v4(s, d, udp)),
+        (IpAddr::V6(s), IpAddr::V6(d)) => {
+            let mut buf = Vec::with_capacity(40 + udp.len());
+            buf.extend_from_slice(&s.octets());
+            buf.extend_from_slice(&d.octets());
+            buf.extend_from_slice(&(udp.len() as u32).to_be_bytes());
+            buf.extend_from_slice(&[0, 0, 0, IPPROTO_UDP]);
+            buf.extend_from_slice(udp);
+            Some(internet_checksum(&buf))
+        }
+        _ => None,
+    }
+}
+
 /// Helper to extract identifier from payload (fallback for macOS DGRAM id override)
 /// Payload layout: [0-1] identifier, [2-3] sequence, [4-7] timestamp
 fn extract_id_from_payload(payload: &[u8], our_identifier: u16) -> Option<(u16, u16)> {
@@ -1265,12 +1328,12 @@ fn parse_icmp_error_payload_v4_dgram(
             })
         }
         IPPROTO_UDP => {
-            if original_payload.len() < 8 + 6 {
-                return None;
-            }
             let src_port = u16::from_be_bytes([original_payload[0], original_payload[1]]);
-            let udp_payload = &original_payload[8..];
-            let probe_id = extract_probe_id_from_udp_payload(udp_payload)?;
+            let probe_id = udp_quote_probe_id(
+                original_payload,
+                IpAddr::V4(original_ip.get_source()),
+                IpAddr::V4(original_ip.get_destination()),
+            )?;
 
             Some(ParsedResponse {
                 responder,
@@ -1520,12 +1583,16 @@ fn parse_icmp_error_payload_v6_dgram(
             })
         }
         IPPROTO_UDP => {
-            if original_payload.len() < 8 + 6 {
+            if original_payload.len() < 8 {
                 return None;
             }
             let src_port = u16::from_be_bytes([original_payload[0], original_payload[1]]);
-            let udp_payload = &original_payload[8..];
-            let probe_id = extract_probe_id_from_udp_payload(udp_payload)?;
+            let src: [u8; 16] = original_ipv6_data[8..24].try_into().ok()?;
+            let probe_id = udp_quote_probe_id(
+                original_payload,
+                IpAddr::V6(Ipv6Addr::from(src)),
+                original_dest?,
+            )?;
 
             Some(ParsedResponse {
                 responder,
@@ -1949,6 +2016,81 @@ mod tests {
         assert_eq!(parsed.probe_id.ttl, 6);
         assert_eq!(parsed.probe_id.seq, 2);
         assert_eq!(parsed.response_type, IcmpResponseType::TimeExceeded(0));
+    }
+
+    /// RFC 792 routers may quote only the 8-byte UDP header, dropping the
+    /// payload that carries the probe id. Build exactly that quote from real
+    /// probes and check every parser recovers the probe id.
+    #[test]
+    fn udp_quote_of_header_only_correlates() {
+        use crate::probe::rawip::{build_udp_datagram, internet_checksum};
+        use crate::probe::udp::build_udp_payload_sized;
+
+        let src4 = Ipv4Addr::new(192, 168, 1, 10);
+        let dst4 = Ipv4Addr::new(8, 8, 8, 8);
+        let src6: Ipv6Addr = "2001:db8::10".parse().unwrap();
+        let dst6: Ipv6Addr = "2001:db8::53".parse().unwrap();
+        let hop4 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let hop6 = IpAddr::V6("2001:db8::1".parse().unwrap());
+
+        for payload_len in [8usize, 32, 33, 1472] {
+            for (ttl, seq) in [(1u8, 0u8), (7, 3), (30, 200), (255, 255)] {
+                let probe_id = ProbeId::new(ttl, seq);
+                let payload = build_udp_payload_sized(probe_id, payload_len);
+
+                // IPv4: the exact datagram the IP_HDRINCL send path builds.
+                let udp4 = build_udp_datagram(src4, dst4, 50000, 33434 + ttl as u16, &payload);
+                let mut quote4 = vec![0u8; 20];
+                quote4[0] = 0x45;
+                quote4[8] = 1; // TTL left when it expired
+                quote4[9] = IPPROTO_UDP;
+                quote4[12..16].copy_from_slice(&src4.octets());
+                quote4[16..20].copy_from_slice(&dst4.octets());
+                quote4.extend_from_slice(&udp4[..8]);
+
+                // Raw socket (outer IPv4 header) and DGRAM socket (ICMP only).
+                let mut dgram4 = vec![11, 0, 0, 0, 0, 0, 0, 0];
+                dgram4.extend_from_slice(&quote4);
+                let mut raw4 = vec![0u8; 20];
+                raw4[0] = 0x45;
+                raw4[9] = 1;
+                raw4.extend_from_slice(&dgram4);
+
+                // IPv6: header + checksum as the kernel computes them.
+                let mut udp6 = vec![0u8; 8];
+                udp6[0..2].copy_from_slice(&50000u16.to_be_bytes());
+                udp6[2..4].copy_from_slice(&(33434 + ttl as u16).to_be_bytes());
+                udp6[4..6].copy_from_slice(&((8 + payload_len) as u16).to_be_bytes());
+                udp6.extend_from_slice(&payload);
+                let mut pseudo = Vec::new();
+                pseudo.extend_from_slice(&src6.octets());
+                pseudo.extend_from_slice(&dst6.octets());
+                pseudo.extend_from_slice(&(udp6.len() as u32).to_be_bytes());
+                pseudo.extend_from_slice(&[0, 0, 0, IPPROTO_UDP]);
+                pseudo.extend_from_slice(&udp6);
+                let ck = match internet_checksum(&pseudo) {
+                    0 => 0xFFFF,
+                    ck => ck,
+                };
+                udp6[6..8].copy_from_slice(&ck.to_be_bytes());
+                let mut icmp6 = vec![3, 0, 0, 0, 0, 0, 0, 0, 0x60, 0, 0, 0, 0, 0, IPPROTO_UDP, 1];
+                icmp6.extend_from_slice(&src6.octets());
+                icmp6.extend_from_slice(&dst6.octets());
+                icmp6.extend_from_slice(&udp6[..8]);
+
+                for (data, hop, is_dgram, dst) in [
+                    (&raw4, hop4, false, IpAddr::V4(dst4)),
+                    (&dgram4, hop4, true, IpAddr::V4(dst4)),
+                    (&icmp6, hop6, false, IpAddr::V6(dst6)),
+                ] {
+                    let parsed = parse_icmp_response(data, hop, 0xABCD, is_dgram)
+                        .unwrap_or_else(|| panic!("{hop} len {payload_len} {probe_id:?}"));
+                    assert_eq!(parsed.probe_id, probe_id, "{hop} len {payload_len}");
+                    assert_eq!(parsed.src_port, Some(50000));
+                    assert_eq!(parsed.original_dest, Some(dst));
+                }
+            }
+        }
     }
 
     // Test: ICMPv6 error with quoted IPv6 packet containing extension headers.
