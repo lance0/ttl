@@ -862,11 +862,12 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("exceeds 10 bytes"), "{err}");
 
-        let ok = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n{\"data\":[]}".to_vec());
+        // Exactly at the cap is accepted.
+        let ok = serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{\"data\":[]}".to_vec());
         let body = read_body_limited(client.get(ok).send().await.unwrap(), 11)
             .await
             .unwrap();
-        assert_eq!(body.len(), 10);
+        assert_eq!(body, b"{\"data\":[]}");
     }
 
     #[test]
