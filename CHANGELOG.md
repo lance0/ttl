@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **UDP hops behind routers that quote only 8 bytes are no longer timeouts.** RFC 792 lets a router quote just the IP header and the 8-byte UDP header in its Time Exceeded, dropping the payload that carries ttl's probe id, so those replies were discarded. The probe id is now recovered from the quoted UDP checksum, which still covers the payload (IPv4 and IPv6).
+- **`--pmtud` no longer leaves Don't Fragment set on IPv6 ordinary probes** (Linux, Windows). The size probe set `IPV6_DONTFRAG` on the send socket that ordinary probes share and never cleared it; it is now cleared right after each PMTUD probe. IPv4 was unaffected (DF is set per packet in the hand-built header), as were macOS and the BSDs (ordinary probes use their own sockets).
+- **`--pmtud` no longer write-locks the session on every probe tick** just to read its phase; it takes the write lock only when the search starts, so it no longer marks the TUI dirty on its own.
+
 ## [0.25.0] - 2026-11-12
 
 ### Security
