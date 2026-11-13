@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--pcap <FILE>` writes every probe sent and every ICMP response read to a classic pcap file (raw IP, IPv4 and IPv6) for Wireshark or `tcpdump -r`. IPv6 headers, which the kernel builds, are synthesized from the socket's source, hop limit and traffic class. The file is flushed after every burst, refuses to write through a symlink, and dropped packets (queue full) are reported at exit.
+
 ## [0.25.0] - 2026-11-12
 
 ### Security

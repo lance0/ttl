@@ -471,6 +471,7 @@ pub fn send_icmp(socket: &Socket, packet: &[u8], target: IpAddr) -> Result<usize
     let addr = SocketAddr::new(target, 0);
     let sock_addr = SockAddr::from(addr);
     let sent = socket.send_to(packet, &sock_addr)?;
+    crate::pcap::sent_icmp(socket, packet, target);
     Ok(sent)
 }
 

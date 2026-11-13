@@ -1427,6 +1427,12 @@ impl ProbeEngine {
                     if parsed.responder != self.target {
                         continue;
                     }
+                    // Only these are new: the receiver socket sees and records the rest
+                    crate::pcap::received(
+                        &buffer[..recv_result.len],
+                        recv_result.source,
+                        recv_result.response_ttl,
+                    );
 
                     // Look up pending probe
                     let flow_id = 0u8; // ICMP uses single flow
