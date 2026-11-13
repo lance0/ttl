@@ -235,6 +235,7 @@ pub fn create_raw_hdrincl_socket_with_interface(
 pub fn send_raw_ipv4(socket: &Socket, packet: &[u8], dst: Ipv4Addr) -> Result<usize> {
     let addr = SocketAddr::new(IpAddr::V4(dst), 0);
     let sent = socket.send_to(packet, &SockAddr::from(addr))?;
+    crate::pcap::sent_ipv4(packet);
     Ok(sent)
 }
 

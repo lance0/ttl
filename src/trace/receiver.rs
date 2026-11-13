@@ -272,13 +272,12 @@ impl Receiver {
                         batch_count += 1;
                         // scope_id from the source address (non-zero for IPv6 link-local)
                         let responder_scope_id = recv_result.scope_id;
+                        let packet = &buffer[..recv_result.len];
+                        crate::pcap::received(packet, recv_result.source, recv_result.response_ttl);
 
-                        if let Some(parsed) = parse_icmp_response(
-                            &buffer[..recv_result.len],
-                            recv_result.source,
-                            identifier,
-                            is_dgram,
-                        ) {
+                        if let Some(parsed) =
+                            parse_icmp_response(packet, recv_result.source, identifier, is_dgram)
+                        {
                             let flow_hint = self.derive_flow_hint(parsed.src_port);
 
                             // Determine if this response is for a PMTUD probe.

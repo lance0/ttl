@@ -53,6 +53,8 @@ pub(crate) mod cli;
 #[allow(dead_code)]
 pub(crate) mod lookup;
 #[allow(dead_code)]
+pub(crate) mod pcap;
+#[allow(dead_code)]
 pub(crate) mod persistence;
 #[allow(dead_code)]
 pub(crate) mod prefs;

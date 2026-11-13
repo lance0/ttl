@@ -169,6 +169,7 @@ pub fn send_udp_probe(socket: &Socket, payload: &[u8], target: IpAddr, port: u16
     let addr = SocketAddr::new(target, port);
     let sock_addr = SockAddr::from(addr);
     let sent = socket.send_to(payload, &sock_addr)?;
+    crate::pcap::sent_udp(socket, payload, target, port);
     Ok(sent)
 }
 
