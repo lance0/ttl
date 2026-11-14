@@ -682,9 +682,11 @@ fn extract_ttl_from_cmsg(msg: &libc::msghdr, ipv6: bool) -> Option<u8> {
     let ipv6_hoplimit: libc::c_int = 47;
     // SAFETY: `msg` came back from recvmsg (or a test) with `msg_control` pointing at
     // `msg_controllen` live bytes. CMSG_FIRSTHDR/CMSG_NXTHDR only return headers that
-    // fit in that buffer (or null), header fields are read unaligned, and
-    // `cmsg_len >= CMSG_LEN(0) + 1` guarantees `data_len` (>= 1) readable bytes at
-    // CMSG_DATA, which is read_cmsg_ttl's contract.
+    // fit in that buffer (or null), and header fields are read unaligned. Each
+    // `cmsg_len` was written by the kernel (or the test) to end inside that buffer
+    // (the caller skips MSG_CTRUNC), so CMSG_DATA has `data_len` readable bytes, and
+    // the `cmsg_len >= CMSG_LEN(0) + 1` check makes `data_len >= 1`. That is
+    // read_cmsg_ttl's contract.
     unsafe {
         let mut cmsg = libc::CMSG_FIRSTHDR(msg);
         while !cmsg.is_null() {
