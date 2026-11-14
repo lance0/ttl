@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Update `quinn-udp` from 0.5.14 to 0.5.16 to fix RUSTSEC-2026-0538 (a receive loop can spin after a truncated datagram on affected platforms).
+
 ## [0.25.0] - 2026-11-12
 
 ### Security
