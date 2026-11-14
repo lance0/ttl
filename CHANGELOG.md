@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- `ttl::state::ProbeResult` (and the `ttl::state::session::ProbeResult` path). Nothing in the library produced or consumed it.
+- **`ttl::state::ProbeResult`** (breaking): the public type is gone from the library API, along with its `ttl::state::session::ProbeResult` path. Nothing in the library produced or consumed it, but code that names it no longer compiles.
 - The unused `csv` crate dependency. CSV export is written by hand and is unchanged.
 
 ### Changed
