@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `--pcap <FILE>` writes every probe ttl sends and every ICMP packet it reads to a classic pcap file (raw IP, so IPv4 and IPv6 share one file) for Wireshark or `tcpdump -r`. It works in every live mode. Writing never holds up probing: packets that do not fit the queue are dropped and counted at exit. ttl refuses to write the capture through a symlink.
+
 ### Fixed
 - **UDP traces stop at the destination.** A live trace only treated an ICMP Echo Reply as reaching the target, so the Port Unreachable a target sends back to a UDP probe never ended the path: ttl kept probing every TTL up to the maximum, listed the target again at each of those hops, and left `dest_ttl` empty in exports. A Destination Unreachable from the target itself now marks the destination like an Echo Reply does. Time Exceeded or Parameter Problem from the target, and any reply from another host, still do not. (Replay, which does not record the ICMP type, already ended the path at any reply from the target.)
 - **Resetting stats with `r` no longer counts replies and timeouts for probes sent before the reset.** Those probes used to show up in the fresh stats right away, as a reply on a hop that had not sent a new probe yet or as a timeout well before the probe timeout.

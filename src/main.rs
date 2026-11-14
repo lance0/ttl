@@ -14,6 +14,7 @@ mod config;
 mod export;
 mod lookup;
 mod metrics;
+mod pcap;
 mod persistence;
 mod prefs;
 mod probe;
@@ -336,6 +337,9 @@ async fn main() -> Result<()> {
             "Warning: --flows > 1 with effective ICMP probing; ICMP uses flow 0, so flow-based ECMP detection is limited. Use -p udp or -p tcp for meaningful multi-flow ECMP analysis."
         );
     }
+
+    // Open the capture before any engine sends; dropping it at return flushes it
+    let _pcap = args.pcap.as_deref().map(pcap::start).transpose()?;
 
     // Run in appropriate mode
     let result = if args.is_batch_mode() {

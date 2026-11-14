@@ -1442,6 +1442,15 @@ impl ProbeEngine {
                     if parsed.responder != self.target {
                         continue;
                     }
+                    // A raw receive socket also reads Echo Replies and records them;
+                    // an unprivileged datagram one only gets its own, so record here
+                    if is_dgram {
+                        crate::pcap::received(
+                            &buffer[..recv_result.len],
+                            recv_result.source,
+                            recv_result.response_ttl,
+                        );
+                    }
 
                     // Look up pending probe
                     let flow_id = 0u8; // ICMP uses single flow

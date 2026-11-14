@@ -177,6 +177,7 @@ pub fn send_tcp_probe(socket: &Socket, packet: &[u8], target: IpAddr, port: u16)
     let addr = SocketAddr::new(target, port);
     let sock_addr = SockAddr::from(addr);
     let sent = socket.send_to(packet, &sock_addr)?;
+    crate::pcap::sent_tcp(socket, packet, target);
     Ok(sent)
 }
 

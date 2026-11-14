@@ -18,7 +18,7 @@ recipes are in [SCRIPTING.md](SCRIPTING.md).
 [Settings](#settings-modal) · [Themes](#themes) · [Update Notifications](#update-notifications)
 
 **Output:** [Output Formats](#output-formats) (JSON, CSV, report, streaming JSON, diff, daemon and
-Prometheus, replay) · [CLI Reference](#cli-reference)
+Prometheus, packet capture, replay) · [CLI Reference](#cli-reference)
 
 ## Probing Modes
 
@@ -758,6 +758,38 @@ Exported metrics (labels: `target` = resolved IP, `host` = name as given,
 | `ttl_path_hops` | gauge | Hop count to destination |
 | `ttl_target_probes_total` | counter | Completed probes across all hops |
 
+### Packet Capture
+
+```bash
+ttl 1.1.1.1 --pcap trace.pcap                # Capture while the TUI runs
+ttl -c 10 --no-tui -p udp host --pcap t.pcap # Then: tcpdump -nr t.pcap
+```
+
+`--pcap <FILE>` writes every probe ttl sends and every ICMP packet it reads
+to a classic pcap file for Wireshark or `tcpdump -r`. It works in every live
+mode (TUI, `--no-tui`, batch formats, `--stream-json`, `--daemon`) and is
+rejected with `--replay` and `--diff`.
+
+- **Format:** link type raw IP (101), microsecond timestamps. Each record is
+  a bare IPv4 or IPv6 packet, so one file holds both families
+  (`--resolve-all`).
+- **Headers:** IPv4 probes are recorded as ttl builds them; the IPv4 ID the
+  kernel assigns is not visible to ttl and is 0. For IPv6 the kernel builds
+  the IP header, so ttl writes one from the socket's source address, hop
+  limit and traffic class (for UDP, the UDP header too).
+- **What is read:** the receive socket sees all ICMP for its family on the
+  host, so the file can include ICMP that belongs to other programs.
+  Received IPv6 packets get the local address as destination, so one sent to
+  another local address (for example `::1`) shows a bad checksum.
+- **Timestamps** are taken when ttl hands a packet to the capture, not by the
+  kernel. With unprivileged IPv6 ICMP sockets on Linux, Echo Replies are read
+  once per round, so their timestamps can lag by up to one interval.
+- **Safety:** ttl writes from a separate thread through a bounded queue, so
+  probing never waits on the disk. Packets that do not fit are dropped and
+  the count is printed at exit. The file is flushed after each burst, so an
+  interrupted run still leaves a readable capture. ttl refuses to write
+  through a symlink at `FILE`.
+
 ### Docker
 
 The GHCR image runs any of these modes headless, for example
@@ -854,6 +886,7 @@ session ([Interactive Target Selection](#interactive-target-selection)).
       --stream-json          Line-delimited JSON events (implies --no-tui)
       --daemon               Headless, no per-hop output
       --prometheus <ADDR>    Serve /metrics and /healthz (e.g. :9090; implies --no-tui)
+      --pcap <FILE>          Write sent probes and received ICMP to a pcap file (live modes)
       --diff <BEFORE> <AFTER>  Compare two saved sessions (text, or --json)
       --replay <FILE>        Open a saved JSON session
       --replay-size-limit <MiB>  Max --replay/--diff input, 1-1024 (default: 10)
@@ -876,7 +909,7 @@ Mode rules: `--json`, `--csv` and `--report` are mutually exclusive. `--diff`
 supports text or `--json` output only. `--stream-json`, `--daemon` and
 `--prometheus` cannot be combined with batch formats, `--replay` or `--diff`.
 `--animate` cannot be combined with `--json`, `--csv`, `--report` or
-`--no-tui`. Non-interactive modes need at least one target.
+`--no-tui`. `--pcap` is rejected with `--replay` and `--diff`. Non-interactive modes need at least one target.
 
 <a id="download-verification"></a>
 
