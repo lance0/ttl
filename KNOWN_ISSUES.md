@@ -13,6 +13,7 @@ This document tracks known limitations and edge cases that are documented but no
 
 - **ICMP:** some networks filter ICMP; try `-p udp` or `-p tcp`.
 - **TCP:** probes are SYN only; ttl never completes a connection. ttl reads only ICMP replies, not the destination's SYN-ACK or RST, so a TCP trace marks the destination reached only if the target answers with ICMP (for example Destination Unreachable); otherwise TTLs past it show as timeouts up to the max TTL.
+- **TCP over IPv6 (Linux):** the raw IPv6 TCP send fails with `EINVAL`, so `-p tcp` cannot probe IPv6 targets on Linux. IPv4 TCP is unaffected.
 - **UDP:** high destination ports may be filtered by firewalls; set a port with `--port` (and `--fixed-port`).
 
 ### Multi-flow Mode Behind NAT
@@ -141,7 +142,7 @@ Past a destination NAT (for example a load-balancer VIP), routers quote the tran
 
 ### Route Flaps Not Recorded on Per-Packet Balanced Hops
 
-Once no single responder holds 70% of a hop's responses (per-packet ECMP, `E`), ttl stops recording route changes there: a balancer hands consecutive probes to different routers, so any responder change is indistinguishable from a real path change. A path change on a hop that was already per-packet balanced is therefore not flagged `!`. The test looks at all of the hop's responses so far, which has limits:
+Once no single responder holds 70% of a hop's responses (per-packet ECMP, `E`), ttl stops recording route changes there: a balancer hands consecutive probes to different routers, so any responder change is indistinguishable from a real path change. A path change on a hop that was already per-packet balanced is therefore not flagged `!`. The test looks at the hop's responses before the new run began, which has limits:
 
 - After a genuine change, the old and new responders' combined history can fall below 70%, so the hop shows `E` and a later move back to the old path is not recorded. For example, after 100 rounds on A and then 100 on B, a return to A is not flagged; press `r` to reset statistics and start a fresh history.
 - Weighted balancing where one responder keeps 70% or more is not classified as per-packet; there, a run of 5 consecutive replies from a minority responder can still record a change.

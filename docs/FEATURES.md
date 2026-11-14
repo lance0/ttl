@@ -40,7 +40,7 @@ ttl 8.8.8.8 -p udp --port 33500  # Custom base port
 ttl 8.8.8.8 -p udp --port 53 --fixed-port  # Fixed port (DNS)
 ```
 
-Sends UDP packets to high ports (base port 33434 by default). The destination port increments per TTL; use `--fixed-port` to probe a specific service.
+Sends UDP packets to high ports (base port 33434 by default). The destination port increments per TTL; use `--fixed-port` to probe a specific service. A Destination Unreachable from the target, such as the Port Unreachable a closed UDP port returns, marks the destination and ends the trace there.
 
 ### TCP
 
@@ -86,6 +86,8 @@ ttl distinguishes two types of ECMP:
 - **Per-packet ECMP**: Responses rotate between responders regardless of flow. The Paths column shows the actual number of observed responders.
 
 Classification uses a primary concentration heuristic: if no single responder dominates a flow's responses (below 70% threshold), it's per-packet. The `E` indicator appears in the main table when ECMP is detected at a hop.
+
+Each hop tracks at most 64 responder addresses. When a new one arrives at a full hop, the responder with the fewest replies is dropped (never the primary or the flap-tracked responder). The drop is counted as `responders_evicted` in JSON, `ttl_hop_responders_evicted_total` in Prometheus, and an "Evicted" line in the hop detail. The hop's sent, received and loss counts still include the dropped responders' replies.
 
 **Note:** `--flows` requires UDP or TCP probing (`-p udp` or `-p tcp`). ICMP probes have no port to vary, so flows are always 1 in ICMP mode. ttl warns at startup if `--flows > 1` resolves to effective ICMP probing.
 
@@ -641,7 +643,10 @@ privacy. Any of these opts out (checked in this order):
 ttl 8.8.8.8 -c 100 --json > results.json
 ```
 
-Full session data including all hops, statistics, and enrichment.
+Full session data including all hops, statistics, and enrichment. Each hop
+keeps at most 64 responders and a session at most 100,000 probe events; the
+`responders_evicted` and `dropped_events` fields report what was discarded
+([JSON session format](SCRIPTING.md#json-session-format)).
 
 ### CSV
 
@@ -767,7 +772,7 @@ ttl -c 10 --no-tui -p udp host --pcap t.pcap # Then: tcpdump -nr t.pcap
 
 `--pcap <FILE>` writes every probe ttl sends and every ICMP packet it reads
 to a classic pcap file for Wireshark or `tcpdump -r`. It works in every live
-mode (TUI, `--no-tui`, batch formats, `--stream-json`, `--daemon`) and is
+mode (TUI, `--no-tui`, batch formats, `--stream-json`, `--daemon`, `--prometheus`) and is
 rejected with `--replay` and `--diff`.
 
 - **Format:** link type raw IP (101), microsecond timestamps. Each record is
