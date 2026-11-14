@@ -139,6 +139,14 @@ Linux delivers ICMPv6 Echo Reply only to the socket that sent the request, not t
 
 Past a destination NAT (for example a load-balancer VIP), routers quote the translated address in their Time Exceeded messages. With one target, ttl still attributes those replies to it. With several targets the quoted destination is ambiguous, so such replies are dropped and those hops appear as timeouts. Trace a DNAT'd address on its own to see them.
 
+### Route Flaps Not Recorded on Per-Packet Balanced Hops
+
+Once no single responder holds 70% of a hop's responses (per-packet ECMP, `E`), ttl stops recording route changes there: a balancer hands consecutive probes to different routers, so any responder change is indistinguishable from a real path change. A path change on a hop that was already per-packet balanced is therefore not flagged `!`. The test looks at all of the hop's responses so far, which has limits:
+
+- After a genuine change, the old and new responders' combined history can fall below 70%, so the hop shows `E` and a later move back to the old path is not recorded. For example, after 100 rounds on A and then 100 on B, a return to A is not flagged; press `r` to reset statistics and start a fresh history.
+- Weighted balancing where one responder keeps 70% or more is not classified as per-packet; there, a run of 5 consecutive replies from a minority responder can still record a change.
+- In the first few dozen responses an evenly balanced hop can, by chance, look dominated by one responder, so it occasionally records one change early and shows `E!`.
+
 ### Last RTT Not Persisted in JSON
 
 `last_rtt` is intentionally `#[serde(skip)]` — it represents a live-only sample. The `Last` column in TUI and `last_ms` in CSV are sourced from the current primary responder's `last_rtt`, and will show "-"/empty for replayed sessions. All other RTT and jitter stats are persisted and display correctly.
