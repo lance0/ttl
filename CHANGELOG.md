@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-14
+
 ### Added
 - `--pcap <FILE>` writes every probe ttl sends and every ICMP packet it reads to a classic pcap file (raw IP, so IPv4 and IPv6 share one file) for Wireshark or `tcpdump -r`. It works in every live mode. Writing never holds up probing: packets that do not fit the queue are dropped and counted at exit. ttl refuses to write the capture through a symlink.
 
