@@ -980,17 +980,22 @@ pub struct Hop {
     /// TTL manipulation detection information for this hop
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ttl_manip: Option<TtlManipInfo>,
-    /// Internal: tracks primary with hysteresis for flap detection only
+    /// Internal: the stable responder flap detection compares against
     /// (separate from `primary` which always reflects true most-frequent)
     #[serde(skip)]
     flap_tracking_primary: Option<IpAddr>,
+    /// Internal: last responder and how many consecutive responses it sent
+    #[serde(skip)]
+    flap_streak: Option<(IpAddr, u64)>,
+    /// Internal: responses were already split per-packet when the streak began
+    #[serde(skip)]
+    flap_streak_per_packet: bool,
 }
 
 impl Hop {
-    /// Margin required for primary to change (avoids per-packet LB noise)
-    const PRIMARY_CHANGE_MARGIN: u64 = 2;
-    /// Minimum responses before tracking route changes
-    const MIN_RESPONSES_FOR_FLAP: u64 = 5;
+    /// Consecutive responses a new responder needs before it counts as the
+    /// stable responder (shorter runs are blips or per-packet balancing)
+    const FLAP_CONFIRM_RESPONSES: u64 = 5;
     /// Maximum route changes to store
     const MAX_ROUTE_CHANGES: usize = 50;
     /// Minimum hop responses before classifying per-packet behavior
@@ -1016,6 +1021,8 @@ impl Hop {
             asymmetry: None,
             ttl_manip: None,
             flap_tracking_primary: None,
+            flap_streak: None,
+            flap_streak_per_packet: false,
         }
     }
 
@@ -1081,9 +1088,13 @@ impl Hop {
     /// This is the same as `record_response_with_mpls` but also tracks when
     /// the primary responder changes, indicating route instability.
     ///
-    /// Uses a separate `flap_tracking_primary` with hysteresis (margin of 2)
-    /// to avoid false flaps from per-packet load balancing noise, while keeping
-    /// `self.primary` as the true most-frequent responder for UI/export.
+    /// A responder becomes the stable `flap_tracking_primary` only after
+    /// `FLAP_CONFIRM_RESPONSES` consecutive responses, so blips and per-packet
+    /// alternation never qualify. A change is recorded only if the hop's
+    /// responses were not already split per-packet (no responder above
+    /// `PER_PACKET_PRIMARY_RATIO_THRESHOLD`) when the new streak began; that is
+    /// the per-packet ECMP (`E`) test, without its minimum sample. `self.primary`
+    /// stays the true most-frequent responder for UI/export.
     pub fn record_response_detecting_flaps(
         &mut self,
         ip: IpAddr,
@@ -1101,33 +1112,31 @@ impl Hop {
         mpls_labels: Option<Vec<MplsLabel>>,
         interface_info: Option<Vec<IcmpInterfaceInfo>>,
     ) {
-        let old_flap_primary = self.flap_tracking_primary;
+        let streak = match self.flap_streak {
+            Some((last, n)) if last == ip => n + 1,
+            _ => {
+                // Judge per-packet splitting on the history before this streak,
+                // so a genuine change is not mistaken for balancing by its own
+                // responses.
+                self.flap_streak_per_packet = self
+                    .hop_primary_ratio()
+                    .is_some_and(|r| r < Self::PER_PACKET_PRIMARY_RATIO_THRESHOLD);
+                1
+            }
+        };
+        self.flap_streak = Some((ip, streak));
         self.record_response_with_extensions(ip, rtt, mpls_labels, interface_info);
 
-        // Update flap_tracking_primary with hysteresis
-        let current_count = self
-            .flap_tracking_primary
-            .and_then(|ip| self.responders.get(&ip))
-            .map(|s| s.received)
-            .unwrap_or(0);
-
-        if let Some((new_ip, stats)) = self.responders.iter().max_by_key(|(_, s)| s.received) {
-            // Only change if: no current tracking primary, OR new leader exceeds by margin
-            if self.flap_tracking_primary.is_none()
-                || stats.received >= current_count + Self::PRIMARY_CHANGE_MARGIN
-            {
-                self.flap_tracking_primary = Some(*new_ip);
-            }
+        if streak < Self::FLAP_CONFIRM_RESPONSES || self.flap_tracking_primary == Some(ip) {
+            return;
         }
-
-        // Check for route change (only after minimum responses)
-        if self.received >= Self::MIN_RESPONSES_FOR_FLAP
-            && let (Some(old), Some(new)) = (old_flap_primary, self.flap_tracking_primary)
-            && old != new
+        let old = self.flap_tracking_primary.replace(ip);
+        if let Some(old) = old
+            && !self.flap_streak_per_packet
         {
             self.route_changes.push(RouteChange {
                 from_ip: old,
-                to_ip: new,
+                to_ip: ip,
                 at_seq: self.received,
             });
             // Cap history size
@@ -1647,6 +1656,8 @@ impl Session {
             hop.asymmetry = None;
             hop.ttl_manip = None;
             hop.flap_tracking_primary = None;
+            hop.flap_streak = None;
+            hop.flap_streak_per_packet = false;
         }
     }
 
@@ -2406,114 +2417,80 @@ mod tests {
         assert!(session.hop(1).unwrap().flow_paths.is_empty());
     }
 
-    #[test]
-    fn test_route_flap_sticky_tie() {
-        // Test that no false flaps occur when counts are equal (sticky tie-breaker)
-        // The internal flap_tracking_primary uses hysteresis to prevent oscillation
+    /// Feed `seq` (indices into `ips`) through flap detection on a fresh hop.
+    fn hop_after_flap_sequence(ips: &[IpAddr], seq: impl IntoIterator<Item = usize>) -> Hop {
         let mut hop = Hop::new(5);
-        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
-        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+        for i in seq {
+            hop.record_response_detecting_flaps(ips[i], Duration::from_millis(10), None);
+        }
+        hop
+    }
 
-        // Alternate responses to keep counts equal, past the min threshold
-        // ip1: 3, ip2: 3 after 6 responses (past threshold of 5)
-        for _ in 0..3 {
-            hop.record_response_detecting_flaps(ip1, Duration::from_millis(10), None);
-            hop.record_response_detecting_flaps(ip2, Duration::from_millis(10), None);
+    fn flap_ips(n: u8) -> Vec<IpAddr> {
+        (1..=n)
+            .map(|i| IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, i)))
+            .collect()
+    }
+
+    #[test]
+    fn test_route_flap_per_packet_balancing_never_flaps() {
+        let ips = flap_ips(3);
+
+        // Strict round-robin across two and three responders.
+        for n in [2, 3] {
+            let hop = hop_after_flap_sequence(&ips, (0..300).map(|i| i % n));
+            assert!(hop.route_changes.is_empty(), "round-robin over {n}");
         }
 
-        // No flaps should be recorded because:
-        // - flap_tracking_primary stuck with ip1 (first responder)
-        // - ip2 never exceeded ip1's count by margin of 2
+        // Real per-packet balancers interleave other traffic, so the responder
+        // a probe hits is effectively random. Deterministic xorshift, 50/50.
+        let mut x: u32 = 0x9E37_79B9;
+        let random = (0..600).map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            (x >> 16) as usize % 2
+        });
+        let hop = hop_after_flap_sequence(&ips, random);
+        assert_eq!(hop.ecmp_kind(), EcmpKind::PerPacket);
         assert!(
             hop.route_changes.is_empty(),
-            "Tied counts should not cause flap (sticky tie-breaker)"
+            "per-packet ECMP recorded {} flaps",
+            hop.route_changes.len()
         );
     }
 
     #[test]
-    fn test_route_flap_margin_threshold() {
-        // Test that flaps are only recorded when new IP exceeds by margin of 2
-        let mut hop = Hop::new(5);
-        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
-        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
-
-        // ip1 gets 3 responses, becomes initial flap_tracking_primary
-        for _ in 0..3 {
-            hop.record_response_detecting_flaps(ip1, Duration::from_millis(10), None);
-        }
-
-        // ip2 gets 4 responses (only +1 over ip1's 3) - not enough margin
-        for _ in 0..4 {
-            hop.record_response_detecting_flaps(ip2, Duration::from_millis(10), None);
-        }
-        // ip1: 3, ip2: 4 - only +1, below margin of 2
-        // No flap recorded (flap_tracking_primary still ip1)
-        assert!(
-            hop.route_changes.is_empty(),
-            "Sub-margin lead should not cause flap"
-        );
-
-        // ip2 gets one more (now +2 margin: 5 vs 3)
-        hop.record_response_detecting_flaps(ip2, Duration::from_millis(10), None);
-        // ip1: 3, ip2: 5 - now +2, should record flap
+    fn test_route_flap_genuine_change_records_one_flap() {
+        let ips = flap_ips(2);
+        // A long, stable history on ip1, then the path moves to ip2 for good.
+        let seq = std::iter::repeat_n(0, 200).chain(std::iter::repeat_n(1, 20));
+        let hop = hop_after_flap_sequence(&ips, seq);
+        assert_eq!(hop.route_changes.len(), 1);
+        assert_eq!(hop.route_changes[0].from_ip, ips[0]);
+        assert_eq!(hop.route_changes[0].to_ip, ips[1]);
+        // Confirmed after a few rounds of the new responder, not after it
+        // outnumbers the old one's entire history.
         assert_eq!(
-            hop.route_changes.len(),
-            1,
-            "Margin of +2 should trigger flap"
+            hop.route_changes[0].at_seq,
+            200 + Hop::FLAP_CONFIRM_RESPONSES
         );
-        assert_eq!(hop.route_changes[0].from_ip, ip1);
-        assert_eq!(hop.route_changes[0].to_ip, ip2);
+
+        // A change early in the session is still reported.
+        let seq = std::iter::repeat_n(0, 5).chain(std::iter::repeat_n(1, 10));
+        let hop = hop_after_flap_sequence(&ips, seq);
+        assert_eq!(hop.route_changes.len(), 1);
     }
 
     #[test]
-    fn test_route_flap_min_response_threshold() {
-        // Test that flaps are only recorded after MIN_RESPONSES_FOR_FLAP (5)
-        let mut hop = Hop::new(5);
-        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
-        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
-
-        // Record 1 from ip1 (becomes flap_tracking_primary)
-        hop.record_response_detecting_flaps(ip1, Duration::from_millis(10), None);
-
-        // Record 3 from ip2 (margin +2 at received=4, switches flap_tracking_primary)
-        // But below min threshold, so no flap recorded
-        for _ in 0..3 {
-            hop.record_response_detecting_flaps(ip2, Duration::from_millis(10), None);
-        }
-        // Total: 4, ip1=1, ip2=3 - switch happened but below threshold
-        assert!(
-            hop.route_changes.is_empty(),
-            "Switch below min threshold should not record flap"
-        );
-        assert_eq!(hop.received, 4);
-
-        // Now add one more from ip1 - brings total to 5, ip1=2, ip2=3
-        // ip2 still leads by only 1, not enough margin for another switch
-        hop.record_response_detecting_flaps(ip1, Duration::from_millis(10), None);
+    fn test_route_flap_brief_blip_does_not_flap() {
+        let ips = flap_ips(2);
+        let blip = Hop::FLAP_CONFIRM_RESPONSES as usize - 1;
+        let seq = std::iter::repeat_n(0, 20)
+            .chain(std::iter::repeat_n(1, blip))
+            .chain(std::iter::repeat_n(0, 20));
+        let hop = hop_after_flap_sequence(&ips, seq);
         assert!(hop.route_changes.is_empty());
-        assert_eq!(hop.received, 5);
-
-        // Add 2 more from ip1 - now ip1=4, ip2=3, ip1 leads by 1
-        for _ in 0..2 {
-            hop.record_response_detecting_flaps(ip1, Duration::from_millis(10), None);
-        }
-        // Not enough margin to switch back, no flap
-        assert!(hop.route_changes.is_empty());
-
-        // Add 3 more from ip1 - now ip1=7, ip2=3, margin is +4
-        // This should finally trigger a flap (ip2 -> ip1) since:
-        // - We're past min threshold (received=10)
-        // - ip1 exceeds ip2 by more than margin of 2
-        for _ in 0..3 {
-            hop.record_response_detecting_flaps(ip1, Duration::from_millis(10), None);
-        }
-        assert_eq!(
-            hop.route_changes.len(),
-            1,
-            "Should record flap when margin met after threshold"
-        );
-        assert_eq!(hop.route_changes[0].from_ip, ip2);
-        assert_eq!(hop.route_changes[0].to_ip, ip1);
     }
 
     #[test]
