@@ -3,8 +3,17 @@ name: CI
 on:
   push:
     branches: [master]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE*'
   # Validate stacked pull requests before they are retargeted to master.
+  # Docs-only changes skip CI (nothing in the build reads markdown).
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE*'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
