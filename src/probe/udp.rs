@@ -5,10 +5,6 @@ use std::time::Duration;
 
 use crate::state::ProbeId;
 
-/// UDP protocol number for IPv4/IPv6
-#[allow(dead_code)]
-pub const IPPROTO_UDP: u8 = 17;
-
 /// Minimum UDP payload size (header fields)
 pub const MIN_UDP_PAYLOAD: usize = 8;
 /// Default UDP payload size
