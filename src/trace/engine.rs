@@ -1139,22 +1139,27 @@ impl ProbeEngine {
             return None;
         }
 
-        let mut state = self.state.write();
-        let dest_ttl = state.dest_ttl?;
+        // Read first: this runs every tick, and a write guard marks the TUI dirty.
+        let (dest_ttl, phase) = {
+            let state = self.state.read();
+            (state.dest_ttl?, state.pmtud.as_ref()?.phase)
+        };
 
-        // Check and potentially transition PMTUD state
-        if let Some(ref mut pmtud) = state.pmtud {
-            match pmtud.phase {
-                PmtudPhase::WaitingForDestination => {
-                    // Destination found - start PMTUD search
+        match phase {
+            PmtudPhase::WaitingForDestination => {
+                // Destination found - start PMTUD search (recheck under the write
+                // lock in case a stats reset replaced the state in between)
+                let mut state = self.state.write();
+                let dest_ttl = state.dest_ttl?;
+                if let Some(pmtud) = state.pmtud.as_mut()
+                    && pmtud.phase == PmtudPhase::WaitingForDestination
+                {
                     pmtud.start_search();
-                    Some(dest_ttl)
                 }
-                PmtudPhase::Searching => Some(dest_ttl),
-                PmtudPhase::Complete => None, // Already done
+                Some(dest_ttl)
             }
-        } else {
-            None
+            PmtudPhase::Searching => Some(dest_ttl),
+            PmtudPhase::Complete => None, // Already done
         }
     }
 
@@ -1229,7 +1234,7 @@ impl ProbeEngine {
         }
 
         // Set Don't Fragment flag (critical for PMTUD)
-        if let Err(e) = set_dont_fragment(socket, self.target.is_ipv6()) {
+        if let Err(e) = set_dont_fragment(socket, self.target.is_ipv6(), true) {
             let unsupported_ipv4_df = cfg!(target_os = "netbsd") && !self.target.is_ipv6();
             self.handle_pmtud_df_error(unsupported_ipv4_df, &e);
             return false;
@@ -1262,7 +1267,15 @@ impl ProbeEngine {
         }
 
         // Send the probe
-        match send_icmp(socket, &packet, self.target) {
+        let sent = send_icmp(socket, &packet, self.target);
+
+        // Where ordinary probes share this socket, clear DF again so only the
+        // PMTUD probe carries it. Per-probe-send platforms send ordinary probes
+        // from fresh sockets, so the flag never reaches them there.
+        #[cfg(not(per_probe_send))]
+        let _ = set_dont_fragment(socket, self.target.is_ipv6(), false);
+
+        match sent {
             Ok(_) => {
                 // Increment sent count immediately (mtr parity)
                 // PMTUD only increments total_sent, not hop-level stats
@@ -1390,6 +1403,8 @@ impl ProbeEngine {
     /// Note: macOS delivers Echo Reply to any raw ICMPv6 socket, so this is not needed there.
     #[cfg(target_os = "linux")]
     fn poll_ipv6_echo_reply(&self, socket: &socket2::Socket, is_dgram: bool) {
+        use crate::state::{ProbeEvent, ProbeOutcome};
+
         // Set socket to non-blocking for polling
         let _ = socket.set_nonblocking(true);
 
@@ -1427,6 +1442,15 @@ impl ProbeEngine {
                     if parsed.responder != self.target {
                         continue;
                     }
+                    // A raw receive socket also reads Echo Replies and records them;
+                    // an unprivileged datagram one only gets its own, so record here
+                    if is_dgram {
+                        crate::pcap::received(
+                            &buffer[..recv_result.len],
+                            recv_result.source,
+                            recv_result.response_ttl,
+                        );
+                    }
 
                     // Look up pending probe
                     let flow_id = 0u8; // ICMP uses single flow
@@ -1441,6 +1465,9 @@ impl ProbeEngine {
 
                         // Record response (sent counting already happened at send time)
                         let mut state = self.state.write();
+                        if state.predates_reset(probe.sent_at) {
+                            continue;
+                        }
 
                         // Only record hop stats for normal probes, not PMTUD probes
                         if !is_pmtud_probe && let Some(hop) = state.hop_mut(parsed.probe_id.ttl) {
@@ -1451,6 +1478,21 @@ impl ProbeEngine {
                             if let Some(response_ttl) = recv_result.response_ttl {
                                 hop.record_response_ttl(response_ttl, true);
                             }
+                        }
+                        // Same event the receiver records: the pending entry
+                        // was removed here, so the receiver will not record it
+                        if !is_pmtud_probe {
+                            let offset_ms = state.offset_ms();
+                            state.record_event(ProbeEvent {
+                                offset_ms,
+                                ttl: parsed.probe_id.ttl,
+                                seq: parsed.probe_id.seq,
+                                flow_id,
+                                outcome: ProbeOutcome::Reply {
+                                    addr: parsed.responder,
+                                    rtt_us: rtt.as_micros() as u64,
+                                },
+                            });
                         }
 
                         // Mark trace as complete if this is the destination
@@ -1560,6 +1602,34 @@ mod tests {
         )
     }
 
+    /// Every write guard bumps the TUI render generation, so the per-tick
+    /// PMTUD check must only write when the phase actually changes.
+    #[test]
+    fn check_pmtud_ready_writes_only_on_phase_change() {
+        let engine = make_test_engine(true);
+        let generation = || engine.state.read().render_generation;
+        let set_phase = |phase| engine.state.write().pmtud.as_mut().unwrap().phase = phase;
+
+        for (dest_ttl, phase, expect) in [
+            (None, PmtudPhase::WaitingForDestination, None),
+            (Some(5), PmtudPhase::Searching, Some(5)),
+            (Some(5), PmtudPhase::Complete, None),
+        ] {
+            engine.state.write().dest_ttl = dest_ttl;
+            set_phase(phase);
+            let before = generation();
+            assert_eq!(engine.check_pmtud_ready(), expect, "{phase:?}");
+            assert_eq!(generation(), before, "{phase:?} took a write lock");
+        }
+
+        // Destination found: the search starts, which is a real change.
+        set_phase(PmtudPhase::WaitingForDestination);
+        engine.state.write().dest_ttl = Some(5);
+        assert_eq!(engine.check_pmtud_ready(), Some(5));
+        let state = engine.state.read();
+        assert_eq!(state.pmtud.as_ref().unwrap().phase, PmtudPhase::Searching);
+    }
+
     #[test]
     fn test_handle_pmtud_df_error_marks_complete_for_unsupported_df() {
         let engine = make_test_engine(true);
@@ -1616,6 +1686,8 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn final_round_ipv6_echo_reply_is_drained() {
+        use crate::state::{ProbeEvent, ProbeOutcome};
+
         let target: IpAddr = "::1".parse().unwrap();
         let config = Config {
             count: Some(1),
@@ -1675,6 +1747,19 @@ mod tests {
         let state = session.read();
         assert_eq!(state.hops[0].received, 1);
         assert_eq!(state.dest_ttl, Some(1));
+        // Stream and animated replay see the reply too
+        assert!(
+            matches!(
+                state.events[..],
+                [ProbeEvent {
+                    ttl: 1,
+                    outcome: ProbeOutcome::Reply { addr, .. },
+                    ..
+                }] if addr == target
+            ),
+            "{:?}",
+            state.events
+        );
     }
 
     #[test]
@@ -1685,5 +1770,55 @@ mod tests {
         let state = engine.state.read();
         let pmtud = state.pmtud.as_ref().expect("PMTUD state should exist");
         assert_eq!(pmtud.phase, PmtudPhase::Searching);
+    }
+
+    /// On Linux ordinary IPv6 probes share the PMTUD probe's send socket, so
+    /// the PMTUD send must not leave IPV6_DONTFRAG set behind it. An
+    /// unprivileged UDP socket accepts the same option, so no raw socket needed.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn pmtud_probe_leaves_shared_socket_without_dontfrag() {
+        use std::os::unix::io::AsRawFd;
+        let Ok(socket) = Socket::new(socket2::Domain::IPV6, socket2::Type::DGRAM, None) else {
+            return; // no IPv6 in this environment
+        };
+        let config = Config {
+            pmtud: true,
+            ..Config::default()
+        };
+        let target = IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+        let session = Arc::new(SessionLock::new(Session::new(
+            Target::new("test".to_string(), target),
+            config.clone(),
+        )));
+        session.write().pmtud.as_mut().unwrap().start_search();
+        let engine = ProbeEngine::new(
+            config,
+            target,
+            session,
+            new_pending_map(),
+            CancellationToken::new(),
+            None,
+        );
+
+        // Sending ICMP bytes over UDP to port 0 fails; DF must be cleared either way.
+        engine
+            .send_pmtud_probe_icmp(&socket, 1, 1280, 0, target)
+            .await;
+
+        let mut val: libc::c_int = -1;
+        let mut len = std::mem::size_of_val(&val) as libc::socklen_t;
+        // SAFETY: valid fd for the borrow; `val` and `len` are live, correctly sized out-params.
+        let ret = unsafe {
+            libc::getsockopt(
+                socket.as_raw_fd(),
+                libc::IPPROTO_IPV6,
+                62, // IPV6_DONTFRAG
+                (&mut val as *mut libc::c_int).cast(),
+                &mut len,
+            )
+        };
+        assert_eq!(ret, 0, "{}", std::io::Error::last_os_error());
+        assert_eq!(val, 0, "IPV6_DONTFRAG left set on the shared send socket");
     }
 }

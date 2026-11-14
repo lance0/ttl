@@ -306,17 +306,17 @@ pub fn bind_to_source_ip(socket: &Socket, ip: IpAddr, scope_id: Option<u32>) -> 
     Ok(())
 }
 
-/// Set Don't Fragment flag for Path MTU Discovery
-/// - IPv4: Sets IP_MTU_DISCOVER = IP_PMTUDISC_DO (always set DF bit)
-/// - IPv6: Sets IPV6_DONTFRAG = 1 (prevent source fragmentation)
+/// Set (`on`) or clear the Don't Fragment flag for Path MTU Discovery
+/// - IPv4: Sets IP_MTU_DISCOVER = IP_PMTUDISC_DO (always set DF bit), or IP_PMTUDISC_DONT
+/// - IPv6: Sets IPV6_DONTFRAG = 1 (prevent source fragmentation), or 0
 #[cfg(target_os = "linux")]
-pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
+pub fn set_dont_fragment(socket: &Socket, ipv6: bool, on: bool) -> Result<()> {
     use std::os::unix::io::AsRawFd;
 
     if ipv6 {
         // IPV6_DONTFRAG = 62 on Linux
         const IPV6_DONTFRAG: libc::c_int = 62;
-        let val: libc::c_int = 1;
+        let val = libc::c_int::from(on);
         let ret = unsafe {
             // SAFETY: the fd is open for the borrow of `socket`, and `val` is an
             // initialized c_int that outlives the call with its exact size passed.
@@ -332,10 +332,10 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
             return Err(std::io::Error::last_os_error().into());
         }
     } else {
-        // IP_MTU_DISCOVER = 10, IP_PMTUDISC_DO = 2 on Linux
+        // IP_MTU_DISCOVER = 10, IP_PMTUDISC_DO = 2, IP_PMTUDISC_DONT = 0 on Linux
         const IP_MTU_DISCOVER: libc::c_int = 10;
         const IP_PMTUDISC_DO: libc::c_int = 2;
-        let val: libc::c_int = IP_PMTUDISC_DO;
+        let val: libc::c_int = if on { IP_PMTUDISC_DO } else { 0 };
         let ret = unsafe {
             // SAFETY: the fd is open for the borrow of `socket`, and `val` is an
             // initialized c_int that outlives the call with its exact size passed.
@@ -354,16 +354,16 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
     Ok(())
 }
 
-/// Set Don't Fragment flag for Path MTU Discovery (NetBSD)
-/// - IPv4: Returns error (NetBSD lacks IP_DONTFRAG; PMTUD unsupported for IPv4)
-/// - IPv6: Sets IPV6_DONTFRAG = 1
+/// Set (`on`) or clear the Don't Fragment flag for Path MTU Discovery (NetBSD)
+/// - IPv4: Setting returns an error (NetBSD lacks IP_DONTFRAG; PMTUD unsupported for IPv4)
+/// - IPv6: Sets IPV6_DONTFRAG = 1 or 0
 #[cfg(target_os = "netbsd")]
-pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
+pub fn set_dont_fragment(socket: &Socket, ipv6: bool, on: bool) -> Result<()> {
     use std::os::unix::io::AsRawFd;
 
     if ipv6 {
         const IPV6_DONTFRAG: libc::c_int = 62;
-        let val: libc::c_int = 1;
+        let val = libc::c_int::from(on);
         let ret = unsafe {
             // SAFETY: the fd is open for the borrow of `socket`, and `val` is an
             // initialized c_int that outlives the call with its exact size passed.
@@ -379,6 +379,8 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
             return Err(std::io::Error::last_os_error().into());
         }
         Ok(())
+    } else if !on {
+        Ok(())
     } else {
         // IPv4: NetBSD has no IP_DONTFRAG — return error so PMTUD callers don't
         // proceed thinking DF is set (packets would fragment instead of triggering
@@ -389,11 +391,11 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
     }
 }
 
-/// Set Don't Fragment flag for Path MTU Discovery (macOS/FreeBSD)
-/// - IPv4: Sets IP_DONTFRAG = 1
-/// - IPv6: Sets IPV6_DONTFRAG = 1
+/// Set (`on`) or clear the Don't Fragment flag for Path MTU Discovery (macOS/FreeBSD)
+/// - IPv4: Sets IP_DONTFRAG = 1 or 0
+/// - IPv6: Sets IPV6_DONTFRAG = 1 or 0
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
-pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
+pub fn set_dont_fragment(socket: &Socket, ipv6: bool, on: bool) -> Result<()> {
     use std::os::unix::io::AsRawFd;
 
     // Platform-specific constants
@@ -404,8 +406,8 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
     // IPV6_DONTFRAG = 62 on both macOS and FreeBSD
     const IPV6_DONTFRAG: libc::c_int = 62;
 
+    let val = libc::c_int::from(on);
     if ipv6 {
-        let val: libc::c_int = 1;
         let ret = unsafe {
             // SAFETY: the fd is open for the borrow of `socket`, and `val` is an
             // initialized c_int that outlives the call with its exact size passed.
@@ -421,7 +423,6 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
             return Err(std::io::Error::last_os_error().into());
         }
     } else {
-        let val: libc::c_int = 1;
         let ret = unsafe {
             // SAFETY: the fd is open for the borrow of `socket`, and `val` is an
             // initialized c_int that outlives the call with its exact size passed.
@@ -440,13 +441,14 @@ pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
     Ok(())
 }
 
-/// Set Don't Fragment flag (Windows): IP_DONTFRAGMENT / IPV6_DONTFRAG.
+/// Set (`on`) or clear the Don't Fragment flag (Windows): IP_DONTFRAGMENT / IPV6_DONTFRAG.
 #[cfg(windows)]
-pub fn set_dont_fragment(socket: &Socket, ipv6: bool) -> Result<()> {
+pub fn set_dont_fragment(socket: &Socket, ipv6: bool, on: bool) -> Result<()> {
+    let val = u32::from(on);
     if ipv6 {
-        win_setsockopt(socket, WinSock::IPPROTO_IPV6, WinSock::IPV6_DONTFRAG, 1)
+        win_setsockopt(socket, WinSock::IPPROTO_IPV6, WinSock::IPV6_DONTFRAG, val)
     } else {
-        win_setsockopt(socket, WinSock::IPPROTO_IP, WinSock::IP_DONTFRAGMENT, 1)
+        win_setsockopt(socket, WinSock::IPPROTO_IP, WinSock::IP_DONTFRAGMENT, val)
     }
 }
 
@@ -477,6 +479,7 @@ pub fn send_icmp(socket: &Socket, packet: &[u8], target: IpAddr) -> Result<usize
     let addr = SocketAddr::new(target, 0);
     let sock_addr = SockAddr::from(addr);
     let sent = socket.send_to(packet, &sock_addr)?;
+    crate::pcap::sent_icmp(socket, packet, target);
     Ok(sent)
 }
 
@@ -839,11 +842,13 @@ mod tests {
             val
         };
         let v4 = Socket::new(Domain::IPV4, Type::DGRAM, None).unwrap();
-        set_dont_fragment(&v4, false).unwrap();
+        set_dont_fragment(&v4, false, true).unwrap();
         assert_eq!(get(&v4, WinSock::IPPROTO_IP, WinSock::IP_DONTFRAGMENT), 1);
         let v6 = Socket::new(Domain::IPV6, Type::DGRAM, None).unwrap();
-        set_dont_fragment(&v6, true).unwrap();
+        set_dont_fragment(&v6, true, true).unwrap();
         assert_eq!(get(&v6, WinSock::IPPROTO_IPV6, WinSock::IPV6_DONTFRAG), 1);
+        set_dont_fragment(&v6, true, false).unwrap();
+        assert_eq!(get(&v6, WinSock::IPPROTO_IPV6, WinSock::IPV6_DONTFRAG), 0);
     }
 
     #[cfg(unix)]

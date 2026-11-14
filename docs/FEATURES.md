@@ -18,7 +18,7 @@ recipes are in [SCRIPTING.md](SCRIPTING.md).
 [Settings](#settings-modal) · [Themes](#themes) · [Update Notifications](#update-notifications)
 
 **Output:** [Output Formats](#output-formats) (JSON, CSV, report, streaming JSON, diff, daemon and
-Prometheus, replay) · [CLI Reference](#cli-reference)
+Prometheus, packet capture, replay) · [CLI Reference](#cli-reference)
 
 ## Probing Modes
 
@@ -120,7 +120,7 @@ name. Press `?` in the TUI for the same legend; `ttl --help` lists it too.
 | Host marker | Meaning |
 |-------------|---------|
 | `E` | ECMP: several responders answer at this hop ([ECMP Classification](#ecmp-classification)) |
-| `!` | Route flap: the primary responder changed ([Route Flap Detection](#route-flap-detection)) |
+| `!` | Route flap: the hop's stable responder changed; per-packet balancing does not count ([Route Flap Detection](#route-flap-detection)) |
 | `~` | Asymmetric routing suspected at this hop |
 | `^` | TTL manipulation suspected at this hop |
 | `+` | Interface or MPLS details are available ([ICMP Extension Details](#icmp-extension-details)) |
@@ -217,13 +217,12 @@ Trace all IP addresses that a hostname resolves to. Useful for:
 ttl -i 0.5 production-server.com
 ```
 
-ttl detects route instability when the primary responder IP changes at a hop:
+ttl detects route instability when the stable responder at a hop changes:
 
-- Main table shows `!` indicator after hostname when route changes detected
-- `!` is suppressed when ECMP is detected at the hop (`E` shown instead) — per-packet load balancing is expected multi-path behavior, not instability
+- A responder becomes the hop's stable responder only after 5 consecutive responses; a change is recorded when a different responder then holds 5 in a row. Shorter runs (a brief blip, or responders alternating) never count, and the change is reported after 5 rounds of the new path regardless of how long the old one was in use
+- No change is recorded while the hop balances per-packet, that is, when no single responder has 70% or more of the hop's responses before the new run began (the same test that sets `E`). Rotating responders are expected multi-path behavior, not instability ([Known Issues](../KNOWN_ISSUES.md#route-flaps-not-recorded-on-per-packet-balanced-hops))
+- Main table shows `!` after the hostname once a change is recorded. It can appear alongside `E`: a genuine change spreads a hop's responses over two responders, which can make it look per-packet balanced afterward
 - Hop detail view (Enter key) shows route change history with the response count at which each change was detected
-- Uses hysteresis (margin of 2 responses) to avoid false positives
-- Requires 5+ responses before recording changes (avoids startup noise)
 - History capped at 50 changes per hop
 - Only active in single-flow mode (disabled when `--flows > 1` since ECMP expects path variation)
 
@@ -684,7 +683,9 @@ with a `target` field added for demultiplexing multi-target runs:
 {"target":"8.8.8.8","offset_ms":4021,"ttl":7,"seq":1,"flow_id":0,"type":"timeout"}
 ```
 
-Event types are `reply`, `timeout`, and `late_reply`. When the stream ends, a
+Event types are `reply`, `timeout`, and `late_reply`. A `late_reply` arrived
+after its probe's `timeout` event; it is informational (`rtt_us` is 0, the RTT
+is unknown) and does not change the stats. When the stream ends, a
 final `summary` line is emitted per target:
 
 ```json
@@ -750,11 +751,44 @@ Exported metrics (labels: `target` = resolved IP, `host` = name as given,
 | `ttl_timeouts_total` | counter | Timeouts per hop |
 | `ttl_loss_ratio` | gauge | Loss ratio per hop (0–1) |
 | `ttl_rtt_avg_seconds` / `min` / `max` / `stddev` | gauge | RTT stats for the hop's primary responder |
-| `ttl_hop_responders` | gauge | Distinct responder IPs at the hop (ECMP) |
+| `ttl_hop_responders` | gauge | Distinct responder IPs tracked at the hop (ECMP; at most 64) |
+| `ttl_hop_responders_evicted_total` | counter | Responders dropped once a hop tracks 64 (the fewest-reply one goes; hop totals keep their replies) |
 | `ttl_hop_info` | gauge | Primary responder identity (`ip`, `hostname` labels, value 1) |
 | `ttl_target_reachable` | gauge | Destination responded (1/0) |
 | `ttl_path_hops` | gauge | Hop count to destination |
 | `ttl_target_probes_total` | counter | Completed probes across all hops |
+
+### Packet Capture
+
+```bash
+ttl 1.1.1.1 --pcap trace.pcap                # Capture while the TUI runs
+ttl -c 10 --no-tui -p udp host --pcap t.pcap # Then: tcpdump -nr t.pcap
+```
+
+`--pcap <FILE>` writes every probe ttl sends and every ICMP packet it reads
+to a classic pcap file for Wireshark or `tcpdump -r`. It works in every live
+mode (TUI, `--no-tui`, batch formats, `--stream-json`, `--daemon`) and is
+rejected with `--replay` and `--diff`.
+
+- **Format:** link type raw IP (101), microsecond timestamps. Each record is
+  a bare IPv4 or IPv6 packet, so one file holds both families
+  (`--resolve-all`).
+- **Headers:** IPv4 probes are recorded as ttl builds them; the IPv4 ID the
+  kernel assigns is not visible to ttl and is 0. For IPv6 the kernel builds
+  the IP header, so ttl writes one from the socket's source address, hop
+  limit and traffic class (for UDP, the UDP header too).
+- **What is read:** the receive socket sees all ICMP for its family on the
+  host, so the file can include ICMP that belongs to other programs.
+  Received IPv6 packets get the local address as destination, so one sent to
+  another local address (for example `::1`) shows a bad checksum.
+- **Timestamps** are taken when ttl hands a packet to the capture, not by the
+  kernel. With unprivileged IPv6 ICMP sockets on Linux, Echo Replies are read
+  once per round, so their timestamps can lag by up to one interval.
+- **Safety:** ttl writes from a separate thread through a bounded queue, so
+  probing never waits on the disk. Packets that do not fit are dropped and
+  the count is printed at exit. The file is flushed after each burst, so an
+  interrupted run still leaves a readable capture. ttl refuses to write
+  through a symlink at `FILE`.
 
 ### Docker
 
@@ -779,6 +813,11 @@ the session showing hop-by-hop discovery as it happened.
 Replay and diff refuse input over 10 MiB by default, since saved sessions may
 come from untrusted sources. `--replay-size-limit <MiB>` (1-1024) raises the
 cap for a larger recording you trust.
+
+A session records at most its newest 100,000 probe events (about an hour of a
+30-hop path at the default interval). An export from a longer run carries a
+`dropped_events` count; `--animate` says so and starts at the first kept
+event. Final hop statistics are unaffected.
 
 #### Replay Controls
 
@@ -847,6 +886,7 @@ session ([Interactive Target Selection](#interactive-target-selection)).
       --stream-json          Line-delimited JSON events (implies --no-tui)
       --daemon               Headless, no per-hop output
       --prometheus <ADDR>    Serve /metrics and /healthz (e.g. :9090; implies --no-tui)
+      --pcap <FILE>          Write sent probes and received ICMP to a pcap file (live modes)
       --diff <BEFORE> <AFTER>  Compare two saved sessions (text, or --json)
       --replay <FILE>        Open a saved JSON session
       --replay-size-limit <MiB>  Max --replay/--diff input, 1-1024 (default: 10)
@@ -869,7 +909,7 @@ Mode rules: `--json`, `--csv` and `--report` are mutually exclusive. `--diff`
 supports text or `--json` output only. `--stream-json`, `--daemon` and
 `--prometheus` cannot be combined with batch formats, `--replay` or `--diff`.
 `--animate` cannot be combined with `--json`, `--csv`, `--report` or
-`--no-tui`. Non-interactive modes need at least one target.
+`--no-tui`. `--pcap` is rejected with `--replay` and `--diff`. Non-interactive modes need at least one target.
 
 <a id="download-verification"></a>
 

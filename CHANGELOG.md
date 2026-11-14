@@ -7,15 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Removed
+### Added
+- `--pcap <FILE>` writes every probe ttl sends and every ICMP packet it reads to a classic pcap file (raw IP, so IPv4 and IPv6 share one file) for Wireshark or `tcpdump -r`. It works in every live mode. Writing never holds up probing: packets that do not fit the queue are dropped and counted at exit. ttl refuses to write the capture through a symlink.
 
+### Changed
+- Every `unsafe` block now carries a `// SAFETY:` comment, and clippy's `undocumented_unsafe_blocks` lint is on so new blocks need one too.
+- Dead-code cleanup: removed unused internal helpers (`create_udp_send_socket`, `create_udp_dgram_socket_bound`, `IxLookup::prefix_count`, the never-built `SocketCapability::Dgram`, the never-read `Theme::border_focused`), moved test-only helpers behind `#[cfg(test)]`, and gave each remaining `allow(dead_code)` a reason.
+
+### Removed
 - **`ttl::state::ProbeResult`** (breaking): the public type is gone from the library API, along with its `ttl::state::session::ProbeResult` path. Nothing in the library produced or consumed it, but code that names it no longer compiles.
 - The unused `csv` crate dependency. CSV export is written by hand and is unchanged.
 
-### Changed
+### Fixed
+- **UDP traces stop at the destination.** A live trace only treated an ICMP Echo Reply as reaching the target, so the Port Unreachable a target sends back to a UDP probe never ended the path: ttl kept probing every TTL up to the maximum, listed the target again at each of those hops, and left `dest_ttl` empty in exports. A Destination Unreachable from the target itself now marks the destination like an Echo Reply does. Time Exceeded or Parameter Problem from the target, and any reply from another host, still do not. (Replay, which does not record the ICMP type, already ended the path at any reply from the target.)
+- **Resetting stats with `r` no longer counts replies and timeouts for probes sent before the reset.** Those probes used to show up in the fresh stats right away, as a reply on a hop that had not sent a new probe yet or as a timeout well before the probe timeout.
+- **With `-c`, targets added from the TUI with `o` now get their full rounds.** The run used to end once the initial targets were done, cutting the added ones short.
+- **Pressing Esc while an added target is still resolving no longer adds it anyway.** The target used to be probed for the rest of the run without appearing in the TUI.
+- **Animated replay (`--replay --animate`) no longer counts a `late_reply` event as a reply.** It used to add a 0 ms RTT sample on top of the probe's timeout, so the minimum RTT read 0 and the replayed stats disagreed with the stats saved in the same file. A reply that only failed to match because several flows of its probe were still pending is no longer recorded as `late_reply` either.
+- **IPv6 Echo Replies read by the probe engine on Linux now produce a `reply` event.** In the ICMPv6 datagram-socket fallback `--stream-json` emitted no reply for the destination while its summary said `complete`, and a TUI export held no events for it, so animated replay lost the destination hop. In raw mode the receiver's copy of a reply the engine had already read was recorded as a spurious `late_reply` instead. Recordings from earlier versions stored those replies only as `late_reply`, so animated replay of them now shows fewer replies at the destination.
+- **Long runs no longer grow memory without bound at a hop with many responders.** Every distinct source address that answered at a hop was kept for the whole run (about 5 KB each), so per-packet balancing behind CGNAT, or a box replying from spoofed sources, grew `--daemon`/`--prometheus` and long TUI sessions steadily and slowed every render and scrape. A hop now tracks up to 64 responders; past that the one with the fewest replies is dropped (never the primary), so one-off sources churn through a single slot instead of pushing out real ECMP paths. Hop sent/received/loss and the primary's RTT are unchanged. The count is reported as `responders_evicted` in JSON, `ttl_hop_responders_evicted_total` in Prometheus, and an "Evicted" line in the hop details.
+- **A live TUI session's probe-event history is capped.** The event log behind `e` export and `--animate` grew for the whole session (about 5 MB an hour per target), and `e` copied all of it. A session now keeps its newest 100,000 events; an export from a longer run carries `dropped_events`, and `--animate` notes the truncation and starts at the first kept event instead of idling through the missing part.
+- **PeeringDB responses and the IX cache file are size-capped (16 MiB).** Both were read into memory whole; a broken or hostile response, or a replaced `ix_cache.json`, is now refused with an error that names the limit.
+- **Route flaps (`!`) no longer pile up on per-packet load-balanced hops, and genuine path changes are reported promptly.** Flap detection compared cumulative response counts with a margin of 2, so on a hop balancing probes at random the leader kept changing and route changes accumulated in the hop's history even though it was marked `E`. A real change went unreported until the new responder outnumbered the old one's whole history. A responder now has to answer 5 times in a row to become, or replace, the hop's stable responder, and no change is recorded while no responder holds 70% of the hop's responses (the `E` test). `!` is no longer hidden when `E` is shown. Animated replay of a recording applies the new rules. See [Known Issues](KNOWN_ISSUES.md#route-flaps-not-recorded-on-per-packet-balanced-hops) for the limits.
+- **UDP hops behind routers that quote only 8 bytes are no longer timeouts.** RFC 792 lets a router quote just the IP header and the 8-byte UDP header in its Time Exceeded, dropping the payload that carries ttl's probe id, so those replies were discarded. The probe id is now recovered from the quoted UDP checksum, which still covers the payload (IPv4 and IPv6).
+- **`--pmtud` no longer leaves Don't Fragment set on IPv6 ordinary probes** (Linux, Windows). The size probe set `IPV6_DONTFRAG` on the send socket that ordinary probes share and never cleared it; it is now cleared right after each PMTUD probe. IPv4 was unaffected (DF is set per packet in the hand-built header), as were macOS and the BSDs (ordinary probes use their own sockets).
+- **`--pmtud` no longer write-locks the session on every probe tick** just to read its phase; it takes the write lock only when the search starts, so it no longer marks the TUI dirty on its own.
+- **A malformed RFC 5837 Interface Information Object no longer hides a valid one with the same role.** The parser keeps the first object per role and ignores repeats, but it claimed the role before checking the object, so a truncated first object (or one with an unknown address family) was dropped and also blocked a well-formed repeat after it. The role now goes to the first object that parses.
 
-- Every `unsafe` block now carries a `// SAFETY:` comment, and clippy's `undocumented_unsafe_blocks` lint is on so new blocks need one too.
-- Dead-code cleanup: removed unused internal helpers (`create_udp_send_socket`, `create_udp_dgram_socket_bound`, `IxLookup::prefix_count`, the never-built `SocketCapability::Dgram`, the never-read `Theme::border_focused`), moved test-only helpers behind `#[cfg(test)]`, and gave each remaining `allow(dead_code)` a reason.
+### Security
+- Update `quinn-udp` from 0.5.14 to 0.5.16 to fix RUSTSEC-2026-0538 (a receive loop can spin after a truncated datagram on affected platforms).
 
 ## [0.25.0] - 2026-11-12
 

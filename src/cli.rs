@@ -47,7 +47,7 @@ DETECTION INDICATORS (press ? in the TUI for the legend):
     RL      - Loss at this hop is likely ICMP rate limiting
   Host markers:
     E       - ECMP detected at this hop (single-flow marker; see Paths in multi-flow)
-    !       - Route flap at this hop (path instability, when ECMP not indicated)
+    !       - Route flap: the stable responder changed (not recorded on per-packet ECMP)
     ~       - Asymmetric routing suspected at this hop
     ^       - TTL manipulation suspected at this hop
     +       - Interface/MPLS details available (Enter)
@@ -179,6 +179,10 @@ pub struct Args {
     /// Serve Prometheus/OpenMetrics on this address (e.g. :9090 or 127.0.0.1:9090; implies --no-tui)
     #[arg(long = "prometheus", value_name = "ADDR", conflicts_with_all = ["json", "csv", "report", "replay", "diff"])]
     pub prometheus: Option<String>,
+
+    /// Write every probe sent and every ICMP response read to FILE (classic pcap, raw IP; open in Wireshark or tcpdump -r)
+    #[arg(long = "pcap", value_name = "FILE")]
+    pub pcap: Option<String>,
 
     /// Color theme (default, kawaii, cyber, dracula, monochrome, matrix, nord, gruvbox, catppuccin, tokyo_night, solarized).
     /// Overrides the saved theme; omit to keep it.
@@ -525,6 +529,7 @@ impl Args {
                 (self.dscp.is_some(), "--dscp"),
                 (self.interface.is_some(), "--interface"),
                 (self.source_ip.is_some(), "--source-ip"),
+                (self.pcap.is_some(), "--pcap"),
             ];
             if let Some((_, flag)) = ignored.iter().find(|(given, _)| *given) {
                 return Err(format!(
@@ -574,6 +579,7 @@ mod tests {
             stream_json: false,
             daemon: false,
             prometheus: None,
+            pcap: None,
             theme: None,
             wide: false,
             interface: None,
@@ -643,6 +649,7 @@ mod tests {
             vec!["--dscp", "46"],
             vec!["--interface", "eth0"],
             vec!["--source-ip", "192.0.2.10"],
+            vec!["--pcap", "out.pcap"],
         ] {
             let mut argv = vec!["ttl", "--replay", "trace.json"];
             argv.extend(flags.iter().copied());
@@ -663,6 +670,25 @@ mod tests {
         let error = args.validate().unwrap_err();
         assert!(error.contains("--flows"), "{error}");
         assert!(error.contains("--diff"), "{error}");
+
+        let mut args =
+            Args::try_parse_from(["ttl", "--diff", "a.json", "b.json", "--pcap", "t.pcap"])
+                .unwrap();
+        let error = args.validate().unwrap_err();
+        assert!(
+            error.contains("--pcap") && error.contains("--diff"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn test_pcap_is_accepted_for_live_modes() {
+        for extra in [&[][..], &["--no-tui", "-c", "1"], &["--stream-json"]] {
+            let mut argv = vec!["ttl", "--pcap", "t.pcap", "192.0.2.1"];
+            argv.extend_from_slice(extra);
+            let mut args = Args::try_parse_from(&argv).unwrap();
+            assert!(args.validate().is_ok(), "--pcap rejected with {extra:?}");
+        }
     }
 
     #[test]

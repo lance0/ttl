@@ -103,7 +103,7 @@ impl<'a> HelpView<'a> {
             heading("Legend"),
             Line::styled("  Host markers", dim),
             row("E", marker, "ECMP: several paths at this hop"),
-            row("!", marker, "Route flap: the responder changed"),
+            row("!", marker, "Route flap: stable responder changed"),
             row("~", marker, "Asymmetric return path"),
             row("^", marker, "TTL manipulation"),
             row("+", marker, "Interface/MPLS details (Enter)"),

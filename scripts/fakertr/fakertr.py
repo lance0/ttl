@@ -4,8 +4,11 @@ TTL=1 echo requests to the fake destination get an ICMP Time Exceeded from
 10.200.0.2 carrying an RFC 4884 extension with two RFC 5837 Interface
 Information Objects (incoming + outgoing). TTL>=2 requests get an Echo Reply
 spoofed from the destination 10.250.0.9, so ttl sees a 2-hop path.
+
+FAKERTR_BAD_FIRST=1 prepends a malformed incoming-role object (claims ifIndex +
+IP, carries only the ifIndex); ttl must still report the valid one after it.
 """
-import socket, struct
+import os, socket, struct
 
 ROUTER = "10.200.0.2"
 DEST = "10.250.0.9"
@@ -29,6 +32,8 @@ def iface_obj(role, ifindex, ip, name, mtu):
 def time_exceeded(orig_ip):
     quoted = (orig_ip[:128] + b"\0" * 128)[:128]
     ext = struct.pack("!BBH", 0x20, 0, 0)
+    if os.environ.get("FAKERTR_BAD_FIRST"):
+        ext += struct.pack("!HBBI", 8, 2, 0x0C, 99)   # role 0, ifIndex+IP, IP missing
     ext += iface_obj(0, 1, ROUTER, "Ethernet1@fake-rt1", 1500)
     ext += iface_obj(2, 2, "10.250.0.1", "Ethernet2@fake-rt1", 9000)
     ext = ext[:2] + struct.pack("!H", csum(ext)) + ext[4:]
