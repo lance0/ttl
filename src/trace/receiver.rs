@@ -693,8 +693,8 @@ mod tests {
         ));
     }
 
-    /// UDP (and TCP) probes reaching the target draw a Port Unreachable,
-    /// not an Echo Reply; only the target's own replies end the path.
+    /// UDP probes reaching the target draw a Port Unreachable, not an Echo
+    /// Reply; only the target's own replies end the path.
     #[test]
     fn destination_reply_includes_port_unreachable_from_target() {
         for (target, router, port_unreachable) in [

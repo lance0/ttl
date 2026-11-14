@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **UDP traces stop at the destination.** A live trace only treated an ICMP Echo Reply as reaching the target, so the Port Unreachable a target sends back to a UDP probe never ended the path: ttl kept probing every TTL up to the maximum, listed the target again at each of those hops, and left `dest_ttl` empty in exports. A Destination Unreachable from the target itself now marks the destination like an Echo Reply does, matching replay. Time Exceeded or Parameter Problem from the target, and any reply from another host, still do not.
+- **UDP traces stop at the destination.** A live trace only treated an ICMP Echo Reply as reaching the target, so the Port Unreachable a target sends back to a UDP probe never ended the path: ttl kept probing every TTL up to the maximum, listed the target again at each of those hops, and left `dest_ttl` empty in exports. A Destination Unreachable from the target itself now marks the destination like an Echo Reply does. Time Exceeded or Parameter Problem from the target, and any reply from another host, still do not. (Replay, which does not record the ICMP type, already ended the path at any reply from the target.)
 
 ## [0.25.0] - 2026-11-12
 
