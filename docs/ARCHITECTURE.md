@@ -14,6 +14,7 @@ src/
 ├── persistence.rs       # Atomic file writes for preferences and exports
 ├── update.rs            # Startup release check and install-method detection
 ├── metrics.rs           # Prometheus/OpenMetrics endpoint (/metrics, /healthz)
+├── pcap.rs              # Packet capture writer (--pcap)
 ├── probe/               # Packet crafting and ICMP parsing
 │   ├── icmp.rs          # ICMP Echo probe construction
 │   ├── udp.rs           # UDP probe construction
@@ -111,7 +112,7 @@ Per-target session containing:
 - `complete: bool` - Whether destination was reached
 - `dest_ttl: Option<u8>` - TTL at which destination was reached
 - `pmtud: Option<PmtudState>` - Path MTU discovery state
-- `events: Vec<ProbeEvent>` - Recorded probe outcomes for replay (not kept in `--daemon`, Prometheus-only, or plain `--no-tui` runs)
+- `events: Vec<ProbeEvent>` - Recorded probe outcomes for replay (not kept in `--daemon`, Prometheus-only, or plain `--no-tui` runs; a live session keeps its newest 100,000, counting the rest in `dropped_events`)
 
 ### Hop (`state/session.rs`)
 
