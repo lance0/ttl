@@ -1200,25 +1200,8 @@ async fn run_target_manager(mut ctx: TargetManagerCtx) -> Result<()> {
             *family_has_receiver = true;
         }
 
-        // Spawn the probe engine. Its own token stops it if the add is
-        // canceled after all; the run's cancel still reaches it.
-        let engine_cancel = ctx.cancel.child_token();
-        let engine_config = state.read().config.clone();
-        let engine = ProbeEngine::new(
-            engine_config,
-            ip,
-            state.clone(),
-            ctx.pending.clone(),
-            engine_cancel.clone(),
-            ctx.interface.clone(),
-        );
-        // finish_engines only stops listening once the run is over
-        let _ = ctx
-            .engines
-            .send(tokio::spawn(async move { engine.run().await }));
-
         // Esc landed after the check above: the TUI will never show this
-        // target, so stop probing it and drop its session.
+        // target, so drop its session and probe nothing.
         if request
             .reply
             .send(Ok(AddedTarget {
@@ -1228,9 +1211,24 @@ async fn run_target_manager(mut ctx: TargetManagerCtx) -> Result<()> {
             }))
             .is_err()
         {
-            engine_cancel.cancel();
             ctx.sessions.write().remove(&ip);
+            continue;
         }
+
+        // Spawn the probe engine
+        let engine_config = state.read().config.clone();
+        let engine = ProbeEngine::new(
+            engine_config,
+            ip,
+            state.clone(),
+            ctx.pending.clone(),
+            ctx.cancel.clone(),
+            ctx.interface.clone(),
+        );
+        // finish_engines only stops listening once the run is over
+        let _ = ctx
+            .engines
+            .send(tokio::spawn(async move { engine.run().await }));
     }
 
     // Join the receivers this task spawned (cancellation already requested)
