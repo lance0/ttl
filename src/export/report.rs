@@ -159,7 +159,7 @@ fn write_extensions<W: Write>(writer: &mut W, stats: &ResponderStats) -> std::io
 }
 
 /// Generate report to string
-#[allow(dead_code)]
+#[allow(dead_code, reason = "public library API")]
 pub fn generate_report_string(session: &Session) -> String {
     let mut buf = Vec::new();
     generate_report(session, &mut buf).unwrap();

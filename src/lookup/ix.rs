@@ -637,12 +637,6 @@ impl IxLookup {
         })
     }
 
-    /// Get the number of prefixes loaded
-    #[allow(dead_code)]
-    pub fn prefix_count(&self) -> usize {
-        self.prefixes.read().len()
-    }
-
     /// Set the API key for PeeringDB requests
     ///
     /// Note: Environment variable PEERINGDB_API_KEY takes precedence over this.

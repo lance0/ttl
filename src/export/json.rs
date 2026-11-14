@@ -10,7 +10,7 @@ pub fn export_json<W: Write>(session: &Session, writer: W) -> Result<()> {
 }
 
 /// Export session to JSON string
-#[allow(dead_code)]
+#[allow(dead_code, reason = "public library API")]
 pub fn export_json_string(session: &Session) -> Result<String> {
     Ok(serde_json::to_string_pretty(session)?)
 }

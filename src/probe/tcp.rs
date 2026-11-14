@@ -14,7 +14,7 @@ use crate::state::ProbeId;
 pub const IPPROTO_TCP: u8 = 6;
 
 /// Default source port for TCP probes (high ephemeral port)
-#[allow(dead_code)]
+#[cfg(test)]
 const TCP_SRC_PORT: u16 = 50000;
 
 /// TCP flags
@@ -23,12 +23,12 @@ const TCP_FLAG_SYN: u8 = 0x02;
 /// Minimum TCP header size
 pub const TCP_HEADER_SIZE: usize = 20;
 /// Default TCP packet size (header only)
-#[allow(dead_code)]
+#[cfg(test)]
 pub const DEFAULT_TCP_PAYLOAD: usize = 0;
 
 /// Build a TCP SYN packet for probing (convenience wrapper with default size)
 /// Returns the raw TCP header (no IP header - kernel adds that)
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn build_tcp_syn(
     probe_id: ProbeId,
     src_port: u16,
