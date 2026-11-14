@@ -51,6 +51,7 @@ struct BatchedResponse {
     #[allow(dead_code)]
     responder_scope_id: Option<u32>,
     rtt: Duration,
+    sent_at: Instant,
     mpls_labels: Option<Vec<MplsLabel>>,
     interface_info: Option<Vec<IcmpInterfaceInfo>>,
     response_type: IcmpResponseType,
@@ -317,6 +318,7 @@ impl Receiver {
                                     responder: parsed.responder,
                                     responder_scope_id,
                                     rtt,
+                                    sent_at: probe.sent_at,
                                     mpls_labels: parsed.mpls_labels,
                                     interface_info: parsed.interface_info,
                                     response_type: parsed.response_type,
@@ -330,24 +332,14 @@ impl Receiver {
                                     quoted_ttl: parsed.quoted_ttl,
                                 });
                             } else {
-                                // Late packet arrival - response came after timeout
-                                // Record as LateReply for replay accuracy
                                 if let Some(target) = parsed.original_dest {
-                                    let sessions = self.sessions.read();
-                                    if let Some(session_lock) = sessions.get(&target) {
-                                        let mut state = session_lock.write();
-                                        let offset_ms = state.offset_ms();
-                                        state.record_event(ProbeEvent {
-                                            offset_ms,
-                                            ttl: parsed.probe_id.ttl,
-                                            seq: parsed.probe_id.seq,
-                                            flow_id: flow_hint.unwrap_or(0),
-                                            outcome: ProbeOutcome::LateReply {
-                                                addr: parsed.responder,
-                                                rtt_us: 0, // RTT unknown for late arrivals
-                                            },
-                                        });
-                                    }
+                                    self.record_late_reply(
+                                        parsed.probe_id,
+                                        target,
+                                        flow_hint,
+                                        parsed.responder,
+                                        parsed.response_type,
+                                    );
                                 }
                                 #[cfg(debug_assertions)]
                                 eprintln!(
@@ -389,102 +381,7 @@ impl Receiver {
             }
 
             // SECOND: Apply all batched state updates
-            if !batch.is_empty() {
-                let sessions = self.sessions.read();
-                for resp in batch {
-                    // Look up the session for this target
-                    if let Some(session) = sessions.get(&resp.target) {
-                        let mut state = session.write();
-                        let is_pmtud_probe = resp.packet_size.is_some();
-
-                        // Only record hop responses for normal probes, not PMTUD probes
-                        // PMTUD probes are for MTU discovery, not traceroute measurements
-                        if !is_pmtud_probe {
-                            if let Some(hop) = state.hop_mut(resp.probe_id.ttl) {
-                                // Record aggregate stats with optional flap detection
-                                // Only detect flaps in single-flow mode (multi-flow expects path changes)
-                                if self.config.num_flows == 1 {
-                                    hop.record_response_detecting_flaps_with_extensions(
-                                        resp.responder,
-                                        resp.rtt,
-                                        resp.mpls_labels.clone(),
-                                        resp.interface_info.clone(),
-                                    );
-                                } else {
-                                    hop.record_response_with_extensions(
-                                        resp.responder,
-                                        resp.rtt,
-                                        resp.mpls_labels.clone(),
-                                        resp.interface_info.clone(),
-                                    );
-                                }
-                                // Record per-flow stats for Paris/Dublin traceroute ECMP detection
-                                hop.record_flow_response(resp.flow_id, resp.responder, resp.rtt);
-                                // Record NAT detection result (compare sent vs returned source port)
-                                hop.record_nat_check(
-                                    resp.original_src_port,
-                                    resp.returned_src_port,
-                                );
-                                // Asymmetric routing detection (single-flow mode only, like flap detection)
-                                if self.config.num_flows == 1
-                                    && let Some(ttl) = resp.response_ttl
-                                {
-                                    hop.record_response_ttl(ttl, self.config.ipv6);
-                                }
-
-                                // TTL manipulation detection (TimeExceeded code 0 only, all flow modes)
-                                // Code 0 = TTL exceeded in transit, Code 1 = fragment reassembly exceeded
-                                // Only code 0 is relevant for TTL manipulation - code 1 can have quoted TTL > 1
-                                if matches!(resp.response_type, IcmpResponseType::TimeExceeded(0))
-                                    && let Some(quoted) = resp.quoted_ttl
-                                {
-                                    hop.record_ttl_manip_check(quoted);
-                                }
-                            }
-
-                            // Record event for animated replay (monotonic timing)
-                            let offset_ms = state.offset_ms();
-                            state.record_event(ProbeEvent {
-                                offset_ms,
-                                ttl: resp.probe_id.ttl,
-                                seq: resp.probe_id.seq,
-                                flow_id: resp.flow_id,
-                                outcome: ProbeOutcome::Reply {
-                                    addr: resp.responder,
-                                    rtt_us: resp.rtt.as_micros() as u64,
-                                },
-                            });
-                        }
-
-                        // Check if we reached the destination
-                        if matches!(resp.response_type, IcmpResponseType::EchoReply)
-                            && resp.responder == resp.target
-                        {
-                            state.complete = true;
-                            let ttl = resp.probe_id.ttl;
-                            if state.dest_ttl.is_none_or(|d| ttl < d) {
-                                state.dest_ttl = Some(ttl);
-                            }
-                        }
-
-                        // PMTUD: Update state if this was a PMTUD probe
-                        // Verify packet_size matches current_size to ignore late responses from old sizes
-                        if let Some(probe_size) = resp.packet_size
-                            && let Some(ref mut pmtud) = state.pmtud
-                            && pmtud.phase == PmtudPhase::Searching
-                            && probe_size == pmtud.current_size
-                        {
-                            record_pmtud_response(
-                                pmtud,
-                                resp.response_type,
-                                resp.responder,
-                                resp.target,
-                                resp.reported_mtu,
-                            );
-                        }
-                    }
-                }
-            }
+            self.apply_responses(batch);
 
             // Check cancellation AFTER draining socket, so queued responses aren't lost
             if self.cancel.is_cancelled() {
@@ -523,6 +420,157 @@ impl Receiver {
         Ok(())
     }
 
+    /// Record a reply that matched no pending probe as a `LateReply` event,
+    /// for the record only: the probe's timeout was already counted. A probe
+    /// still pending means the match was ambiguous (an unknown flow with
+    /// several flows of that probe in flight), not late, so no event is
+    /// recorded and the probe's own reply or timeout accounts for it.
+    fn record_late_reply(
+        &self,
+        probe_id: ProbeId,
+        target: IpAddr,
+        flow_hint: Option<u8>,
+        responder: IpAddr,
+        response_type: IcmpResponseType,
+    ) {
+        // On Linux the engine's send socket gets a copy of every IPv6 Echo
+        // Reply, so one with no pending probe has usually been recorded by the
+        // engine already.
+        // ponytail: a genuinely late IPv6 Echo Reply goes unrecorded on Linux;
+        // track timed-out keys if that record matters.
+        if cfg!(target_os = "linux")
+            && self.config.ipv6
+            && matches!(response_type, IcmpResponseType::EchoReply)
+        {
+            return;
+        }
+        // Read before taking the sessions lock: never hold both
+        let still_pending = self
+            .pending
+            .read()
+            .keys()
+            .any(|&(pid, _, tgt, _)| pid == probe_id && tgt == target);
+        if still_pending {
+            return;
+        }
+        let sessions = self.sessions.read();
+        if let Some(session_lock) = sessions.get(&target) {
+            let mut state = session_lock.write();
+            let offset_ms = state.offset_ms();
+            state.record_event(ProbeEvent {
+                offset_ms,
+                ttl: probe_id.ttl,
+                seq: probe_id.seq,
+                flow_id: flow_hint.unwrap_or(0),
+                outcome: ProbeOutcome::LateReply {
+                    addr: responder,
+                    rtt_us: 0, // RTT unknown for late arrivals
+                },
+            });
+        }
+    }
+
+    /// Apply the responses drained from the socket to their sessions.
+    fn apply_responses(&self, batch: Vec<BatchedResponse>) {
+        if batch.is_empty() {
+            return;
+        }
+        let sessions = self.sessions.read();
+        for resp in batch {
+            // Look up the session for this target
+            if let Some(session) = sessions.get(&resp.target) {
+                let mut state = session.write();
+                if state.predates_reset(resp.sent_at) {
+                    continue;
+                }
+                let is_pmtud_probe = resp.packet_size.is_some();
+
+                // Only record hop responses for normal probes, not PMTUD probes
+                // PMTUD probes are for MTU discovery, not traceroute measurements
+                if !is_pmtud_probe {
+                    if let Some(hop) = state.hop_mut(resp.probe_id.ttl) {
+                        // Record aggregate stats with optional flap detection
+                        // Only detect flaps in single-flow mode (multi-flow expects path changes)
+                        if self.config.num_flows == 1 {
+                            hop.record_response_detecting_flaps_with_extensions(
+                                resp.responder,
+                                resp.rtt,
+                                resp.mpls_labels.clone(),
+                                resp.interface_info.clone(),
+                            );
+                        } else {
+                            hop.record_response_with_extensions(
+                                resp.responder,
+                                resp.rtt,
+                                resp.mpls_labels.clone(),
+                                resp.interface_info.clone(),
+                            );
+                        }
+                        // Record per-flow stats for Paris/Dublin traceroute ECMP detection
+                        hop.record_flow_response(resp.flow_id, resp.responder, resp.rtt);
+                        // Record NAT detection result (compare sent vs returned source port)
+                        hop.record_nat_check(resp.original_src_port, resp.returned_src_port);
+                        // Asymmetric routing detection (single-flow mode only, like flap detection)
+                        if self.config.num_flows == 1
+                            && let Some(ttl) = resp.response_ttl
+                        {
+                            hop.record_response_ttl(ttl, self.config.ipv6);
+                        }
+
+                        // TTL manipulation detection (TimeExceeded code 0 only, all flow modes)
+                        // Code 0 = TTL exceeded in transit, Code 1 = fragment reassembly exceeded
+                        // Only code 0 is relevant for TTL manipulation - code 1 can have quoted TTL > 1
+                        if matches!(resp.response_type, IcmpResponseType::TimeExceeded(0))
+                            && let Some(quoted) = resp.quoted_ttl
+                        {
+                            hop.record_ttl_manip_check(quoted);
+                        }
+                    }
+
+                    // Record event for animated replay (monotonic timing)
+                    let offset_ms = state.offset_ms();
+                    state.record_event(ProbeEvent {
+                        offset_ms,
+                        ttl: resp.probe_id.ttl,
+                        seq: resp.probe_id.seq,
+                        flow_id: resp.flow_id,
+                        outcome: ProbeOutcome::Reply {
+                            addr: resp.responder,
+                            rtt_us: resp.rtt.as_micros() as u64,
+                        },
+                    });
+                }
+
+                // Check if we reached the destination
+                if matches!(resp.response_type, IcmpResponseType::EchoReply)
+                    && resp.responder == resp.target
+                {
+                    state.complete = true;
+                    let ttl = resp.probe_id.ttl;
+                    if state.dest_ttl.is_none_or(|d| ttl < d) {
+                        state.dest_ttl = Some(ttl);
+                    }
+                }
+
+                // PMTUD: Update state if this was a PMTUD probe
+                // Verify packet_size matches current_size to ignore late responses from old sizes
+                if let Some(probe_size) = resp.packet_size
+                    && let Some(ref mut pmtud) = state.pmtud
+                    && pmtud.phase == PmtudPhase::Searching
+                    && probe_size == pmtud.current_size
+                {
+                    record_pmtud_response(
+                        pmtud,
+                        resp.response_type,
+                        resp.responder,
+                        resp.target,
+                        resp.reported_mtu,
+                    );
+                }
+            }
+        }
+    }
+
     /// Record timeout effects after pending probes have been removed.
     fn record_pending_timeouts(
         &self,
@@ -538,6 +586,9 @@ impl Receiver {
         for ((probe_id, _flow_id, target, is_pmtud), probe) in timed_out {
             if let Some(session) = sessions.get(&target) {
                 let mut state = session.write();
+                if state.predates_reset(probe.sent_at) {
+                    continue;
+                }
 
                 // Only record hop timeouts for normal probes, not PMTUD probes
                 if !is_pmtud {
@@ -712,6 +763,140 @@ mod tests {
         let receiver = test_receiver_at(65535, 1);
         assert_eq!(receiver.derive_flow_hint(Some(65535)), Some(0));
         assert_eq!(receiver.derive_flow_hint(Some(65534)), None);
+    }
+
+    /// A reply or timeout for a probe sent before `r` reset the stats is not
+    /// counted against the fresh stats; one sent after the reset is.
+    #[test]
+    fn probes_sent_before_a_stats_reset_are_not_counted() {
+        use crate::config::Config;
+        use crate::state::{Session, Target};
+
+        let receiver = test_receiver(1);
+        let target: IpAddr = "192.0.2.1".parse().unwrap();
+        let router: IpAddr = "192.0.2.254".parse().unwrap();
+        let session = Session::new(Target::new("t".into(), target), Config::default());
+        let state = Arc::new(SessionLock::new(session));
+        receiver.sessions.write().insert(target, state.clone());
+
+        let before = Instant::now();
+        std::thread::sleep(Duration::from_millis(2));
+        state.write().reset_stats();
+        let after = Instant::now();
+
+        let response = |sent_at| BatchedResponse {
+            probe_id: ProbeId::new(1, 0),
+            responder: router,
+            responder_scope_id: None,
+            rtt: Duration::from_millis(5),
+            sent_at,
+            mpls_labels: None,
+            interface_info: None,
+            response_type: IcmpResponseType::TimeExceeded(0),
+            target,
+            flow_id: 0,
+            original_src_port: None,
+            returned_src_port: None,
+            packet_size: None,
+            reported_mtu: None,
+            response_ttl: None,
+            quoted_ttl: None,
+        };
+        let timeout = |sent_at| {
+            let probe = PendingProbe {
+                sent_at,
+                target,
+                flow_id: 0,
+                original_src_port: None,
+                packet_size: None,
+            };
+            vec![((ProbeId::new(2, 0), 0, target, false), probe)]
+        };
+
+        receiver.apply_responses(vec![response(before)]);
+        receiver.record_pending_timeouts(timeout(before), true, true);
+        {
+            let session = state.read();
+            assert_eq!(session.hop(1).unwrap().received, 0);
+            assert_eq!(session.hop(2).unwrap().timeouts, 0);
+            assert!(session.events.is_empty());
+        }
+
+        receiver.apply_responses(vec![response(after)]);
+        receiver.record_pending_timeouts(timeout(after), true, true);
+        let session = state.read();
+        assert_eq!(session.hop(1).unwrap().received, 1);
+        assert_eq!(session.hop(2).unwrap().timeouts, 1);
+    }
+
+    /// A reply that only failed to match because several flows of its probe
+    /// are still pending is not late: recording it as `LateReply` and then
+    /// the probe's timeout would replay as two outcomes for one probe.
+    #[test]
+    fn ambiguous_match_is_not_recorded_as_late_reply() {
+        use crate::config::Config;
+        use crate::state::{Session, Target};
+
+        let receiver = test_receiver(2);
+        let target: IpAddr = "192.0.2.1".parse().unwrap();
+        let router: IpAddr = "192.0.2.254".parse().unwrap();
+        let probe_id = ProbeId::new(1, 0);
+        let session = Session::new(Target::new("t".into(), target), Config::default());
+        let state = Arc::new(SessionLock::new(session));
+        receiver.sessions.write().insert(target, state.clone());
+        for flow_id in 0..2 {
+            receiver.pending.write().insert(
+                (probe_id, flow_id, target, false),
+                PendingProbe {
+                    sent_at: Instant::now(),
+                    target,
+                    flow_id,
+                    original_src_port: None,
+                    packet_size: None,
+                },
+            );
+        }
+
+        let late = IcmpResponseType::TimeExceeded(0);
+        receiver.record_late_reply(probe_id, target, None, router, late);
+        assert!(state.read().events.is_empty());
+
+        receiver.pending.write().clear();
+        receiver.record_late_reply(probe_id, target, None, router, late);
+        assert!(matches!(
+            state.read().events[..],
+            [ProbeEvent {
+                outcome: ProbeOutcome::LateReply { .. },
+                ..
+            }]
+        ));
+    }
+
+    /// Linux raw mode: the engine's send socket and the receiver both get each
+    /// IPv6 Echo Reply. The engine recorded the reply, so the receiver's copy,
+    /// finding nothing pending, is not a late reply.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ipv6_echo_reply_copy_is_not_recorded_as_late_reply() {
+        use crate::config::Config;
+        use crate::state::{Session, Target};
+
+        let mut receiver = test_receiver(1);
+        receiver.config.ipv6 = true;
+        let target: IpAddr = "2001:db8::1".parse().unwrap();
+        let session = Session::new(Target::new("t".into(), target), Config::default());
+        let state = Arc::new(SessionLock::new(session));
+        receiver.sessions.write().insert(target, state.clone());
+
+        let probe_id = ProbeId::new(1, 0);
+        receiver.record_late_reply(
+            probe_id,
+            target,
+            Some(0),
+            target,
+            IcmpResponseType::EchoReply,
+        );
+        assert!(state.read().events.is_empty());
     }
 
     fn one_pending(probe_id: ProbeId, target: IpAddr) -> HashMap<PendingKey, PendingProbe> {
